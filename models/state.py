@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Optional, Annotated
+from typing import TypedDict, List, Optional, Annotated, Literal
 from langgraph.graph.message import add_messages
 from models.schemas import (
     PaperMetadata,
@@ -11,6 +11,28 @@ from models.schemas import (
 
 def add_to_list(existing: list, new: list) -> list:
     return existing + new
+
+
+ProcessingStage = Literal[
+    "ingestion",
+    "extraction",
+    "benchmark",
+    "readiness",
+    "report",
+    "topic_selection",
+    "failed",
+]
+
+
+class IngestionProvenance(TypedDict):
+    """
+    Provenance metadata from the Ingestion Agent.
+    Downstream agents use this to understand input quality.
+    """
+    text_source: Literal["pdf", "abstract_fallback", "none"]
+    metadata_source: Literal["arxiv", "pdf_fallback", "none"]
+    enrichment_status: Literal["s2_ok", "s2_failed", "not_attempted"]
+    arxiv_id_found: bool
 
 
 class PaperIntelState(TypedDict):
@@ -27,6 +49,7 @@ class PaperIntelState(TypedDict):
     method_extraction: Optional[MethodExtraction]
     benchmarks: List[BenchmarkResult]
     production_readiness: Optional[ProductionReadiness]
+    ingestion_provenance: Optional[IngestionProvenance]
 
     # Multi-paper
     comparison_report: Optional[str]
@@ -38,7 +61,7 @@ class PaperIntelState(TypedDict):
     # Control flow
     current_paper_index: int
     total_papers: int
-    processing_stage: str
+    processing_stage: ProcessingStage
     needs_human_review: bool
     human_review_reason: Optional[str]
     confidence_scores: dict
