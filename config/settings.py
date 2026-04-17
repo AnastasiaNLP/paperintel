@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings
 
 
@@ -5,6 +7,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     openai_api_key: str
     langchain_api_key: str
+    github_token: Optional[str] = None
     langchain_tracing_v2: str = "true"
     langchain_project: str = "paperintel"
     postgres_url: str = "postgresql://paperintel:dev_password@localhost:5432/paperintel"
