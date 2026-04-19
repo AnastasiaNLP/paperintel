@@ -3,8 +3,10 @@ from typing import Literal
 
 from langgraph.graph import END, StateGraph
 
+from agents.extraction import extraction_agent
 from agents.ingestion import ingestion_agent
 from agents.supervisor import (
+    route_after_extraction,
     route_after_ingestion,
     supervisor_node,
 )
@@ -12,14 +14,13 @@ from models.state import PaperIntelState
 
 logger = logging.getLogger(__name__)
 
-Week1Route = Literal["ingestion", "error", "end"]
+SupervisorEntryRoute = Literal["ingestion", "error", "end"]
 
 
-def _route_supervisor_week1(state: PaperIntelState) -> Week1Route:
+def _route_supervisor_entry(state: PaperIntelState) -> SupervisorEntryRoute:
     """
-    supervisor router.
-    Only ingestion | error | end are supported in the current graph.
-    Full router enabled when extraction is wired in.
+    Supervisor entry router.
+    Routes initial state to the correct first agent.
     """
     stage = state.get("processing_stage", "")
     errors = state.get("errors", [])
@@ -31,7 +32,7 @@ def _route_supervisor_week1(state: PaperIntelState) -> Week1Route:
     if stage == "ingestion":
         return "ingestion"
 
-    # topic_selection -> end (expected: waiting for user choice)
+    # topic_selection -> end (waiting for user choice)
     # everything else -> end (unexpected stage is not an error)
     logger.info("Supervisor -> end: stage=%s", stage)
     return "end"
@@ -51,13 +52,14 @@ def build_graph() -> StateGraph:
 
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("ingestion", ingestion_agent)
+    graph.add_node("extraction", extraction_agent)
     graph.add_node("error", _error_node)
 
     graph.set_entry_point("supervisor")
 
     graph.add_conditional_edges(
         "supervisor",
-        _route_supervisor_week1,
+        _route_supervisor_entry,
         {
             "ingestion": "ingestion",
             "error": "error",
@@ -69,8 +71,18 @@ def build_graph() -> StateGraph:
         "ingestion",
         route_after_ingestion,
         {
-            "extraction": END,  # replace with extraction node
+            "extraction": "extraction",
             "end": END,
+            "error": "error",
+        },
+    )
+
+    graph.add_conditional_edges(
+        "extraction",
+        route_after_extraction,
+        {
+            "benchmark": END,     # placeholder until benchmark node is added
+            "human_review": END,  # placeholder until human_review node is added
             "error": "error",
         },
     )
@@ -91,11 +103,10 @@ def create_app(use_checkpointing: bool = True):
 
             conn = psycopg.connect(settings.postgres_url)
             checkpointer = PostgresSaver(conn)
-            checkpointer.setup()  # idempotent — safe to call on every start
+            checkpointer.setup()
             app = graph.compile(checkpointer=checkpointer)
             logger.info("Graph compiled with PostgreSQL checkpointing")
             return app
-
         except Exception as exc:
             logger.warning(
                 "PostgreSQL unavailable, running without checkpointing: %s", exc

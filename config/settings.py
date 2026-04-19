@@ -1,7 +1,7 @@
 from typing import Optional
 
 from pydantic_settings import BaseSettings
-
+import os
 
 class Settings(BaseSettings):
     anthropic_api_key: str
@@ -20,3 +20,7 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+os.environ.setdefault("LANGCHAIN_API_KEY", settings.langchain_api_key)
+os.environ.setdefault("LANGCHAIN_TRACING_V2", settings.langchain_tracing_v2)
+os.environ.setdefault("LANGCHAIN_PROJECT", settings.langchain_project)
