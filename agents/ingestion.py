@@ -30,6 +30,10 @@ def _sanitize_text(text: str) -> str:
     return text
 
 
+def _sanitize_text_by_page(text_by_page: dict[int, str]) -> dict[int, str]:
+    return {page: _sanitize_text(text) for page, text in text_by_page.items()}
+
+
 def _strip_version(arxiv_id: str) -> str:
     return re.sub(r"v\d+$", "", arxiv_id)
 
@@ -164,6 +168,8 @@ def _route_url(state: PaperIntelState) -> dict:
             state,
             metadata=metadata,
             raw_text=raw_text,
+            pdf_path=pdf_path,
+            text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
             ingestion_provenance=_make_provenance(
                 text_source="pdf",
                 metadata_source="arxiv",
@@ -177,6 +183,8 @@ def _route_url(state: PaperIntelState) -> dict:
             state,
             metadata=metadata,
             raw_text=_sanitize_text(metadata.abstract),
+            pdf_path=pdf_path if "pdf_path" in locals() else None,
+            text_by_page=None,
             errors=state.get("errors", []) + [f"PDF unavailable, abstract used: {exc}"],
             ingestion_provenance=_make_provenance(
                 text_source="abstract_fallback",
@@ -213,6 +221,8 @@ def _route_pdf(state: PaperIntelState) -> dict:
                 state,
                 metadata=metadata,
                 raw_text=raw_text,
+                pdf_path=pdf_path,
+                text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
                 ingestion_provenance=_make_provenance(
                     text_source="pdf",
                     metadata_source="arxiv",
@@ -237,6 +247,8 @@ def _route_pdf(state: PaperIntelState) -> dict:
                 citation_count=None,
             ),
             raw_text=raw_text,
+            pdf_path=pdf_path,
+            text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
             errors=errors_updated,
             ingestion_provenance=_make_provenance(
                 text_source="pdf",
@@ -261,6 +273,8 @@ def _route_pdf(state: PaperIntelState) -> dict:
         state,
         metadata=metadata,
         raw_text=raw_text,
+        pdf_path=pdf_path,
+        text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
         errors=state.get("errors", []) + ["No arXiv ID - metadata quality low"],
         ingestion_provenance=_make_provenance(
             text_source="pdf",

@@ -130,3 +130,15 @@ def route_after_readiness(state: PaperIntelState) -> SupervisorRoute:
         return "report"
 
     return "report"
+
+def route_after_benchmark(state: PaperIntelState) -> SupervisorRoute:
+    """Conditional edge after benchmark analyst."""
+    stage = state.get("processing_stage", "")
+
+    if stage == "failed":
+        return "error"
+    if stage == "readiness":
+        return "readiness"
+
+    logger.warning("Unexpected stage after benchmark: %s", stage)
+    return "error"

@@ -46,6 +46,8 @@ class PaperIntelState(TypedDict):
     # Agent outputs
     metadata: Optional[PaperMetadata]
     raw_text: Optional[str]
+    pdf_path: Optional[str]
+    text_by_page: Optional[dict[int, str]]
     method_extraction: Optional[MethodExtraction]
     benchmarks: List[BenchmarkResult]
     production_readiness: Optional[ProductionReadiness]

@@ -3,9 +3,11 @@ from typing import Literal
 
 from langgraph.graph import END, StateGraph
 
+from agents.benchmark import benchmark_analyst_agent
 from agents.extraction import extraction_agent
 from agents.ingestion import ingestion_agent
 from agents.supervisor import (
+    route_after_benchmark,
     route_after_extraction,
     route_after_ingestion,
     supervisor_node,
@@ -54,6 +56,7 @@ def build_graph() -> StateGraph:
     graph.add_node("ingestion", ingestion_agent)
     graph.add_node("extraction", extraction_agent)
     graph.add_node("error", _error_node)
+    graph.add_node("benchmark", benchmark_analyst_agent)
 
     graph.set_entry_point("supervisor")
 
@@ -81,8 +84,17 @@ def build_graph() -> StateGraph:
         "extraction",
         route_after_extraction,
         {
-            "benchmark": END,     # placeholder until benchmark node is added
-            "human_review": END,  # placeholder until human_review node is added
+            "benchmark": "benchmark",
+            "human_review": END,
+            "error": "error",
+        },
+    )
+
+    graph.add_conditional_edges(
+        "benchmark",
+        route_after_benchmark,
+        {
+            "readiness": END,
             "error": "error",
         },
     )
