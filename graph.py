@@ -5,6 +5,7 @@ from langgraph.graph import END, StateGraph
 
 from agents.benchmark import benchmark_analyst_agent
 from agents.extraction import extraction_agent
+from agents.human_review import human_review_node
 from agents.ingestion import ingestion_agent
 from agents.supervisor import (
     route_after_benchmark,
@@ -55,6 +56,7 @@ def build_graph() -> StateGraph:
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("ingestion", ingestion_agent)
     graph.add_node("extraction", extraction_agent)
+    graph.add_node("human_review", human_review_node)
     graph.add_node("error", _error_node)
     graph.add_node("benchmark", benchmark_analyst_agent)
 
@@ -85,10 +87,12 @@ def build_graph() -> StateGraph:
         route_after_extraction,
         {
             "benchmark": "benchmark",
-            "human_review": END,
+            "human_review": "human_review",
             "error": "error",
         },
     )
+
+    graph.add_edge("human_review", "benchmark")
 
     graph.add_conditional_edges(
         "benchmark",
@@ -116,7 +120,10 @@ def create_app(use_checkpointing: bool = True):
             conn = psycopg.connect(settings.postgres_url)
             checkpointer = PostgresSaver(conn)
             checkpointer.setup()
-            app = graph.compile(checkpointer=checkpointer)
+            app = graph.compile(
+                checkpointer=checkpointer,
+                interrupt_before=["human_review"],
+            )
             logger.info("Graph compiled with PostgreSQL checkpointing")
             return app
         except Exception as exc:
@@ -124,6 +131,6 @@ def create_app(use_checkpointing: bool = True):
                 "PostgreSQL unavailable, running without checkpointing: %s", exc
             )
 
-    app = graph.compile()
+    app = graph.compile(interrupt_before=["human_review"])
     logger.info("Graph compiled without checkpointing")
     return app

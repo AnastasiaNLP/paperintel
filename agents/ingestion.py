@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 # Only the new arXiv ID format (2001.00001) is supported.
-# Legacy ids like cs.AI/0601001 are a conscious MVP limitation.
+# Legacy ids like cs.AI/0601001 are a conscious limitation.
 _ARXIV_ID_PATTERNS = [
     r"arxiv\.org/abs/(\d{4}\.\d{4,5}(?:v\d+)?)",
     r"arxiv\.org/pdf/(\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?",
