@@ -107,7 +107,6 @@ def _make_provenance(
 def _success_extraction(state: PaperIntelState, **kwargs) -> dict:
     """Successful ingestion that advances the graph to extraction."""
     return {
-        "errors": state.get("errors", []),
         "processing_stage": "extraction",
         **kwargs,
     }
@@ -119,7 +118,7 @@ def _failure(state: PaperIntelState, reason: str, level: str = "error") -> dict:
     else:
         logger.warning("Ingestion warning: %s", reason)
     return {
-        "errors": state.get("errors", []) + [reason],
+        "errors": [reason],
         "processing_stage": "failed",
     }
 
@@ -185,7 +184,7 @@ def _route_url(state: PaperIntelState) -> dict:
             raw_text=_sanitize_text(metadata.abstract),
             pdf_path=pdf_path if "pdf_path" in locals() else None,
             text_by_page=None,
-            errors=state.get("errors", []) + [f"PDF unavailable, abstract used: {exc}"],
+            errors=[f"PDF unavailable, abstract used: {exc}"],
             ingestion_provenance=_make_provenance(
                 text_source="abstract_fallback",
                 metadata_source="arxiv",
@@ -232,9 +231,6 @@ def _route_pdf(state: PaperIntelState) -> dict:
             )
 
         logger.warning("arXiv metadata failed for %s: %s", arxiv_id, meta_error)
-        errors_updated = state.get("errors", []) + [
-            f"arXiv metadata unavailable, PDF fallback used: {meta_error}"
-        ]
         return _success_extraction(
             state,
             metadata=PaperMetadata(
@@ -249,7 +245,7 @@ def _route_pdf(state: PaperIntelState) -> dict:
             raw_text=raw_text,
             pdf_path=pdf_path,
             text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
-            errors=errors_updated,
+            errors=[f"arXiv metadata unavailable, PDF fallback used: {meta_error}"],
             ingestion_provenance=_make_provenance(
                 text_source="pdf",
                 metadata_source="pdf_fallback",
@@ -275,7 +271,7 @@ def _route_pdf(state: PaperIntelState) -> dict:
         raw_text=raw_text,
         pdf_path=pdf_path,
         text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
-        errors=state.get("errors", []) + ["No arXiv ID - metadata quality low"],
+        errors=["No arXiv ID - metadata quality low"],
         ingestion_provenance=_make_provenance(
             text_source="pdf",
             metadata_source="pdf_fallback",

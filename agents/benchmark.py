@@ -147,7 +147,7 @@ def _call_llm(
 
     try:
         response = _client.messages.create(
-            model=settings.sonnet_model,
+            model=settings.haiku_model,
             max_tokens=2500,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
@@ -165,7 +165,7 @@ def _call_llm(
 def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
     try:
         response = _client.messages.create(
-            model=settings.sonnet_model,
+            model=settings.haiku_model,
             max_tokens=2500,
             system="You are a JSON repair specialist. Return ONLY valid JSON array, no explanation.",
             messages=[
@@ -241,7 +241,7 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
     proposed_method = _proposed_method_name(state)
 
     tables = []
-    errors = state.get("errors", [])
+    new_errors = []
 
     if pdf_path:
         try:
@@ -249,17 +249,17 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
             logger.info("Extracted %d tables from %s", len(tables), pdf_path)
         except Exception as exc:
             logger.warning("Could not extract tables from %s: %s", pdf_path, exc)
-            errors = errors + [f"Benchmark: table extraction failed: {exc}"]
+            new_errors.append(f"Benchmark: table extraction failed: {exc}")
     else:
         logger.warning("Benchmark: pdf_path missing, falling back to raw_text only")
-        errors = errors + ["Benchmark: pdf_path missing, using raw_text fallback"]
+        new_errors.append("Benchmark: pdf_path missing, using raw_text fallback")
 
     tables_text = _format_tables_with_context(tables, text_by_page)
     fallback_text = "" if tables else _format_fallback_text(raw_text)
 
     if not tables and not fallback_text:
         return {
-            "errors": errors + ["Benchmark: no tables or text context available"],
+            "errors": new_errors + ["Benchmark: no tables or text context available"],
             "benchmarks": [],
             "processing_stage": "failed",
         }
@@ -272,7 +272,7 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
 
     if llm_error:
         return {
-            "errors": errors + [llm_error],
+            "errors": new_errors + [llm_error],
             "benchmarks": [],
             "processing_stage": "failed",
         }
@@ -287,7 +287,7 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
 
         if repair_error:
             return {
-                "errors": errors
+                "errors": new_errors
                 + [f"Benchmark parse failed: {parse_error}; repair failed: {repair_error}"],
                 "benchmarks": [],
                 "processing_stage": "readiness",
@@ -297,17 +297,18 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
 
     if parse_error:
         return {
-            "errors": errors + [f"Benchmark parse failed after repair: {parse_error}"],
+            "errors": new_errors + [f"Benchmark parse failed after repair: {parse_error}"],
             "benchmarks": [],
             "processing_stage": "readiness",
         }
 
     logger.info("Benchmark agent complete: %d results extracted", len(benchmarks))
 
-    final_errors = errors + ([parse_warning] if parse_warning else [])
-
-    return {
+    result = {
         "benchmarks": benchmarks,
-        "errors": final_errors,
         "processing_stage": "readiness",
     }
+    final_errors = new_errors + ([parse_warning] if parse_warning else [])
+    if final_errors:
+        result["errors"] = final_errors
+    return result

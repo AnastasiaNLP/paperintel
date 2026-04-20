@@ -140,7 +140,7 @@ def _call_llm(
     """
     try:
         response = _client.messages.create(
-            model=settings.sonnet_model,
+            model=settings.haiku_model,
             max_tokens=2000,
             system=_SYSTEM_PROMPT,
             messages=[
@@ -166,7 +166,7 @@ def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
     """
     try:
         response = _client.messages.create(
-            model=settings.sonnet_model,
+            model=settings.haiku_model,
             max_tokens=2000,
             system="You are a JSON repair specialist. Return ONLY valid JSON, no explanation.",
             messages=[
@@ -206,7 +206,7 @@ def extraction_agent(state: PaperIntelState) -> dict:
     if not raw_text or not raw_text.strip():
         logger.error("Extraction agent: raw_text is empty")
         return {
-            "errors": state.get("errors", []) + ["Extraction: raw_text is empty"],
+            "errors": ["Extraction: raw_text is empty"],
             "processing_stage": "failed",
         }
 
@@ -230,7 +230,7 @@ def extraction_agent(state: PaperIntelState) -> dict:
     if llm_error:
         logger.error("LLM call failed: %s", llm_error)
         return {
-            "errors": state.get("errors", []) + [llm_error],
+            "errors": [llm_error],
             "processing_stage": "failed",
         }
 
@@ -243,8 +243,7 @@ def extraction_agent(state: PaperIntelState) -> dict:
         if repair_error:
             logger.error("Repair failed: %s", repair_error)
             return {
-                "errors": state.get("errors", [])
-                + [f"Extraction parse failed: {parse_error}; repair failed: {repair_error}"],
+                "errors": [f"Extraction parse failed: {parse_error}; repair failed: {repair_error}"],
                 "processing_stage": "failed",
             }
 
@@ -253,7 +252,7 @@ def extraction_agent(state: PaperIntelState) -> dict:
     if parse_error or extraction is None:
         logger.error("Extraction failed after repair: %s", parse_error)
         return {
-            "errors": state.get("errors", []) + [parse_error or "Extraction failed"],
+            "errors": [parse_error or "Extraction failed"],
             "processing_stage": "failed",
         }
 
@@ -278,7 +277,6 @@ def extraction_agent(state: PaperIntelState) -> dict:
         "method_extraction": extraction,
         "needs_human_review": needs_review,
         "human_review_reason": f"Low confidence: {confidence:.2f}" if needs_review else None,
-        "errors": state.get("errors", []),
         "processing_stage": "benchmark",
         "confidence_scores": {
             **state.get("confidence_scores", {}),

@@ -7,10 +7,12 @@ from agents.benchmark import benchmark_analyst_agent
 from agents.extraction import extraction_agent
 from agents.human_review import human_review_node
 from agents.ingestion import ingestion_agent
+from agents.readiness import readiness_agent
 from agents.supervisor import (
     route_after_benchmark,
     route_after_extraction,
     route_after_ingestion,
+    route_after_readiness,
     supervisor_node,
 )
 from models.state import PaperIntelState
@@ -59,6 +61,7 @@ def build_graph() -> StateGraph:
     graph.add_node("human_review", human_review_node)
     graph.add_node("error", _error_node)
     graph.add_node("benchmark", benchmark_analyst_agent)
+    graph.add_node("readiness", readiness_agent)
 
     graph.set_entry_point("supervisor")
 
@@ -98,7 +101,16 @@ def build_graph() -> StateGraph:
         "benchmark",
         route_after_benchmark,
         {
-            "readiness": END,
+            "readiness": "readiness",
+            "error": "error",
+        },
+    )
+
+    graph.add_conditional_edges(
+        "readiness",
+        route_after_readiness,
+        {
+            "report": END,
             "error": "error",
         },
     )

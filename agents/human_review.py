@@ -34,6 +34,5 @@ def human_review_node(state: PaperIntelState) -> dict:
     return {
         "needs_human_review": False,
         "human_review_reason": None,
-        "errors": state.get("errors", []),
         "processing_stage": "benchmark",
     }

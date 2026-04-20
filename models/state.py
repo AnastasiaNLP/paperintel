@@ -1,3 +1,4 @@
+from operator import add as add_lists
 from typing import TypedDict, List, Optional, Annotated, Literal
 from langgraph.graph.message import add_messages
 from models.schemas import (
@@ -71,5 +72,5 @@ class PaperIntelState(TypedDict):
 
     # Metadata
     messages: Annotated[list, add_messages]
-    errors: List[str]
+    errors: Annotated[List[str], add_lists]
     cost_tracking: dict

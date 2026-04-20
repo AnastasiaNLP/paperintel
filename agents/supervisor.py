@@ -27,7 +27,7 @@ def supervisor_node(state: PaperIntelState) -> dict:
     if "processing_stage" not in state:
         logger.error("Supervisor: processing_stage is missing from state")
         return {
-            "errors": state.get("errors", []) + ["Supervisor: processing_stage is missing"],
+            "errors": ["Supervisor: processing_stage is missing"],
             "processing_stage": "failed",
         }
 
