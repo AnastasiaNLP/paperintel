@@ -23,6 +23,7 @@ ProcessingStage = Literal[
     "topic_selection",
     "human_review",
     "failed",
+    "completed",
 ]
 
 

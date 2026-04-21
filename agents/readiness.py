@@ -22,25 +22,29 @@ _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
-_NOISE_GITHUB_OWNERS = {
-    "pytorch",
-    "tensorflow",
-    "google",
-    "microsoft",
-    "facebookresearch",
-    "openai",
-    "keras-team",
-    "nvidia",
-    "deepmind",
-    "apache",
-    "scipy",
-    "numpy",
-    "pandas-dev",
-    "scikit-learn",
-    "matplotlib",
-    "meta-llama",
-    "wildeval",
-    "lm-sys",
+# Specific generic framework repos to skip, not an owner-wide blacklist.
+# This skips "pytorch/pytorch" and "huggingface/transformers", but still allows
+# paper repos such as "facebookresearch/llama", "openai/whisper", and
+# "google-research/bert".
+_GENERIC_FRAMEWORK_REPOS = {
+    ("pytorch", "pytorch"),
+    ("tensorflow", "tensorflow"),
+    ("tensorflow", "models"),
+    ("google-research", "google-research"),
+    ("huggingface", "transformers"),
+    ("huggingface", "diffusers"),
+    ("huggingface", "datasets"),
+    ("huggingface", "accelerate"),
+    ("huggingface", "peft"),
+    ("huggingface", "tokenizers"),
+    ("scikit-learn", "scikit-learn"),
+    ("numpy", "numpy"),
+    ("pandas-dev", "pandas"),
+    ("scipy", "scipy"),
+    ("keras-team", "keras"),
+    ("matplotlib", "matplotlib"),
+    ("apache", "spark"),
+    ("apache", "flink"),
 }
 
 VALID_MATURITY_LEVELS = {"research_only", "experimental", "production_ready"}
@@ -51,6 +55,8 @@ MAX_LLM_HF_CANDIDATES = 2
 PRODUCTION_READY_MIN_STARS = 500
 RESOURCE_HINTS_CHARS = 2000
 SNIPPETS_HEAD_CHARS = 3000
+SNIPPETS_TAIL_CHARS = 2000
+SNIPPETS_MAX_HINTS = 80
 
 
 def _strip_fences(text: str) -> str:
@@ -82,7 +88,19 @@ def _extract_text_block(
     return raw.strip(), None
 
 
+def _normalize_github_url(url: str) -> str:
+    """Canonicalize GitHub URLs for dedup across trailing slash, .git, and case."""
+    return url.rstrip("/").removesuffix(".git").lower()
+
+
 def _extract_resource_snippets(raw_text: Optional[str]) -> str:
+    """
+    Sample the start and end of the paper plus keyword-matching lines.
+
+    Availability/model-card sections often appear at the end of a paper, while
+    method framing appears at the start. This keeps snippets compact without
+    losing common code/model availability sections.
+    """
     if not raw_text:
         return ""
 
@@ -125,12 +143,25 @@ def _extract_resource_snippets(raw_text: Optional[str]) -> str:
             relevant.append(stripped)
 
     head = raw_text[:SNIPPETS_HEAD_CHARS]
-    hints = "\n".join(relevant[:40])
-    result = f"[Paper start]:\n{head}\n\n[Relevant lines]:\n{hints}"
-    return result[: RESOURCE_HINTS_CHARS + SNIPPETS_HEAD_CHARS]
+    tail = (
+        raw_text[-SNIPPETS_TAIL_CHARS:]
+        if len(raw_text) > SNIPPETS_HEAD_CHARS + SNIPPETS_TAIL_CHARS
+        else ""
+    )
+    hints = "\n".join(relevant[:SNIPPETS_MAX_HINTS])
+
+    parts = [f"[Paper start]:\n{head}"]
+    if tail:
+        parts.append(f"[Paper end]:\n{tail}")
+    parts.append(f"[Relevant lines]:\n{hints}")
+
+    result = "\n\n".join(parts)
+    cap = RESOURCE_HINTS_CHARS + SNIPPETS_HEAD_CHARS + SNIPPETS_TAIL_CHARS
+    return result[:cap]
 
 
 def _extract_github_urls(raw_text: str) -> list[str]:
+    """Extract GitHub URLs and skip only specific generic framework repos."""
     pattern = (
         r"https?://(?:www\.)?github\.com/"
         r"([a-zA-Z0-9_\-]+)/([a-zA-Z0-9_\-\.]+)"
@@ -142,12 +173,16 @@ def _extract_github_urls(raw_text: str) -> list[str]:
     candidates = []
     for owner, repo in matches:
         repo = repo.rstrip(".,);]}")
-        url = f"https://github.com/{owner}/{repo}".removesuffix(".git")
+        owner_lower = owner.lower()
+        repo_lower = repo.lower()
 
-        if owner.lower() in _NOISE_GITHUB_OWNERS:
+        if (owner_lower, repo_lower) in _GENERIC_FRAMEWORK_REPOS:
             continue
-        if url not in seen:
-            seen.add(url)
+
+        url = f"https://github.com/{owner}/{repo}".removesuffix(".git")
+        key = _normalize_github_url(url)
+        if key not in seen:
+            seen.add(key)
             candidates.append(url)
 
     return candidates
@@ -311,9 +346,20 @@ def _collect_github_evidence(raw_text: Optional[str]) -> dict:
     }
 
 
-def _verify_hf_model(model_id: str) -> bool:
+def _verify_hf_model(model_id: str) -> dict:
+    """
+    Verify a HuggingFace model candidate and preserve reason for debugging.
+
+    Returns:
+      - verified=True, reason="ok" for 200 with valid model JSON
+      - verified=False, reason="not_found" for 404 or other non-200 statuses
+      - verified=False, reason="rate_limited" for 429
+      - verified=False, reason="unreachable" for network/timeout failures
+      - verified=False, reason="malformed" for invalid model id shape
+      - verified=False, reason="bad_response" for 200 with unusable body
+    """
     if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", model_id):
-        return False
+        return {"verified": False, "reason": "malformed"}
 
     try:
         response = httpx.get(
@@ -321,9 +367,24 @@ def _verify_hf_model(model_id: str) -> bool:
             timeout=httpx.Timeout(10.0, connect=5.0),
             follow_redirects=True,
         )
-        return response.status_code == 200
-    except Exception:
-        return False
+    except Exception as exc:
+        logger.warning("HF verify unreachable for %s: %s", model_id, exc)
+        return {"verified": False, "reason": "unreachable"}
+
+    if response.status_code == 429:
+        logger.warning("HF verify rate-limited for %s", model_id)
+        return {"verified": False, "reason": "rate_limited"}
+
+    if response.status_code == 200:
+        try:
+            data = response.json()
+        except Exception:
+            return {"verified": False, "reason": "bad_response"}
+        if isinstance(data, dict) and (data.get("id") or data.get("modelId")):
+            return {"verified": True, "reason": "ok"}
+        return {"verified": False, "reason": "bad_response"}
+
+    return {"verified": False, "reason": "not_found"}
 
 
 def _build_evidence_json(
@@ -441,13 +502,24 @@ def _verify_claims(claims: dict, hf: dict, github: dict) -> dict:
     verified_github = copy.deepcopy(best_repo) if best_repo else None
     verified_hf_model = hf.get("model_id")
 
-    already_checked = {item.get("url") for item in github.get("candidates", [])}
+    already_checked = {
+        _normalize_github_url(item.get("url", ""))
+        for item in github.get("candidates", [])
+    }
 
+    github_attempts = []
     for url in _as_string_list(claims.get("candidate_code_urls"))[:MAX_LLM_GITHUB_CANDIDATES]:
-        if "github.com/" not in url or url in already_checked:
+        if "github.com/" not in url:
+            github_attempts.append({"url": url, "outcome": "not_github"})
+            continue
+
+        normalized_url = _normalize_github_url(url)
+        if normalized_url in already_checked:
+            github_attempts.append({"url": url, "outcome": "already_checked"})
             continue
 
         info = _check_single_github(url)
+        attempt_outcome = info.get("status", "unknown")
         if info.get("status") == "found":
             if verified_github is None or info.get("stars", 0) > verified_github.get("stars", 0):
                 verified_github = info
@@ -456,12 +528,16 @@ def _verify_claims(claims: dict, hf: dict, github: dict) -> dict:
                     url,
                     info.get("stars", 0),
                 )
+        github_attempts.append({"url": url, "outcome": attempt_outcome})
 
+    hf_attempts: list[dict] = []
     if not verified_hf_model:
         for model_id in _as_string_list(claims.get("candidate_hf_models"))[
             :MAX_LLM_HF_CANDIDATES
         ]:
-            if _verify_hf_model(model_id):
+            outcome = _verify_hf_model(model_id)
+            hf_attempts.append({"model_id": model_id, **outcome})
+            if outcome.get("verified"):
                 verified_hf_model = model_id
                 logger.info("LLM HF candidate verified: %s", model_id)
                 break
@@ -469,6 +545,8 @@ def _verify_claims(claims: dict, hf: dict, github: dict) -> dict:
     return {
         "verified_github": verified_github,
         "verified_hf_model": verified_hf_model,
+        "github_attempts": github_attempts,
+        "hf_attempts": hf_attempts,
     }
 
 
@@ -477,6 +555,44 @@ def _append_downgrade_reason(reasoning: str, note: str) -> str:
     if reasoning:
         return f"{reasoning} {note}"
     return note
+
+
+def _is_inference_gpu_requirement(gpu_req: str) -> bool:
+    """
+    Keep the requirement if it explicitly mentions inference.
+    Drop it only when the text is training-only.
+    """
+    text = gpu_req.lower()
+
+    inference_hints = [
+        "inference",
+        "serving",
+        "serve",
+        "deploy",
+        "deployment",
+        "runtime",
+        "per token",
+        "per-token",
+        "tok/s",
+    ]
+    training_hints = [
+        "training",
+        "train",
+        "trained",
+        "pretraining",
+        "pre-training",
+        "fine-tun",
+        "finetun",
+    ]
+
+    has_inference = any(hint in text for hint in inference_hints)
+    has_training = any(hint in text for hint in training_hints)
+
+    if has_inference:
+        return True
+    if has_training:
+        return False
+    return True
 
 
 def _normalize(
@@ -511,16 +627,25 @@ def _normalize(
             "Normalization downgraded maturity to research_only because no verified GitHub repo or HuggingFace model was available after candidate verification.",
         )
 
+    # Production-ready requires the stars floor plus at least one additional
+    # strong signal: releases or verified HF model. This keeps production_ready
+    # reachable for mature code repos without HF models while preventing low-
+    # evidence artifacts from being marked production-ready.
     if has_open_code and maturity_level == "production_ready":
         stars = verified_github.get("stars", 0)
         has_releases = bool(verified_github.get("has_releases"))
         hf_ok = bool(verified_hf_model)
 
-        if stars < PRODUCTION_READY_MIN_STARS or not has_releases or not hf_ok:
+        if stars < PRODUCTION_READY_MIN_STARS or not (has_releases or hf_ok):
             maturity_level = "experimental"
             maturity_reasoning = _append_downgrade_reason(
                 maturity_reasoning,
-                f"Normalization downgraded maturity to experimental because production_ready requires {PRODUCTION_READY_MIN_STARS}+ stars, releases, and a verified HuggingFace model; observed stars={stars}, releases={has_releases}, hf_model={hf_ok}.",
+                (
+                    f"Normalization downgraded maturity to experimental: "
+                    f"production_ready requires >= {PRODUCTION_READY_MIN_STARS} stars "
+                    f"plus at least one of releases or verified HF model; "
+                    f"observed stars={stars}, releases={has_releases}, hf_model={hf_ok}."
+                ),
             )
 
     if has_open_code and maturity_level == "research_only":
@@ -531,7 +656,8 @@ def _normalize(
         )
 
     gpu_req = claims.get("min_gpu_requirement") or None
-    if gpu_req and any(word in gpu_req.lower() for word in ["training", "train", "trained"]):
+    if gpu_req and not _is_inference_gpu_requirement(gpu_req):
+        logger.info("Dropping min_gpu_requirement because it is training-only: %r", gpu_req)
         gpu_req = None
 
     try:
@@ -612,10 +738,15 @@ def readiness_agent(state: PaperIntelState) -> dict:
 
     verified = _verify_claims(claims, hf, github)
     logger.info(
-        "Verified: github_url=%s hf_model=%s",
+        "Verified: github_url=%s hf_model=%s github_attempts=%d hf_attempts=%d",
         (verified.get("verified_github") or {}).get("url"),
         verified.get("verified_hf_model"),
+        len(verified.get("github_attempts", [])),
+        len(verified.get("hf_attempts", [])),
     )
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("GitHub attempts: %s", verified.get("github_attempts"))
+        logger.debug("HF attempts: %s", verified.get("hf_attempts"))
 
     result, norm_error = _normalize(claims, verified, hf, framework_mentions)
     if norm_error:

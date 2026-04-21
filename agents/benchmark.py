@@ -23,6 +23,35 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 MAX_TABLE_CHARS = 14_000
 MAX_PAGE_CONTEXT_CHARS = 1_500
 MAX_FALLBACK_TEXT_CHARS = 12_000
+MAX_BENCHMARK_CONTEXT_CHARS = 18_000
+BENCHMARK_CONTEXT_WINDOW_CHARS = 1_200
+MAX_BENCHMARK_CONTEXT_WINDOWS = 24
+BENCHMARK_CONTEXT_KEYWORDS = [
+    "MATH-500",
+    "MATH",
+    "AIME",
+    "GPQA",
+    "LiveCodeBench",
+    "Codeforces",
+    "HumanEval",
+    "MBPP",
+    "MMLU",
+    "MMLU-Pro",
+    "SWE-bench",
+    "GSM8K",
+    "DROP",
+    "BBH",
+    "IFEval",
+    "AlpacaEval",
+    "Arena-Hard",
+    "pass@1",
+    "cons@",
+    "accuracy",
+    "benchmark",
+    "evaluation",
+    "results",
+    "Table",
+]
 
 
 def _strip_json_fences(text: str) -> str:
@@ -75,9 +104,9 @@ def _format_rows(rows: list[list[object]]) -> str:
 def _format_tables_with_context(
     tables: list,
     text_by_page: Optional[dict[int, str]],
-) -> str:
+) -> tuple[str, bool]:
     if not tables:
-        return "No tables extracted from PDF."
+        return "No tables extracted from PDF.", False
 
     parts: list[str] = []
 
@@ -101,20 +130,103 @@ def _format_tables_with_context(
         parts.append(table_text)
 
     result = "\n\n---\n\n".join(parts)
-    if len(result) > MAX_TABLE_CHARS:
+    truncated = len(result) > MAX_TABLE_CHARS
+    if truncated:
         logger.info(
             "Tables context truncated from %d to %d chars",
             len(result),
             MAX_TABLE_CHARS,
         )
         result = result[:MAX_TABLE_CHARS] + "\n[truncated]"
-    return result
+    return result, truncated
 
 
 def _format_fallback_text(raw_text: Optional[str]) -> str:
     if not raw_text:
         return ""
     return raw_text[-MAX_FALLBACK_TEXT_CHARS:]
+
+
+def _format_benchmark_context(raw_text: Optional[str]) -> str:
+    """
+    Extract targeted text windows around benchmark/result keywords.
+
+    Complex PDFs often produce unusable table rows while the surrounding text still
+    contains benchmark names and values. This context is mainly for Sonnet fallback.
+    """
+    if not raw_text:
+        return ""
+
+    lowered = raw_text.lower()
+    windows: list[tuple[int, int]] = []
+
+    for keyword in BENCHMARK_CONTEXT_KEYWORDS:
+        pattern = re.escape(keyword.lower())
+        for match_index, match in enumerate(re.finditer(pattern, lowered)):
+            if len(windows) >= MAX_BENCHMARK_CONTEXT_WINDOWS:
+                break
+            if match_index >= 4:
+                break
+            start = max(0, match.start() - BENCHMARK_CONTEXT_WINDOW_CHARS)
+            end = min(len(raw_text), match.end() + BENCHMARK_CONTEXT_WINDOW_CHARS)
+            windows.append((start, end))
+        if len(windows) >= MAX_BENCHMARK_CONTEXT_WINDOWS:
+            break
+
+    if not windows:
+        return _format_fallback_text(raw_text)
+
+    windows.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in windows:
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            prev_start, prev_end = merged[-1]
+            merged[-1] = (prev_start, max(prev_end, end))
+
+    parts = []
+    total_chars = 0
+    for index, (start, end) in enumerate(merged, start=1):
+        chunk = raw_text[start:end].strip()
+        if not chunk:
+            continue
+        section = f"[Benchmark context window {index}]\n{chunk}"
+        if total_chars + len(section) > MAX_BENCHMARK_CONTEXT_CHARS:
+            remaining = MAX_BENCHMARK_CONTEXT_CHARS - total_chars
+            if remaining > 500:
+                parts.append(section[:remaining] + "\n[truncated]")
+            break
+        parts.append(section)
+        total_chars += len(section)
+
+    return "\n\n---\n\n".join(parts)
+
+
+def _has_complex_tables(tables: list) -> bool:
+    return any(bool(table.get("needs_vision")) for table in tables)
+
+
+def _should_include_fallback_text(
+    *,
+    tables: list,
+    tables_truncated: bool,
+    complex_tables: bool,
+) -> bool:
+    return not tables or tables_truncated or complex_tables
+
+
+def _should_use_sonnet_fallback(
+    *,
+    benchmarks: list[BenchmarkResult],
+    parse_error: Optional[str],
+    tables: list,
+    tables_truncated: bool,
+    complex_tables: bool,
+) -> bool:
+    if benchmarks:
+        return False
+    return bool(parse_error or tables_truncated or complex_tables or not tables)
 
 
 def _extract_text_block(response: object, *, context: str) -> tuple[Optional[str], Optional[str]]:
@@ -132,6 +244,8 @@ def _extract_text_block(response: object, *, context: str) -> tuple[Optional[str
 
 def _call_llm(
     *,
+    model: str,
+    context_label: str,
     proposed_method: str,
     tables_text: str,
     fallback_text: str,
@@ -147,25 +261,30 @@ def _call_llm(
 
     try:
         response = _client.messages.create(
-            model=settings.haiku_model,
+            model=model,
             max_tokens=2500,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        raw, error = _extract_text_block(response, context="Benchmark LLM")
+        raw, error = _extract_text_block(response, context=context_label)
         if error:
             return None, error
-        logger.info("Benchmark LLM response: %d chars", len(raw or ""))
+        logger.info("%s response: %d chars", context_label, len(raw or ""))
         return raw, None
     except Exception as exc:
-        logger.exception("Benchmark LLM call failed")
-        return None, f"Benchmark LLM call failed: {exc}"
+        logger.exception("%s call failed", context_label)
+        return None, f"{context_label} call failed: {exc}"
 
 
-def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
+def _call_llm_repair(
+    bad_json: str,
+    *,
+    model: str,
+    context_label: str,
+) -> tuple[Optional[str], Optional[str]]:
     try:
         response = _client.messages.create(
-            model=settings.haiku_model,
+            model=model,
             max_tokens=2500,
             system="You are a JSON repair specialist. Return ONLY valid JSON array, no explanation.",
             messages=[
@@ -179,10 +298,10 @@ def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
                 }
             ],
         )
-        return _extract_text_block(response, context="Benchmark repair LLM")
+        return _extract_text_block(response, context=context_label)
     except Exception as exc:
-        logger.exception("Benchmark repair LLM call failed")
-        return None, f"Benchmark repair LLM call failed: {exc}"
+        logger.exception("%s call failed", context_label)
+        return None, f"{context_label} call failed: {exc}"
 
 
 def _parse_benchmarks(raw_json: str) -> tuple[list[BenchmarkResult], Optional[str]]:
@@ -254,8 +373,17 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
         logger.warning("Benchmark: pdf_path missing, falling back to raw_text only")
         new_errors.append("Benchmark: pdf_path missing, using raw_text fallback")
 
-    tables_text = _format_tables_with_context(tables, text_by_page)
-    fallback_text = "" if tables else _format_fallback_text(raw_text)
+    tables_text, tables_truncated = _format_tables_with_context(tables, text_by_page)
+    complex_tables = _has_complex_tables(tables)
+    fallback_text = (
+        _format_benchmark_context(raw_text)
+        if _should_include_fallback_text(
+            tables=tables,
+            tables_truncated=tables_truncated,
+            complex_tables=complex_tables,
+        )
+        else ""
+    )
 
     if not tables and not fallback_text:
         return {
@@ -265,6 +393,8 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
         }
 
     raw_json, llm_error = _call_llm(
+        model=settings.haiku_model,
+        context_label="Benchmark Haiku LLM",
         proposed_method=proposed_method,
         tables_text=tables_text,
         fallback_text=fallback_text,
@@ -283,17 +413,86 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
     if parse_error:
         logger.warning("Benchmark parse error: %s; attempting repair", parse_error)
         parse_warning = "Benchmark initial parse failed and required repair"
-        repaired_json, repair_error = _call_llm_repair(raw_json or "")
+        repaired_json, repair_error = _call_llm_repair(
+            raw_json or "",
+            model=settings.haiku_model,
+            context_label="Benchmark Haiku repair LLM",
+        )
 
         if repair_error:
-            return {
-                "errors": new_errors
-                + [f"Benchmark parse failed: {parse_error}; repair failed: {repair_error}"],
-                "benchmarks": [],
-                "processing_stage": "readiness",
-            }
+            logger.warning(
+                "Benchmark Haiku repair failed; Sonnet fallback may run: %s",
+                repair_error,
+            )
+            new_errors.append(
+                f"Benchmark Haiku parse failed: {parse_error}; repair failed: {repair_error}"
+            )
+            parse_error = f"{parse_error}; repair failed: {repair_error}"
+        else:
+            benchmarks, parse_error = _parse_benchmarks(repaired_json or "")
 
-        benchmarks, parse_error = _parse_benchmarks(repaired_json or "")
+    if _should_use_sonnet_fallback(
+        benchmarks=benchmarks,
+        parse_error=parse_error,
+        tables=tables,
+        tables_truncated=tables_truncated,
+        complex_tables=complex_tables,
+    ):
+        logger.info(
+            "Benchmark Sonnet fallback triggered: benchmarks=%d parse_error=%s "
+            "tables=%d truncated=%s complex=%s",
+            len(benchmarks),
+            bool(parse_error),
+            len(tables),
+            tables_truncated,
+            complex_tables,
+        )
+        fallback_warning = (
+            "Benchmark Sonnet fallback used due to complex, truncated, empty, or "
+            "unparseable benchmark context"
+        )
+        sonnet_fallback_text = fallback_text or _format_benchmark_context(raw_text)
+        sonnet_json, sonnet_error = _call_llm(
+            model=settings.sonnet_model,
+            context_label="Benchmark Sonnet fallback LLM",
+            proposed_method=proposed_method,
+            tables_text=tables_text,
+            fallback_text=sonnet_fallback_text,
+        )
+
+        if sonnet_error:
+            new_errors.append(f"{fallback_warning}; failed: {sonnet_error}")
+        else:
+            sonnet_benchmarks, sonnet_parse_error = _parse_benchmarks(sonnet_json or "")
+
+            if sonnet_parse_error:
+                repaired_json, repair_error = _call_llm_repair(
+                    sonnet_json or "",
+                    model=settings.sonnet_model,
+                    context_label="Benchmark Sonnet repair LLM",
+                )
+                if repair_error:
+                    new_errors.append(
+                        f"{fallback_warning}; parse failed: {sonnet_parse_error}; "
+                        f"repair failed: {repair_error}"
+                    )
+                else:
+                    sonnet_benchmarks, sonnet_parse_error = _parse_benchmarks(
+                        repaired_json or ""
+                    )
+
+            if sonnet_parse_error:
+                new_errors.append(
+                    f"{fallback_warning}; parse failed after repair: {sonnet_parse_error}"
+                )
+            else:
+                benchmarks = sonnet_benchmarks
+                parse_error = None
+                parse_warning = (
+                    f"{parse_warning}; {fallback_warning}"
+                    if parse_warning
+                    else fallback_warning
+                )
 
     if parse_error:
         return {

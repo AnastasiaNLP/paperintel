@@ -8,6 +8,7 @@ from agents.extraction import extraction_agent
 from agents.human_review import human_review_node
 from agents.ingestion import ingestion_agent
 from agents.readiness import readiness_agent
+from agents.report import report_agent
 from agents.supervisor import (
     route_after_benchmark,
     route_after_extraction,
@@ -62,6 +63,7 @@ def build_graph() -> StateGraph:
     graph.add_node("error", _error_node)
     graph.add_node("benchmark", benchmark_analyst_agent)
     graph.add_node("readiness", readiness_agent)
+    graph.add_node("report", report_agent)
 
     graph.set_entry_point("supervisor")
 
@@ -110,11 +112,12 @@ def build_graph() -> StateGraph:
         "readiness",
         route_after_readiness,
         {
-            "report": END,
+            "report": "report",
             "error": "error",
         },
     )
 
+    graph.add_edge("report", END)
     graph.add_edge("error", END)
 
     return graph
@@ -127,10 +130,24 @@ def create_app(use_checkpointing: bool = True):
         try:
             import psycopg
             from langgraph.checkpoint.postgres import PostgresSaver
+            from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
             from config.settings import settings
 
             conn = psycopg.connect(settings.postgres_url)
-            checkpointer = PostgresSaver(conn)
+
+            # Explicit allowlist for checkpoint deserialization hardening.
+            # Lists every project-owned Pydantic model that can appear in state.
+            serde = JsonPlusSerializer(
+                allowed_msgpack_modules=[
+                    ("models.schemas", "PaperMetadata"),
+                    ("models.schemas", "MethodExtraction"),
+                    ("models.schemas", "BenchmarkResult"),
+                    ("models.schemas", "ProductionReadiness"),
+                    ("models.schemas", "EngineerReport"),
+                ],
+            )
+
+            checkpointer = PostgresSaver(conn, serde=serde)
             checkpointer.setup()
             app = graph.compile(
                 checkpointer=checkpointer,
