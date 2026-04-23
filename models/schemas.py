@@ -87,9 +87,12 @@ class ComparisonMatrixRow(BaseModel):
     values_by_paper: dict[int, Optional[float]]
     units_by_paper: dict[int, Optional[str]] = Field(default_factory=dict)
     conditions_by_paper: dict[int, Optional[str]] = Field(default_factory=dict)
+    duplicate_counts_by_paper: dict[int, int] = Field(default_factory=dict)
     winner_index: Optional[int] = None
     winner_margin: Optional[float] = None
     higher_is_better: bool = True
+    is_comparable: bool = True
+    comparability_notes: Optional[str] = None
 
 
 class ConstraintRecommendation(BaseModel):
@@ -113,6 +116,12 @@ class ComparisonReport(BaseModel):
     papers_summary: List[dict] = Field(default_factory=list)
     comparison_matrix: List[ComparisonMatrixRow] = Field(default_factory=list)
     unique_tasks_per_paper: dict[int, List[str]] = Field(default_factory=dict)
+    unique_rows_per_paper: dict[int, List[str]] = Field(default_factory=dict)
+    comparable_rows: int = 0
+    rows_with_winner: int = 0
+    benchmark_overlap_ratio: float = 0.0
+    wins_by_paper: dict[int, int] = Field(default_factory=dict)
+    winner_basis: str = "no_clear_winner"
     trade_offs: str
     recommendations: List[ConstraintRecommendation] = Field(default_factory=list)
     overall_winner_index: Optional[int] = None
