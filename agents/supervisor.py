@@ -12,6 +12,7 @@ SupervisorRoute = Literal[
     "readiness",
     "report",
     "comparator",
+    "paper_failure_finalize",
     "human_review",
     "end",
     "error",
@@ -84,6 +85,8 @@ def route_after_ingestion(state: PaperIntelState) -> SupervisorRoute:
 
     if stage == "failed":
         return "error"
+    if stage == "paper_failure_finalize":
+        return "paper_failure_finalize"
     if stage == "topic_selection":
         return "end"
     if stage == "extraction":
@@ -103,6 +106,8 @@ def route_after_extraction(state: PaperIntelState) -> SupervisorRoute:
 
     if stage == "failed":
         return "error"
+    if stage == "paper_failure_finalize":
+        return "paper_failure_finalize"
     if needs_review:
         return "human_review"
     if stage == "benchmark":
@@ -120,16 +125,13 @@ def route_after_readiness(state: PaperIntelState) -> SupervisorRoute:
 
     if stage == "failed":
         return "error"
-
-    total_papers = state.get("total_papers", 1)
-    if total_papers > 1:
-        logger.info(
-            "Multi-paper detected (%d), comparator not yet implemented -> routing to report",
-            total_papers,
-        )
+    if stage == "paper_failure_finalize":
+        return "paper_failure_finalize"
+    if stage == "report":
         return "report"
 
-    return "report"
+    logger.warning("Unexpected stage after readiness: %s", stage)
+    return "error"
 
 def route_after_benchmark(state: PaperIntelState) -> SupervisorRoute:
     """Conditional edge after benchmark analyst."""
@@ -137,8 +139,28 @@ def route_after_benchmark(state: PaperIntelState) -> SupervisorRoute:
 
     if stage == "failed":
         return "error"
+    if stage == "paper_failure_finalize":
+        return "paper_failure_finalize"
     if stage == "readiness":
         return "readiness"
 
     logger.warning("Unexpected stage after benchmark: %s", stage)
     return "error"
+
+
+def route_after_finalize(state: PaperIntelState) -> SupervisorRoute:
+    """
+    Shared router after report_finalize and paper_failure_finalize.
+
+    current_paper_index is expected to be incremented already by the finalize
+    node that just ran.
+    """
+    current_index = state.get("current_paper_index", 0)
+    total = state.get("total_papers", 1)
+    papers = state.get("papers") or []
+
+    if current_index < total:
+        return "ingestion"
+    if len(papers) >= 2:
+        return "comparator"
+    return "end"

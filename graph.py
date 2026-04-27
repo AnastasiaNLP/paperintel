@@ -4,14 +4,18 @@ from typing import Literal
 from langgraph.graph import END, StateGraph
 
 from agents.benchmark import benchmark_analyst_agent
+from agents.comparator import comparator_agent
 from agents.extraction import extraction_agent
 from agents.human_review import human_review_node
 from agents.ingestion import ingestion_agent
+from agents.paper_failure_finalize import paper_failure_finalize_node
 from agents.readiness import readiness_agent
 from agents.report import report_agent
+from agents.report_finalize import report_finalize_node
 from agents.supervisor import (
     route_after_benchmark,
     route_after_extraction,
+    route_after_finalize,
     route_after_ingestion,
     route_after_readiness,
     supervisor_node,
@@ -64,6 +68,9 @@ def build_graph() -> StateGraph:
     graph.add_node("benchmark", benchmark_analyst_agent)
     graph.add_node("readiness", readiness_agent)
     graph.add_node("report", report_agent)
+    graph.add_node("report_finalize", report_finalize_node)
+    graph.add_node("paper_failure_finalize", paper_failure_finalize_node)
+    graph.add_node("comparator", comparator_agent)
 
     graph.set_entry_point("supervisor")
 
@@ -82,6 +89,7 @@ def build_graph() -> StateGraph:
         route_after_ingestion,
         {
             "extraction": "extraction",
+            "paper_failure_finalize": "paper_failure_finalize",
             "end": END,
             "error": "error",
         },
@@ -93,6 +101,7 @@ def build_graph() -> StateGraph:
         {
             "benchmark": "benchmark",
             "human_review": "human_review",
+            "paper_failure_finalize": "paper_failure_finalize",
             "error": "error",
         },
     )
@@ -104,6 +113,7 @@ def build_graph() -> StateGraph:
         route_after_benchmark,
         {
             "readiness": "readiness",
+            "paper_failure_finalize": "paper_failure_finalize",
             "error": "error",
         },
     )
@@ -113,11 +123,31 @@ def build_graph() -> StateGraph:
         route_after_readiness,
         {
             "report": "report",
+            "paper_failure_finalize": "paper_failure_finalize",
             "error": "error",
         },
     )
 
-    graph.add_edge("report", END)
+    graph.add_edge("report", "report_finalize")
+    graph.add_conditional_edges(
+        "report_finalize",
+        route_after_finalize,
+        {
+            "ingestion": "ingestion",
+            "comparator": "comparator",
+            "end": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "paper_failure_finalize",
+        route_after_finalize,
+        {
+            "ingestion": "ingestion",
+            "comparator": "comparator",
+            "end": END,
+        },
+    )
+    graph.add_edge("comparator", END)
     graph.add_edge("error", END)
 
     return graph
@@ -144,6 +174,10 @@ def create_app(use_checkpointing: bool = True):
                     ("models.schemas", "BenchmarkResult"),
                     ("models.schemas", "ProductionReadiness"),
                     ("models.schemas", "EngineerReport"),
+                    ("models.schemas", "PaperSlot"),
+                    ("models.schemas", "ComparisonMatrixRow"),
+                    ("models.schemas", "ConstraintRecommendation"),
+                    ("models.schemas", "ComparisonReport"),
                 ],
             )
 

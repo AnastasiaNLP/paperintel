@@ -6,6 +6,7 @@ from typing import Optional
 
 import anthropic
 
+from agents.error_utils import paper_error
 from config.settings import settings
 from models.schemas import BenchmarkResult
 from models.state import PaperIntelState
@@ -386,11 +387,11 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
     )
 
     if not tables and not fallback_text:
-        return {
-            "errors": new_errors + ["Benchmark: no tables or text context available"],
-            "benchmarks": [],
-            "processing_stage": "failed",
-        }
+        return paper_error(
+            state,
+            "; ".join(new_errors + ["Benchmark: no tables or text context available"]),
+            "benchmark",
+        )
 
     raw_json, llm_error = _call_llm(
         model=settings.haiku_model,
@@ -401,11 +402,11 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
     )
 
     if llm_error:
-        return {
-            "errors": new_errors + [llm_error],
-            "benchmarks": [],
-            "processing_stage": "failed",
-        }
+        return paper_error(
+            state,
+            "; ".join(new_errors + [llm_error]),
+            "benchmark",
+        )
 
     benchmarks, parse_error = _parse_benchmarks(raw_json or "")
     parse_warning = None

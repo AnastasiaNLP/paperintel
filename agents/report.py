@@ -6,6 +6,7 @@ from typing import Optional
 
 import anthropic
 
+from agents.error_utils import paper_error
 from config.settings import settings
 from models.schemas import (
     BenchmarkResult,
@@ -469,23 +470,25 @@ def report_agent(state: PaperIntelState) -> dict:
 
     raw, llm_error = _call_llm(evidence_json)
     if llm_error:
-        return {"errors": [llm_error], "processing_stage": "failed"}
+        return paper_error(state, llm_error, "report")
 
     claims, parse_error = _parse_claims(raw or "")
     if parse_error:
         repaired, repair_error = _call_llm_repair(raw or "")
         if repair_error:
-            return {
-                "errors": [f"Report parse failed: {parse_error}; repair: {repair_error}"],
-                "processing_stage": "failed",
-            }
+            return paper_error(
+                state,
+                f"Report parse failed: {parse_error}; repair: {repair_error}",
+                "report",
+            )
         claims, parse_error = _parse_claims(repaired or "")
 
     if parse_error or claims is None:
-        return {
-            "errors": [f"Report parse failed after repair: {parse_error}"],
-            "processing_stage": "failed",
-        }
+        return paper_error(
+            state,
+            f"Report parse failed after repair: {parse_error}",
+            "report",
+        )
 
     engineer_report, norm_error = _normalize_engineer_report(
         claims,
@@ -495,10 +498,11 @@ def report_agent(state: PaperIntelState) -> dict:
         readiness,
     )
     if norm_error or engineer_report is None:
-        return {
-            "errors": [norm_error or "Report normalization failed"],
-            "processing_stage": "failed",
-        }
+        return paper_error(
+            state,
+            norm_error or "Report normalization failed",
+            "report",
+        )
 
     markdown = _render_markdown_report(
         metadata,

@@ -7,6 +7,7 @@ from models.schemas import (
     BenchmarkResult,
     ProductionReadiness,
     EngineerReport,
+    ComparisonReport,
 )
 
 
@@ -20,6 +21,10 @@ ProcessingStage = Literal[
     "benchmark",
     "readiness",
     "report",
+    "report_finalize",
+    "paper_failure_finalize",
+    "comparator",
+    "comparison_completed",
     "topic_selection",
     "human_review",
     "failed",
@@ -42,6 +47,7 @@ class PaperIntelState(TypedDict):
     # Input
     input_type: str        # "url" | "pdf" | "topic_query"
     input_value: str       # URL, file path, or search query
+    batch_urls: Optional[List[str]]
 
     # Paper data
     papers: Annotated[list, add_to_list]
@@ -57,7 +63,8 @@ class PaperIntelState(TypedDict):
     ingestion_provenance: Optional[IngestionProvenance]
 
     # Multi-paper
-    comparison_report: Optional[str]
+    comparison_markdown: Optional[str]
+    comparison_report: Optional[ComparisonReport]
 
     # Final output
     engineer_report: Optional[EngineerReport]
@@ -70,6 +77,9 @@ class PaperIntelState(TypedDict):
     needs_human_review: bool
     human_review_reason: Optional[str]
     confidence_scores: dict
+    paper_failed: bool
+    paper_failure_reason: Optional[str]
+    failed_node: Optional[str]
 
     # Metadata
     messages: Annotated[list, add_messages]

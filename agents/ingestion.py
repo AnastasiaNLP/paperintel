@@ -2,6 +2,7 @@ import logging
 import re
 from typing import Optional
 
+from agents.error_utils import fatal_error, is_batch, paper_error
 from models.schemas import PaperMetadata
 from models.state import IngestionProvenance, PaperIntelState
 from tools.arxiv_client import download_pdf, get_metadata
@@ -115,12 +116,10 @@ def _success_extraction(state: PaperIntelState, **kwargs) -> dict:
 def _failure(state: PaperIntelState, reason: str, level: str = "error") -> dict:
     if level == "error":
         logger.error("Ingestion failed: %s", reason)
+        return paper_error(state, reason, "ingestion")
     else:
         logger.warning("Ingestion warning: %s", reason)
-    return {
-        "errors": [reason],
-        "processing_stage": "failed",
-    }
+        return fatal_error(reason, "ingestion")
 
 
 def _validate_input(state: PaperIntelState) -> Optional[str]:
@@ -129,18 +128,54 @@ def _validate_input(state: PaperIntelState) -> Optional[str]:
 
     if not input_type:
         return "input_type is missing"
-    if not input_value or not input_value.strip():
-        return "input_value is empty"
     if input_type not in ("url", "pdf", "topic_query"):
         return f"Unknown input_type: {input_type!r}"
+
+    if is_batch(state):
+        if input_type != "url":
+            return "batch mode currently supports only input_type='url'"
+
+        batch_urls = state.get("batch_urls")
+        if not isinstance(batch_urls, list) or len(batch_urls) <= 1:
+            return "batch_urls must be a list of 2+ URLs in batch mode"
+
+        total_papers = state.get("total_papers")
+        if total_papers != len(batch_urls):
+            return (
+                f"total_papers mismatch: expected {len(batch_urls)} from batch_urls, "
+                f"got {total_papers!r}"
+            )
+
+        current_index = state.get("current_paper_index")
+        if not isinstance(current_index, int) or current_index < 0:
+            return f"current_paper_index is invalid: {current_index!r}"
+        if current_index >= len(batch_urls):
+            return f"batch_urls index {current_index} out of range"
+
+        current_url = batch_urls[current_index]
+        if not isinstance(current_url, str) or not current_url.strip():
+            return f"batch URL at index {current_index} is empty"
+        if not re.search(r"https?://", current_url):
+            return f"batch URL at index {current_index} does not look like a URL: {current_url!r}"
+        return None
+
+    if not input_value or not input_value.strip():
+        return "input_value is empty"
     if input_type == "url" and not re.search(r"https?://", input_value):
         return f"input_value does not look like a URL: {input_value!r}"
 
     return None
 
 
-def _route_url(state: PaperIntelState) -> dict:
-    url = state["input_value"]
+def _resolve_current_url(state: PaperIntelState) -> str:
+    if is_batch(state):
+        batch_urls = state.get("batch_urls") or []
+        current_index = state.get("current_paper_index", 0)
+        return str(batch_urls[current_index])
+    return str(state["input_value"])
+
+
+def _route_url(state: PaperIntelState, url: str) -> dict:
     arxiv_id = _extract_arxiv_id(url)
 
     if not arxiv_id:
@@ -291,10 +326,9 @@ def _route_topic_query(state: PaperIntelState) -> dict:
         "Ingestion [topic_query] - supervisor not implemented yet, query=%s",
         query,
     )
-    return _failure(
-        state,
+    return fatal_error(
         "topic_query route requires supervisor implementation (Week 1 Day 5-7)",
-        level="warning",
+        "ingestion",
     )
 
 
@@ -305,13 +339,13 @@ def ingestion_agent(state: PaperIntelState) -> dict:
     """
     validation_error = _validate_input(state)
     if validation_error:
-        return _failure(state, validation_error, level="warning")
+        return fatal_error(validation_error, "ingestion")
 
     input_type = state["input_type"]
     logger.info("Ingestion agent started: input_type=%s", input_type)
 
     if input_type == "url":
-        return _route_url(state)
+        return _route_url(state, _resolve_current_url(state))
     elif input_type == "pdf":
         return _route_pdf(state)
     elif input_type == "topic_query":

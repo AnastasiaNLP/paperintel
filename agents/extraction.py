@@ -6,6 +6,7 @@ from typing import Optional
 
 import anthropic
 
+from agents.error_utils import paper_error
 from config.settings import settings
 from models.schemas import MethodExtraction
 from models.state import PaperIntelState
@@ -205,10 +206,7 @@ def extraction_agent(state: PaperIntelState) -> dict:
     raw_text = state.get("raw_text")
     if not raw_text or not raw_text.strip():
         logger.error("Extraction agent: raw_text is empty")
-        return {
-            "errors": ["Extraction: raw_text is empty"],
-            "processing_stage": "failed",
-        }
+        return paper_error(state, "Extraction: raw_text is empty", "extraction")
 
     provenance = state.get("ingestion_provenance") or {}
     text_source = provenance.get("text_source", "pdf")
@@ -229,10 +227,7 @@ def extraction_agent(state: PaperIntelState) -> dict:
 
     if llm_error:
         logger.error("LLM call failed: %s", llm_error)
-        return {
-            "errors": [llm_error],
-            "processing_stage": "failed",
-        }
+        return paper_error(state, llm_error, "extraction")
 
     extraction, confidence, parse_error = _parse_extraction(raw_json or "")
 
@@ -242,19 +237,17 @@ def extraction_agent(state: PaperIntelState) -> dict:
 
         if repair_error:
             logger.error("Repair failed: %s", repair_error)
-            return {
-                "errors": [f"Extraction parse failed: {parse_error}; repair failed: {repair_error}"],
-                "processing_stage": "failed",
-            }
+            return paper_error(
+                state,
+                f"Extraction parse failed: {parse_error}; repair failed: {repair_error}",
+                "extraction",
+            )
 
         extraction, confidence, parse_error = _parse_extraction(repaired_json or "")
 
     if parse_error or extraction is None:
         logger.error("Extraction failed after repair: %s", parse_error)
-        return {
-            "errors": [parse_error or "Extraction failed"],
-            "processing_stage": "failed",
-        }
+        return paper_error(state, parse_error or "Extraction failed", "extraction")
 
     confidence = min(confidence, max_confidence)
     needs_review = confidence < CONFIDENCE_THRESHOLD

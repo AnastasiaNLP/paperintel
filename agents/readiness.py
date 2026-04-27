@@ -8,6 +8,7 @@ from typing import Optional
 import anthropic
 import httpx
 
+from agents.error_utils import paper_error
 from config.settings import settings
 from models.schemas import ProductionReadiness
 from models.state import PaperIntelState
@@ -718,23 +719,25 @@ def readiness_agent(state: PaperIntelState) -> dict:
     evidence_json = _build_evidence_json(state, hf, github, snippets, framework_mentions)
     raw, llm_error = _call_llm(evidence_json)
     if llm_error:
-        return {"errors": [llm_error], "processing_stage": "failed"}
+        return paper_error(state, llm_error, "readiness")
 
     claims, parse_error = _parse_claims(raw or "")
     if parse_error:
         repaired, repair_error = _call_llm_repair(raw or "")
         if repair_error:
-            return {
-                "errors": [f"Readiness parse failed: {parse_error}; repair: {repair_error}"],
-                "processing_stage": "failed",
-            }
+            return paper_error(
+                state,
+                f"Readiness parse failed: {parse_error}; repair: {repair_error}",
+                "readiness",
+            )
         claims, parse_error = _parse_claims(repaired or "")
 
     if parse_error or claims is None:
-        return {
-            "errors": [f"Readiness parse failed after repair: {parse_error}"],
-            "processing_stage": "failed",
-        }
+        return paper_error(
+            state,
+            f"Readiness parse failed after repair: {parse_error}",
+            "readiness",
+        )
 
     verified = _verify_claims(claims, hf, github)
     logger.info(
@@ -750,7 +753,7 @@ def readiness_agent(state: PaperIntelState) -> dict:
 
     result, norm_error = _normalize(claims, verified, hf, framework_mentions)
     if norm_error:
-        return {"errors": [norm_error], "processing_stage": "failed"}
+        return paper_error(state, norm_error, "readiness")
 
     logger.info(
         "Readiness complete: maturity=%s has_code=%s hf=%s",
