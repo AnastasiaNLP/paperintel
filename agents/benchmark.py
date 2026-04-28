@@ -4,17 +4,14 @@ import re
 from pathlib import Path
 from typing import Optional
 
-import anthropic
-
 from agents.error_utils import paper_error
+from agents.llm_provider import call_text_llm
 from config.settings import settings
 from models.schemas import BenchmarkResult
 from models.state import PaperIntelState
 from tools.pdf_parser import extract_tables
 
 logger = logging.getLogger(__name__)
-
-_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 _PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "benchmark_prompt.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
@@ -260,21 +257,13 @@ def _call_llm(
     if fallback_text:
         user_content += f"\n\n## Fallback paper text context\n{fallback_text}"
 
-    try:
-        response = _client.messages.create(
-            model=model,
-            max_tokens=2500,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_content}],
-        )
-        raw, error = _extract_text_block(response, context=context_label)
-        if error:
-            return None, error
-        logger.info("%s response: %d chars", context_label, len(raw or ""))
-        return raw, None
-    except Exception as exc:
-        logger.exception("%s call failed", context_label)
-        return None, f"{context_label} call failed: {exc}"
+    return call_text_llm(
+        requested_model=model,
+        system_prompt=_SYSTEM_PROMPT,
+        user_content=user_content,
+        max_tokens=2500,
+        context_label=context_label,
+    )
 
 
 def _call_llm_repair(
@@ -283,26 +272,17 @@ def _call_llm_repair(
     model: str,
     context_label: str,
 ) -> tuple[Optional[str], Optional[str]]:
-    try:
-        response = _client.messages.create(
-            model=model,
-            max_tokens=2500,
-            system="You are a JSON repair specialist. Return ONLY valid JSON array, no explanation.",
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "The following JSON array is invalid. Fix it and return ONLY the corrected JSON array. "
-                        "If the input is prose or does not contain a JSON array, return [].\n\n"
-                        f"{bad_json[:4000]}"
-                    ),
-                }
-            ],
-        )
-        return _extract_text_block(response, context=context_label)
-    except Exception as exc:
-        logger.exception("%s call failed", context_label)
-        return None, f"{context_label} call failed: {exc}"
+    return call_text_llm(
+        requested_model=model,
+        system_prompt="You are a JSON repair specialist. Return ONLY valid JSON array, no explanation.",
+        user_content=(
+            "The following JSON array is invalid. Fix it and return ONLY the corrected JSON array. "
+            "If the input is prose or does not contain a JSON array, return [].\n\n"
+            f"{bad_json[:4000]}"
+        ),
+        max_tokens=2500,
+        context_label=context_label,
+    )
 
 
 def _parse_benchmarks(raw_json: str) -> tuple[list[BenchmarkResult], Optional[str]]:

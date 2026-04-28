@@ -163,7 +163,7 @@ def create_app(use_checkpointing: bool = True):
             from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
             from config.settings import settings
 
-            conn = psycopg.connect(settings.postgres_url)
+            conn = psycopg.connect(settings.postgres_url, autocommit=True)
 
             # Explicit allowlist for checkpoint deserialization hardening.
             # Lists every project-owned Pydantic model that can appear in state.

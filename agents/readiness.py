@@ -5,10 +5,10 @@ import re
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 import httpx
 
 from agents.error_utils import paper_error
+from agents.llm_provider import call_text_llm
 from config.settings import settings
 from models.schemas import ProductionReadiness
 from models.state import PaperIntelState
@@ -16,8 +16,6 @@ from tools.github_checker import check_repo, check_requirements
 from tools.paper_resources_client import get_resources
 
 logger = logging.getLogger(__name__)
-
-_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 _PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "readiness_prompt.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -447,42 +445,30 @@ def _build_evidence_json(
 
 
 def _call_llm(evidence_json: str) -> tuple[Optional[str], Optional[str]]:
-    try:
-        response = _client.messages.create(
-            model=settings.haiku_model,
-            max_tokens=800,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": evidence_json}],
-        )
-        return _extract_text_block(response, "Readiness LLM")
-    except Exception as exc:
-        logger.exception("Readiness LLM failed")
-        return None, f"Readiness LLM failed: {exc}"
+    return call_text_llm(
+        requested_model=settings.haiku_model,
+        system_prompt=_SYSTEM_PROMPT,
+        user_content=evidence_json,
+        max_tokens=800,
+        context_label="Readiness LLM",
+    )
 
 
 def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
-    try:
-        response = _client.messages.create(
-            model=settings.haiku_model,
-            max_tokens=800,
-            system=(
-                "You are a JSON repair specialist. Return ONLY a valid JSON object. "
-                'The first character must be "{". The last character must be "}". '
-                "No prose, markdown, or explanation."
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Fix invalid JSON and return only the JSON object:\n\n"
-                        f"{bad_json[:3000]}"
-                    ),
-                }
-            ],
-        )
-        return _extract_text_block(response, "Readiness repair")
-    except Exception as exc:
-        return None, f"Repair failed: {exc}"
+    return call_text_llm(
+        requested_model=settings.haiku_model,
+        system_prompt=(
+            "You are a JSON repair specialist. Return ONLY a valid JSON object. "
+            'The first character must be "{". The last character must be "}". '
+            "No prose, markdown, or explanation."
+        ),
+        user_content=(
+            "Fix invalid JSON and return only the JSON object:\n\n"
+            f"{bad_json[:3000]}"
+        ),
+        max_tokens=800,
+        context_label="Readiness repair",
+    )
 
 
 def _parse_claims(raw_json: str) -> tuple[Optional[dict], Optional[str]]:

@@ -6,6 +6,7 @@ import os
 class Settings(BaseSettings):
     anthropic_api_key: str
     openai_api_key: str
+    llm_provider: str = "anthropic"
     langchain_api_key: str
     github_token: Optional[str] = None
     langchain_tracing_v2: str = "true"
@@ -13,6 +14,7 @@ class Settings(BaseSettings):
     postgres_url: str = "postgresql://paperintel:dev_password@localhost:5432/paperintel"
     haiku_model: str = "claude-haiku-4-5-20251001"
     sonnet_model: str = "claude-sonnet-4-6"
+    openai_model: str = "gpt-4o-mini"
 
     class Config:
         env_file = ".env"

@@ -4,16 +4,13 @@ import re
 from pathlib import Path
 from typing import Optional
 
-import anthropic
-
 from agents.error_utils import paper_error
+from agents.llm_provider import call_text_llm
 from config.settings import settings
 from models.schemas import MethodExtraction
 from models.state import PaperIntelState
 
 logger = logging.getLogger(__name__)
-
-_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 _PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "extraction_prompt.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
@@ -139,51 +136,29 @@ def _call_llm(
     """
     Call Claude Sonnet and return (raw_json, error_reason).
     """
-    try:
-        response = _client.messages.create(
-            model=settings.haiku_model,
-            max_tokens=2000,
-            system=_SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": _build_user_message(text, metadata_header),
-                }
-            ],
-        )
-        raw, error = _extract_text_block(response, context="LLM")
-        if error:
-            return None, error
-        logger.info("LLM extraction response: %d chars", len(raw or ""))
-        return raw, None
-    except Exception as exc:
-        logger.exception("LLM call failed")
-        return None, f"LLM call failed: {exc}"
+    return call_text_llm(
+        requested_model=settings.haiku_model,
+        system_prompt=_SYSTEM_PROMPT,
+        user_content=_build_user_message(text, metadata_header),
+        max_tokens=2000,
+        context_label="LLM extraction",
+    )
 
 
 def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
     """
     Repair-oriented retry: ask the model to convert the previous output to valid JSON.
     """
-    try:
-        response = _client.messages.create(
-            model=settings.haiku_model,
-            max_tokens=2000,
-            system="You are a JSON repair specialist. Return ONLY valid JSON, no explanation.",
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "The following JSON is invalid. Fix it and return ONLY the corrected JSON:\n\n"
-                        f"{bad_json[:4000]}"
-                    ),
-                }
-            ],
-        )
-        return _extract_text_block(response, context="Repair LLM")
-    except Exception as exc:
-        logger.exception("Repair LLM call failed")
-        return None, f"Repair LLM call failed: {exc}"
+    return call_text_llm(
+        requested_model=settings.haiku_model,
+        system_prompt="You are a JSON repair specialist. Return ONLY valid JSON, no explanation.",
+        user_content=(
+            "The following JSON is invalid. Fix it and return ONLY the corrected JSON:\n\n"
+            f"{bad_json[:4000]}"
+        ),
+        max_tokens=2000,
+        context_label="Repair LLM",
+    )
 
 
 def _metadata_header(state: PaperIntelState, text_source: str) -> Optional[str]:

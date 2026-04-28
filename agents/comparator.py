@@ -5,8 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
-import anthropic
-
+from agents.llm_provider import call_text_llm
 from config.settings import settings
 from models.schemas import (
     BenchmarkResult,
@@ -18,8 +17,6 @@ from models.schemas import (
 from models.state import PaperIntelState
 
 logger = logging.getLogger(__name__)
-
-_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 _PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "comparator_prompt.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
@@ -517,42 +514,30 @@ def _comparator_model() -> str:
 
 
 def _call_llm(evidence_json: str) -> tuple[Optional[str], Optional[str]]:
-    try:
-        response = _client.messages.create(
-            model=_comparator_model(),
-            max_tokens=1400,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": evidence_json}],
-        )
-        return _extract_text_block(response, "Comparator LLM")
-    except Exception as exc:
-        logger.exception("Comparator LLM failed")
-        return None, f"Comparator LLM failed: {exc}"
+    return call_text_llm(
+        requested_model=_comparator_model(),
+        system_prompt=_SYSTEM_PROMPT,
+        user_content=evidence_json,
+        max_tokens=1400,
+        context_label="Comparator LLM",
+    )
 
 
 def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
-    try:
-        response = _client.messages.create(
-            model=_comparator_model(),
-            max_tokens=1000,
-            system=(
-                "You are a JSON repair specialist. Return ONLY a valid JSON object. "
-                'The first character must be "{". The last character must be "}". '
-                "No prose, markdown, or explanation."
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Fix invalid JSON and return only the JSON object:\n\n"
-                        f"{bad_json[:3000]}"
-                    ),
-                }
-            ],
-        )
-        return _extract_text_block(response, "Comparator repair")
-    except Exception as exc:
-        return None, f"Comparator repair failed: {exc}"
+    return call_text_llm(
+        requested_model=_comparator_model(),
+        system_prompt=(
+            "You are a JSON repair specialist. Return ONLY a valid JSON object. "
+            'The first character must be "{". The last character must be "}". '
+            "No prose, markdown, or explanation."
+        ),
+        user_content=(
+            "Fix invalid JSON and return only the JSON object:\n\n"
+            f"{bad_json[:3000]}"
+        ),
+        max_tokens=1000,
+        context_label="Comparator repair",
+    )
 
 
 def _parse_claims(raw_json: str) -> tuple[Optional[dict], Optional[str]]:
