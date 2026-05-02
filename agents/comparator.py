@@ -7,6 +7,7 @@ from typing import Optional
 
 from agents.llm_provider import call_text_llm
 from config.settings import settings
+from models.errors import ErrorCodes, make_error
 from models.schemas import (
     BenchmarkResult,
     ComparisonMatrixRow,
@@ -29,6 +30,16 @@ VALID_WINNER_BASES = {
     "mixed",
     "no_clear_winner",
 }
+
+
+def _warning_error(message: str) -> object:
+    return make_error(
+        ErrorCodes.WARNING,
+        message,
+        node="comparator",
+        severity="warning",
+        recoverable=True,
+    )
 
 LOWER_IS_BETTER_EXACT_METRICS = {
     "latency",
@@ -879,7 +890,7 @@ def comparator_agent(state: PaperIntelState | dict) -> dict:
             "comparison_report": None,
             "comparison_markdown": "",
             "processing_stage": state.get("processing_stage", "completed"),
-            "errors": ["Comparator skipped: fewer than two papers"],
+            "errors": [_warning_error("Comparator skipped: fewer than two papers")],
         }
 
     papers_summary = _build_papers_summary(papers)

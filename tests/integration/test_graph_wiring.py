@@ -8,6 +8,7 @@ def _load_graph_with_stubs():
         "agents.benchmark": ("benchmark_analyst_agent", lambda state: {}),
         "agents.comparator": ("comparator_agent", lambda state: {}),
         "agents.extraction": ("extraction_agent", lambda state: {}),
+        "agents.evidence_critic": ("evidence_critic_agent", lambda state: {}),
         "agents.human_review": ("human_review_node", lambda state: {}),
         "agents.ingestion": ("ingestion_agent", lambda state: {}),
         "agents.paper_failure_finalize": (

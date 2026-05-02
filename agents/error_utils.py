@@ -12,6 +12,8 @@ Fatal errors:
 
 from typing import Optional
 
+from models.errors import ErrorCodes, make_error
+
 
 def is_batch(state) -> bool:
     """
@@ -31,7 +33,7 @@ def is_batch(state) -> bool:
     )
 
 
-def paper_error(state, message: str, node: str) -> dict:
+def paper_error(state, message: str, node: str, code: str = ErrorCodes.PAPER_ERROR) -> dict:
     """
     Return a paper-scoped failure.
 
@@ -39,26 +41,44 @@ def paper_error(state, message: str, node: str) -> dict:
     continue. In single-paper mode it becomes a terminal failure.
     """
     stage = "paper_failure_finalize" if is_batch(state) else "failed"
+    error = make_error(
+        code,
+        message,
+        node=node,
+        severity="error",
+        recoverable=is_batch(state),
+    )
     return {
         "processing_stage": stage,
         "paper_failed": True,
         "paper_failure_reason": message,
         "failed_node": node,
-        "errors": [message],
+        "errors": [error],
     }
 
 
-def fatal_error(message: str, node: Optional[str] = None) -> dict:
+def fatal_error(
+    message: str,
+    node: Optional[str] = None,
+    code: str = ErrorCodes.FATAL_ERROR,
+) -> dict:
     """
     Return a terminal session-level failure.
 
     Use this when graph/session invariants are broken and continuation would be
     unsafe, for example invalid batch indexes or corrupted state.
     """
+    error = make_error(
+        code,
+        message,
+        node=node,
+        severity="fatal",
+        recoverable=False,
+    )
     return {
         "processing_stage": "failed",
         "paper_failed": False,
         "paper_failure_reason": None,
         "failed_node": node,
-        "errors": [message],
+        "errors": [error],
     }

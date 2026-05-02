@@ -1,9 +1,13 @@
 from typing import Optional
 
-from pydantic_settings import BaseSettings
 import os
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
     anthropic_api_key: str
     openai_api_key: str
     llm_provider: str = "anthropic"
@@ -15,10 +19,6 @@ class Settings(BaseSettings):
     haiku_model: str = "claude-haiku-4-5-20251001"
     sonnet_model: str = "claude-sonnet-4-6"
     openai_model: str = "gpt-4o-mini"
-
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
 
 
 settings = Settings()

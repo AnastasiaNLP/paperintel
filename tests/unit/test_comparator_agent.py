@@ -11,7 +11,7 @@ Run:
 """
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from agents.comparator import (
     _build_comparison_matrix,
@@ -30,6 +30,7 @@ from agents.comparator import (
     _select_representative_benchmark,
     comparator_agent,
 )
+from models.errors import error_message
 from models.schemas import (
     BenchmarkResult,
     ComparisonReport,
@@ -39,14 +40,6 @@ from models.schemas import (
     PaperSlot,
     ProductionReadiness,
 )
-
-
-def _mock_llm_response(text: str) -> MagicMock:
-    response = MagicMock()
-    block = MagicMock()
-    block.text = text
-    response.content = [block]
-    return response
 
 
 def _benchmark(
@@ -571,18 +564,18 @@ def test_normalize_report_winner_basis_readiness_when_no_row_wins():
     assert report.winner_basis == "readiness_dominant"
 
 
-@patch("agents.comparator._client")
-def test_entry_less_than_two_papers_skips(mock_client):
+@patch("agents.comparator._call_llm")
+def test_entry_less_than_two_papers_skips(mock_call_llm):
     result = comparator_agent({"papers": [_paper(0)]})
     assert result["comparison_report"] is None
     assert result["comparison_markdown"] == ""
-    assert "fewer than two papers" in result["errors"][0]
-    assert mock_client.messages.create.call_count == 0
+    assert "fewer than two papers" in error_message(result["errors"][0])
+    mock_call_llm.assert_not_called()
 
 
-@patch("agents.comparator._client")
-def test_entry_llm_failure_returns_deterministic_fallback(mock_client):
-    mock_client.messages.create.side_effect = RuntimeError("boom")
+@patch("agents.comparator._call_llm")
+def test_entry_llm_failure_returns_deterministic_fallback(mock_call_llm):
+    mock_call_llm.return_value = (None, "boom")
     result = comparator_agent({"papers": [_paper(0), _paper(1)]})
     assert result["processing_stage"] == "comparison_completed"
     assert isinstance(result["comparison_report"], ComparisonReport)
@@ -590,36 +583,39 @@ def test_entry_llm_failure_returns_deterministic_fallback(mock_client):
     assert "Paper Comparison" in result["comparison_markdown"]
 
 
-@patch("agents.comparator._client")
-def test_entry_invalid_json_then_repair_success(mock_client):
-    mock_client.messages.create.side_effect = [
-        _mock_llm_response("not json"),
-        _mock_llm_response(_valid_claims(winner=1, rec_index=1, winner_basis="mixed")),
-    ]
+@patch("agents.comparator._call_llm_repair")
+@patch("agents.comparator._call_llm")
+def test_entry_invalid_json_then_repair_success(mock_call_llm, mock_repair):
+    mock_call_llm.return_value = ("not json", None)
+    mock_repair.return_value = (
+        _valid_claims(winner=1, rec_index=1, winner_basis="mixed"),
+        None,
+    )
     result = comparator_agent({"papers": [_paper(0), _paper(1)]})
     report = result["comparison_report"]
     assert report.overall_winner_index == 1
     assert report.recommendations[0].recommended_paper_index == 1
-    assert mock_client.messages.create.call_count == 2
+    mock_call_llm.assert_called_once()
+    mock_repair.assert_called_once()
 
 
-@patch("agents.comparator._client")
-def test_entry_invalid_json_and_repair_failure_returns_fallback(mock_client):
-    mock_client.messages.create.side_effect = [
-        _mock_llm_response("not json"),
-        _mock_llm_response("still not json"),
-    ]
+@patch("agents.comparator._call_llm_repair")
+@patch("agents.comparator._call_llm")
+def test_entry_invalid_json_and_repair_failure_returns_fallback(mock_call_llm, mock_repair):
+    mock_call_llm.return_value = ("not json", None)
+    mock_repair.return_value = ("still not json", None)
     result = comparator_agent({"papers": [_paper(0), _paper(1)]})
     report = result["comparison_report"]
     assert isinstance(report, ComparisonReport)
     assert report.overall_winner_index is None
     assert report.trade_offs
-    assert mock_client.messages.create.call_count == 2
+    mock_call_llm.assert_called_once()
+    mock_repair.assert_called_once()
 
 
-@patch("agents.comparator._client")
-def test_entry_markdown_escapes_pipes_and_newlines(mock_client):
-    mock_client.messages.create.return_value = _mock_llm_response(_valid_claims())
+@patch("agents.comparator._call_llm")
+def test_entry_markdown_escapes_pipes_and_newlines(mock_call_llm):
+    mock_call_llm.return_value = (_valid_claims(), None)
     papers = [
         _paper(0, title="Paper | Zero", benchmarks=[_benchmark("Task | A", "accuracy", 75.0)]),
         _paper(1, title="Paper\nOne", benchmarks=[_benchmark("Task | A", "accuracy", 70.0)]),
@@ -631,9 +627,9 @@ def test_entry_markdown_escapes_pipes_and_newlines(mock_client):
     assert "task-\\|-a" in markdown
 
 
-@patch("agents.comparator._client")
-def test_entry_comparison_report_model_dump_serializable(mock_client):
-    mock_client.messages.create.return_value = _mock_llm_response(_valid_claims())
+@patch("agents.comparator._call_llm")
+def test_entry_comparison_report_model_dump_serializable(mock_call_llm):
+    mock_call_llm.return_value = (_valid_claims(), None)
     result = comparator_agent({"papers": [_paper(0), _paper(1)]})
     dumped = result["comparison_report"].model_dump()
     json.dumps(dumped)

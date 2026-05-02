@@ -6,6 +6,7 @@ from langgraph.graph import END, StateGraph
 from agents.benchmark import benchmark_analyst_agent
 from agents.comparator import comparator_agent
 from agents.extraction import extraction_agent
+from agents.evidence_critic import evidence_critic_agent
 from agents.human_review import human_review_node
 from agents.ingestion import ingestion_agent
 from agents.paper_failure_finalize import paper_failure_finalize_node
@@ -68,6 +69,7 @@ def build_graph() -> StateGraph:
     graph.add_node("benchmark", benchmark_analyst_agent)
     graph.add_node("readiness", readiness_agent)
     graph.add_node("report", report_agent)
+    graph.add_node("evidence_critic", evidence_critic_agent)
     graph.add_node("report_finalize", report_finalize_node)
     graph.add_node("paper_failure_finalize", paper_failure_finalize_node)
     graph.add_node("comparator", comparator_agent)
@@ -128,7 +130,8 @@ def build_graph() -> StateGraph:
         },
     )
 
-    graph.add_edge("report", "report_finalize")
+    graph.add_edge("report", "evidence_critic")
+    graph.add_edge("evidence_critic", "report_finalize")
     graph.add_conditional_edges(
         "report_finalize",
         route_after_finalize,
@@ -178,6 +181,7 @@ def create_app(use_checkpointing: bool = True):
                     ("models.schemas", "ComparisonMatrixRow"),
                     ("models.schemas", "ConstraintRecommendation"),
                     ("models.schemas", "ComparisonReport"),
+                    ("models.errors", "StructuredError"),
                 ],
             )
 

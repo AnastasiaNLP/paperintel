@@ -24,6 +24,8 @@ import sys
 import time
 import uuid
 
+import pytest
+
 from agents.comparator import comparator_agent
 from graph import create_app
 from models.schemas import (
@@ -36,6 +38,8 @@ from models.schemas import (
     ProductionReadiness,
 )
 
+
+pytestmark = pytest.mark.live
 
 PAIR_LABEL = "DeepSeek-R1 vs Mistral 7B"
 PAPER_0_URL = "https://arxiv.org/abs/2501.12948"

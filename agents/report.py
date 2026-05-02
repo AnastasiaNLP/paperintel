@@ -7,6 +7,7 @@ from typing import Optional
 from agents.error_utils import paper_error
 from agents.llm_provider import call_text_llm
 from config.settings import settings
+from models.errors import ErrorCodes, make_error
 from models.schemas import (
     BenchmarkResult,
     EngineerReport,
@@ -29,6 +30,19 @@ VALID_ACTIONS = {"implement_now", "prototype", "watch", "skip"}
 MAX_BENCHMARKS_IN_EVIDENCE = 15
 MAX_ABSTRACT_CHARS = 1200
 MAX_AUTHORS_IN_HEADER = 8
+
+
+def _warning_errors(messages: list[str]) -> list:
+    return [
+        make_error(
+            ErrorCodes.WARNING,
+            message,
+            node="report",
+            severity="warning",
+            recoverable=True,
+        )
+        for message in messages
+    ]
 
 
 def _strip_fences(text: str) -> str:
@@ -510,6 +524,6 @@ def report_agent(state: PaperIntelState) -> dict:
         "processing_stage": "completed",
     }
     if degradation_notes:
-        result["errors"] = degradation_notes
+        result["errors"] = _warning_errors(degradation_notes)
 
     return result

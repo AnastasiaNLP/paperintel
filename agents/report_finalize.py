@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 from agents.error_utils import fatal_error, is_batch
+from models.errors import error_messages
 from models.schemas import PaperSlot
 from models.state import PaperIntelState
 
@@ -66,7 +67,7 @@ def report_finalize_node(state: PaperIntelState | dict) -> dict:
             "report_finalize",
         )
 
-    current_errors = list(state.get("errors", []) or [])
+    current_errors = error_messages(list(state.get("errors", []) or []))
 
     slot = PaperSlot(
         paper_index=paper_index,

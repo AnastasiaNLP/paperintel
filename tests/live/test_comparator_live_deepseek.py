@@ -13,6 +13,8 @@ Run:
 import logging
 import sys
 
+import pytest
+
 from agents.comparator import comparator_agent
 from config.settings import settings
 from models.schemas import (
@@ -24,6 +26,8 @@ from models.schemas import (
     ProductionReadiness,
 )
 
+
+pytestmark = pytest.mark.live
 
 logging.basicConfig(
     level=logging.INFO,

@@ -7,6 +7,7 @@ from typing import Optional
 from agents.error_utils import paper_error
 from agents.llm_provider import call_text_llm
 from config.settings import settings
+from models.errors import ErrorCodes, make_error
 from models.schemas import BenchmarkResult
 from models.state import PaperIntelState
 from tools.pdf_parser import extract_tables
@@ -50,6 +51,19 @@ BENCHMARK_CONTEXT_KEYWORDS = [
     "results",
     "Table",
 ]
+
+
+def _warning_errors(messages: list[str]) -> list:
+    return [
+        make_error(
+            ErrorCodes.WARNING,
+            message,
+            node="benchmark",
+            severity="warning",
+            recoverable=True,
+        )
+        for message in messages
+    ]
 
 
 def _strip_json_fences(text: str) -> str:
@@ -477,7 +491,9 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
 
     if parse_error:
         return {
-            "errors": new_errors + [f"Benchmark parse failed after repair: {parse_error}"],
+            "errors": _warning_errors(
+                new_errors + [f"Benchmark parse failed after repair: {parse_error}"]
+            ),
             "benchmarks": [],
             "processing_stage": "readiness",
         }
@@ -490,5 +506,5 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
     }
     final_errors = new_errors + ([parse_warning] if parse_warning else [])
     if final_errors:
-        result["errors"] = final_errors
+        result["errors"] = _warning_errors(final_errors)
     return result

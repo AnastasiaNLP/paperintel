@@ -99,6 +99,9 @@ class Scenario:
             "full_markdown_report": f"# Paper {current_index}",
         }
 
+    def evidence_critic(self, state):
+        return {}
+
     def report_finalize(self, state):
         current_index = state.get("current_paper_index", 0)
         input_url = (
@@ -192,6 +195,7 @@ def _load_graph_with_scenario(scenario: Scenario):
         "agents.benchmark": ("benchmark_analyst_agent", scenario.benchmark),
         "agents.comparator": ("comparator_agent", scenario.comparator),
         "agents.extraction": ("extraction_agent", scenario.extraction),
+        "agents.evidence_critic": ("evidence_critic_agent", scenario.evidence_critic),
         "agents.human_review": ("human_review_node", lambda state: {}),
         "agents.ingestion": ("ingestion_agent", scenario.ingestion),
         "agents.paper_failure_finalize": (

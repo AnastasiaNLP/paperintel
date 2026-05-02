@@ -3,6 +3,7 @@ import re
 from typing import Optional
 
 from agents.error_utils import fatal_error, is_batch, paper_error
+from models.errors import ErrorCodes, make_error
 from models.schemas import PaperMetadata
 from models.state import IngestionProvenance, PaperIntelState
 from tools.arxiv_client import download_pdf, get_metadata
@@ -103,6 +104,16 @@ def _make_provenance(
         "enrichment_status": enrichment_status,
         "arxiv_id_found": arxiv_id_found,
     }
+
+
+def _warning_error(message: str) -> object:
+    return make_error(
+        ErrorCodes.WARNING,
+        message,
+        node="ingestion",
+        severity="warning",
+        recoverable=True,
+    )
 
 
 def _success_extraction(state: PaperIntelState, **kwargs) -> dict:
@@ -219,7 +230,7 @@ def _route_url(state: PaperIntelState, url: str) -> dict:
             raw_text=_sanitize_text(metadata.abstract),
             pdf_path=pdf_path if "pdf_path" in locals() else None,
             text_by_page=None,
-            errors=[f"PDF unavailable, abstract used: {exc}"],
+            errors=[_warning_error(f"PDF unavailable, abstract used: {exc}")],
             ingestion_provenance=_make_provenance(
                 text_source="abstract_fallback",
                 metadata_source="arxiv",
@@ -280,7 +291,11 @@ def _route_pdf(state: PaperIntelState) -> dict:
             raw_text=raw_text,
             pdf_path=pdf_path,
             text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
-            errors=[f"arXiv metadata unavailable, PDF fallback used: {meta_error}"],
+            errors=[
+                _warning_error(
+                    f"arXiv metadata unavailable, PDF fallback used: {meta_error}"
+                )
+            ],
             ingestion_provenance=_make_provenance(
                 text_source="pdf",
                 metadata_source="pdf_fallback",
@@ -306,7 +321,7 @@ def _route_pdf(state: PaperIntelState) -> dict:
         raw_text=raw_text,
         pdf_path=pdf_path,
         text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
-        errors=["No arXiv ID - metadata quality low"],
+        errors=[_warning_error("No arXiv ID - metadata quality low")],
         ingestion_provenance=_make_provenance(
             text_source="pdf",
             metadata_source="pdf_fallback",

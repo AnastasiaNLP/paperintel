@@ -1,5 +1,38 @@
-.env/
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# IDE
 .idea/
-plan.mdtmp/
+.vscode/
+
+# Runtime artifacts
+tmp/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
 plan.md

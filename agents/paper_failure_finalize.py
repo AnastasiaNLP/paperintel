@@ -2,12 +2,13 @@ from copy import deepcopy
 
 from agents.error_utils import fatal_error
 from agents.report_finalize import _SCRATCH_RESET, _current_url
+from models.errors import error_messages
 from models.schemas import PaperSlot
 from models.state import PaperIntelState
 
 
 def _slot_errors(state: PaperIntelState | dict) -> list[str]:
-    errors = list(state.get("errors", []) or [])
+    errors = error_messages(list(state.get("errors", []) or []))
     failure_reason = state.get("paper_failure_reason")
     failed_node = state.get("failed_node")
 

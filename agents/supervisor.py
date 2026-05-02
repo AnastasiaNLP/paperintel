@@ -1,6 +1,7 @@
 import logging
 from typing import Literal
 
+from models.errors import ErrorCodes, make_error
 from models.state import PaperIntelState
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,15 @@ def supervisor_node(state: PaperIntelState) -> dict:
     if "processing_stage" not in state:
         logger.error("Supervisor: processing_stage is missing from state")
         return {
-            "errors": ["Supervisor: processing_stage is missing"],
+            "errors": [
+                make_error(
+                    ErrorCodes.FATAL_ERROR,
+                    "Supervisor: processing_stage is missing",
+                    node="supervisor",
+                    severity="fatal",
+                    recoverable=False,
+                )
+            ],
             "processing_stage": "failed",
         }
 
