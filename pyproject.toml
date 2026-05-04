@@ -16,6 +16,8 @@
       "fastapi==0.136.0",
       "uvicorn==0.44.0",
       "pymupdf==1.27.2.2",
+      "sqlalchemy==2.0.45",
+      "alembic==1.17.2",
       "psycopg2-binary==2.9.11",
       "psycopg-binary==3.3.3",
       "langgraph-checkpoint-postgres==3.0.5",
@@ -33,4 +35,5 @@
   testpaths = ["tests"]
   markers = [
       "live: tests that call real external APIs (deselect with '-m not live')",
+      "db: tests that require an explicitly configured database",
   ]
