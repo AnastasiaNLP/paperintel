@@ -1,4 +1,5 @@
 from typing import Any, Literal, TypeAlias
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +14,7 @@ class ErrorCodes:
 
 
 class StructuredError(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid4()))
     code: str
     message: str
     node: str | None = None
