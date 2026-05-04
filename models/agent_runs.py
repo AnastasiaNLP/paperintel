@@ -13,6 +13,7 @@ TerminationReason: TypeAlias = Literal[
     "budget",
     "fallback",
     "error",
+    "skipped",
 ]
 
 
@@ -31,10 +32,12 @@ class AgentRun(BaseModel):
     model: str | None = None
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     iteration_count: int = 0
+    llm_call_count: int = 0
     termination_reason: TerminationReason | None = None
     status: AgentRunStatus = "running"
     tokens_used: int | None = None
     cost_usd: float | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None
 
@@ -46,12 +49,15 @@ class AgentRun(BaseModel):
         termination_reason: TerminationReason = "success",
         tokens_used: int | None = None,
         cost_usd: float | None = None,
+        details: dict[str, Any] | None = None,
     ) -> "AgentRun":
         self.output_ref = output_ref
         self.confidence = confidence
         self.termination_reason = termination_reason
         self.tokens_used = tokens_used
         self.cost_usd = cost_usd
+        if details:
+            self.details.update(details)
         self.status = "completed"
         self.finished_at = utc_now()
         return self
@@ -61,9 +67,12 @@ class AgentRun(BaseModel):
         *,
         termination_reason: TerminationReason = "error",
         output_ref: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> "AgentRun":
         self.output_ref = output_ref
         self.termination_reason = termination_reason
+        if details:
+            self.details.update(details)
         self.status = "failed"
         self.finished_at = utc_now()
         return self
@@ -73,9 +82,12 @@ class AgentRun(BaseModel):
         *,
         output_ref: str | None = None,
         termination_reason: TerminationReason = "fallback",
+        details: dict[str, Any] | None = None,
     ) -> "AgentRun":
         self.output_ref = output_ref
         self.termination_reason = termination_reason
+        if details:
+            self.details.update(details)
         self.status = "fallback_used"
         self.finished_at = utc_now()
         return self

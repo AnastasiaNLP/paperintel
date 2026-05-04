@@ -181,6 +181,7 @@ def create_app(use_checkpointing: bool = True):
                     ("models.schemas", "ComparisonMatrixRow"),
                     ("models.schemas", "ConstraintRecommendation"),
                     ("models.schemas", "ComparisonReport"),
+                    ("models.agent_runs", "AgentRun"),
                     ("models.errors", "StructuredError"),
                 ],
             )

@@ -2,11 +2,16 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+from langchain_core.runnables import RunnableConfig
+
+from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
 from agents.error_utils import paper_error
 from agents.llm_provider import call_text_llm
 from config.settings import settings
+from models.agent_runs import AgentRun
+from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
 from models.errors import ErrorCodes, make_error
 from models.schemas import (
     BenchmarkResult,
@@ -30,6 +35,73 @@ VALID_ACTIONS = {"implement_now", "prototype", "watch", "skip"}
 MAX_BENCHMARKS_IN_EVIDENCE = 15
 MAX_ABSTRACT_CHARS = 1200
 MAX_AUTHORS_IN_HEADER = 8
+
+
+def _configurable(config: RunnableConfig | None) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return {}
+    configurable = config.get("configurable")
+    return configurable if isinstance(configurable, dict) else {}
+
+
+def _agent_run_persistence(config: RunnableConfig | None) -> AgentRunPersistence:
+    configurable = _configurable(config)
+    persistence = configurable.get("agent_run_persistence")
+    if persistence is None:
+        persistence = (
+            config.get("agent_run_persistence") if isinstance(config, dict) else None
+        )
+    if persistence is not None and hasattr(persistence, "save"):
+        return persistence
+    return NoopAgentRunPersistence()
+
+
+def _start_report_run(config: RunnableConfig | None) -> AgentRun:
+    configurable = _configurable(config)
+    return AgentRun(
+        agent_name="report",
+        session_id=configurable.get("session_id"),
+        job_id=configurable.get("job_id"),
+        model=settings.haiku_model,
+        iteration_count=1,
+    )
+
+
+def _policy_snapshot(policy: AgentRuntimePolicy) -> dict[str, Any]:
+    return policy.model_dump(mode="json")
+
+
+def _apply_report_policy_warning(run: AgentRun, policy: AgentRuntimePolicy) -> None:
+    if run.llm_call_count <= policy.max_tool_calls:
+        return
+    run.details["policy_warning"] = "exceeded_max_tool_calls"
+    run.details["policy_max_tool_calls"] = policy.max_tool_calls
+    run.details["actual_llm_call_count"] = run.llm_call_count
+
+
+def _with_agent_run(
+    result: dict,
+    run: AgentRun,
+    persistence: AgentRunPersistence,
+) -> dict:
+    persistence.save(run)
+    result["agent_runs"] = [run]
+    return result
+
+
+def _report_normalized(claims: dict, report: EngineerReport) -> bool:
+    checks = {
+        "executive_summary": report.executive_summary,
+        "key_innovation": report.key_innovation,
+        "practical_implications": report.practical_implications,
+        "implementation_difficulty": report.implementation_difficulty,
+        "recommended_action": report.recommended_action,
+        "action_reasoning": report.action_reasoning,
+    }
+    for key, value in checks.items():
+        if str(claims.get(key) or "").strip() != str(value).strip():
+            return True
+    return False
 
 
 def _warning_errors(messages: list[str]) -> list:
@@ -433,7 +505,10 @@ def _render_markdown_report(
     )
 
 
-def report_agent(state: PaperIntelState) -> dict:
+def report_agent(
+    state: PaperIntelState,
+    config: RunnableConfig | None = None,
+) -> dict:
     """
     Report Generator Agent.
 
@@ -449,6 +524,10 @@ def report_agent(state: PaperIntelState) -> dict:
     - empty executive_summary falls back to a deterministic summary.
     """
     logger.info("Report agent started")
+    run = _start_report_run(config)
+    persistence = _agent_run_persistence(config)
+    policy = resolve_agent_policy("report", config)
+    run.details["policy_applied"] = _policy_snapshot(policy)
 
     metadata = state.get("metadata")
     extraction = state.get("method_extraction")
@@ -467,27 +546,52 @@ def report_agent(state: PaperIntelState) -> dict:
 
     evidence_json = _build_evidence_json(metadata, extraction, benchmarks, readiness)
 
+    run.llm_call_count += 1
     raw, llm_error = _call_llm(evidence_json)
     if llm_error:
-        return paper_error(state, llm_error, "report")
+        run.fail(
+            output_ref="state:errors",
+            details={"error": llm_error, "stage": "llm_call"},
+        )
+        _apply_report_policy_warning(run, policy)
+        return _with_agent_run(
+            paper_error(state, llm_error, "report"),
+            run,
+            persistence,
+        )
 
     claims, parse_error = _parse_claims(raw or "")
+    repair_attempted = False
     if parse_error:
+        repair_attempted = True
+        run.llm_call_count += 1
         repaired, repair_error = _call_llm_repair(raw or "")
         if repair_error:
-            return paper_error(
-                state,
-                f"Report parse failed: {parse_error}; repair: {repair_error}",
-                "report",
+            error = f"Report parse failed: {parse_error}; repair: {repair_error}"
+            run.fail(
+                output_ref="state:errors",
+                details={
+                    "error": error,
+                    "stage": "repair",
+                    "parse_repair_attempted": True,
+                }
             )
+            _apply_report_policy_warning(run, policy)
+            return _with_agent_run(paper_error(state, error, "report"), run, persistence)
         claims, parse_error = _parse_claims(repaired or "")
 
     if parse_error or claims is None:
-        return paper_error(
-            state,
-            f"Report parse failed after repair: {parse_error}",
-            "report",
+        error = f"Report parse failed after repair: {parse_error}"
+        run.fail(
+            output_ref="state:errors",
+            details={
+                "error": error,
+                "stage": "parse",
+                "parse_repair_attempted": repair_attempted,
+            }
         )
+        _apply_report_policy_warning(run, policy)
+        return _with_agent_run(paper_error(state, error, "report"), run, persistence)
 
     engineer_report, norm_error = _normalize_engineer_report(
         claims,
@@ -497,11 +601,17 @@ def report_agent(state: PaperIntelState) -> dict:
         readiness,
     )
     if norm_error or engineer_report is None:
-        return paper_error(
-            state,
-            norm_error or "Report normalization failed",
-            "report",
+        error = norm_error or "Report normalization failed"
+        run.fail(
+            output_ref="state:errors",
+            details={
+                "error": error,
+                "stage": "normalization",
+                "parse_repair_attempted": repair_attempted,
+            }
         )
+        _apply_report_policy_warning(run, policy)
+        return _with_agent_run(paper_error(state, error, "report"), run, persistence)
 
     markdown = _render_markdown_report(
         metadata,
@@ -526,4 +636,15 @@ def report_agent(state: PaperIntelState) -> dict:
     if degradation_notes:
         result["errors"] = _warning_errors(degradation_notes)
 
-    return result
+    normalized = _report_normalized(claims, engineer_report)
+    run.complete(
+        output_ref="state:report",
+        details={
+            "parse_repair_attempted": repair_attempted,
+            "normalized": normalized,
+            "downgrade_applied": normalized,
+            "degradation_notes": degradation_notes,
+        }
+    )
+    _apply_report_policy_warning(run, policy)
+    return _with_agent_run(result, run, persistence)

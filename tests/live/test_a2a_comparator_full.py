@@ -85,6 +85,7 @@ def _initial_state(url: str) -> dict:
         "confidence_scores": {},
         "messages": [],
         "errors": [],
+        "agent_runs": [],
         "cost_tracking": {},
     }
 
@@ -283,6 +284,7 @@ def main() -> int:
             "papers": [paper_0_slot, paper_1_slot],
             "processing_stage": "comparator",
             "errors": [],
+            "agent_runs": [],
         }
     )
     _assert_comparator_result(comparator_result)

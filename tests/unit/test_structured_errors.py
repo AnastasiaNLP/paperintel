@@ -107,6 +107,7 @@ def test_paper_failure_finalize_converts_structured_errors_to_slot_messages():
         "paper_failure_reason": "PDF parse failed",
         "failed_node": "ingestion",
         "errors": [make_error(ErrorCodes.PAPER_ERROR, "PDF parse failed", node="ingestion")],
+        "agent_runs": [],
         "messages": [],
         "cost_tracking": {},
     }
@@ -151,6 +152,7 @@ def test_report_finalize_preserves_string_compatible_slot_errors():
             make_error(ErrorCodes.WARNING, "Structured warning", severity="warning"),
             "Plain warning",
         ],
+        "agent_runs": [],
         "messages": [],
         "cost_tracking": {},
     }

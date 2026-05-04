@@ -11,6 +11,8 @@ def test_agent_run_defaults_to_running_with_timezone_aware_start():
     assert run.input_refs == []
     assert run.tool_calls == []
     assert run.iteration_count == 0
+    assert run.llm_call_count == 0
+    assert run.details == {}
     assert run.status == "running"
     assert run.termination_reason is None
     assert run.finished_at is None
@@ -25,6 +27,7 @@ def test_agent_run_complete_updates_status_and_output_metadata():
         confidence=0.82,
         tokens_used=123,
         cost_usd=0.01,
+        details={"normalized": True},
     )
 
     assert result is run
@@ -34,17 +37,22 @@ def test_agent_run_complete_updates_status_and_output_metadata():
     assert run.confidence == 0.82
     assert run.tokens_used == 123
     assert run.cost_usd == 0.01
+    assert run.details == {"normalized": True}
     assert run.finished_at is not None
 
 
 def test_agent_run_fail_records_error_termination():
     run = AgentRun(agent_name="evidence_critic")
 
-    run.fail(output_ref="s3://agent-output/error.json")
+    run.fail(
+        output_ref="s3://agent-output/error.json",
+        details={"stage": "llm_call"},
+    )
 
     assert run.status == "failed"
     assert run.termination_reason == "error"
     assert run.output_ref == "s3://agent-output/error.json"
+    assert run.details == {"stage": "llm_call"}
     assert run.finished_at is not None
 
 
@@ -57,6 +65,16 @@ def test_agent_run_fallback_records_fallback_status():
     assert run.termination_reason == "fallback"
     assert run.output_ref == "s3://agent-output/fallback.json"
     assert run.finished_at is not None
+
+
+def test_agent_run_can_record_skipped_termination_as_completed():
+    run = AgentRun(agent_name="evidence_critic")
+
+    run.complete(termination_reason="skipped", details={"reason": "no_report"})
+
+    assert run.status == "completed"
+    assert run.termination_reason == "skipped"
+    assert run.details == {"reason": "no_report"}
 
 
 def test_agent_run_model_dump_is_serializable():
@@ -77,6 +95,8 @@ def test_agent_run_model_dump_is_serializable():
     assert dumped["job_id"] == "job-1"
     assert dumped["input_refs"] == ["query-ref"]
     assert dumped["tool_calls"][0]["tool"] == "search_papers"
+    assert dumped["llm_call_count"] == 0
+    assert dumped["details"] == {}
     assert dumped["status"] == "completed"
     assert isinstance(dumped["started_at"], str)
     assert isinstance(dumped["finished_at"], str)

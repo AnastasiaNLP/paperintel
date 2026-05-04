@@ -31,6 +31,7 @@ def _failed_state() -> dict:
         "failed_node": "ingestion",
         "messages": [],
         "errors": ["PDF parse failed"],
+        "agent_runs": [],
         "cost_tracking": {},
     }
 

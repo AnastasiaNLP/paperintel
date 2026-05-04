@@ -1,6 +1,10 @@
 import pytest
 
-from agents.agent_run_recorder import InMemoryAgentRunRecorder
+from agents.agent_run_recorder import (
+    InMemoryAgentRunPersistence,
+    InMemoryAgentRunRecorder,
+    NoopAgentRunPersistence,
+)
 
 
 def test_recorder_starts_and_stores_run():
@@ -82,3 +86,23 @@ def test_recorder_raises_for_missing_run():
 
     with pytest.raises(KeyError, match="AgentRun not found"):
         recorder.get("missing")
+
+
+def test_noop_persistence_accepts_run_without_storing():
+    recorder = InMemoryAgentRunRecorder()
+    persistence = NoopAgentRunPersistence()
+    run = recorder.start(agent_name="report")
+
+    assert persistence.save(run) is None
+
+
+def test_in_memory_persistence_records_saved_runs():
+    recorder = InMemoryAgentRunRecorder()
+    persistence = InMemoryAgentRunPersistence()
+    first = recorder.start(agent_name="report")
+    second = recorder.start(agent_name="evidence_critic")
+
+    persistence.save(first)
+    persistence.save(second)
+
+    assert persistence.list_runs() == [first, second]

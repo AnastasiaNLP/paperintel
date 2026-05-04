@@ -2,6 +2,36 @@ import importlib
 import sys
 import types
 
+import pytest
+
+
+STUB_MODULE_NAMES = [
+    "agents.benchmark",
+    "agents.comparator",
+    "agents.extraction",
+    "agents.evidence_critic",
+    "agents.human_review",
+    "agents.ingestion",
+    "agents.paper_failure_finalize",
+    "agents.readiness",
+    "agents.report",
+    "agents.report_finalize",
+]
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_stubbed_graph_modules():
+    original_modules = {
+        module_name: sys.modules.get(module_name)
+        for module_name in STUB_MODULE_NAMES + ["graph"]
+    }
+    yield
+    for module_name, original in original_modules.items():
+        if original is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = original
+
 
 def _load_graph_with_stubs():
     stub_modules = {

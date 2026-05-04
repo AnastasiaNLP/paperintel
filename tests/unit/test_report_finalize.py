@@ -82,6 +82,7 @@ def _base_state() -> dict:
         "failed_node": None,
         "messages": [],
         "errors": ["Benchmark Sonnet fallback used"],
+        "agent_runs": [],
         "cost_tracking": {},
     }
 

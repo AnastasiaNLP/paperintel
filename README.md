@@ -311,13 +311,3 @@ Run live tests explicitly:
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q tests/live -m live
 ```
 
----
-
-## Development Notes
-
-- Do not commit `.env`.
-- Do not commit generated PDFs or runtime artifacts under `tmp/`.
-- Keep live tests separate from offline tests.
-- Keep workflow orchestration deterministic where possible.
-- Use agentic behavior only where an LLM makes a real decision that fixed pipeline logic cannot safely hardcode.
-- Every agent loop must have bounded iterations, budget controls, and fallback behavior.

@@ -25,6 +25,7 @@ class AgentRunRecorder(Protocol):
         termination_reason: TerminationReason = "success",
         tokens_used: int | None = None,
         cost_usd: float | None = None,
+        details: dict | None = None,
     ) -> AgentRun:
         ...
 
@@ -34,6 +35,7 @@ class AgentRunRecorder(Protocol):
         *,
         termination_reason: TerminationReason = "error",
         output_ref: str | None = None,
+        details: dict | None = None,
     ) -> AgentRun:
         ...
 
@@ -43,6 +45,7 @@ class AgentRunRecorder(Protocol):
         *,
         output_ref: str | None = None,
         termination_reason: TerminationReason = "fallback",
+        details: dict | None = None,
     ) -> AgentRun:
         ...
 
@@ -51,6 +54,27 @@ class AgentRunRecorder(Protocol):
 
     def list_runs(self) -> list[AgentRun]:
         ...
+
+
+class AgentRunPersistence(Protocol):
+    def save(self, run: AgentRun) -> None:
+        ...
+
+
+class NoopAgentRunPersistence:
+    def save(self, run: AgentRun) -> None:
+        return None
+
+
+class InMemoryAgentRunPersistence:
+    def __init__(self) -> None:
+        self._runs: list[AgentRun] = []
+
+    def save(self, run: AgentRun) -> None:
+        self._runs.append(run)
+
+    def list_runs(self) -> list[AgentRun]:
+        return list(self._runs)
 
 
 class InMemoryAgentRunRecorder:
@@ -87,6 +111,7 @@ class InMemoryAgentRunRecorder:
         termination_reason: TerminationReason = "success",
         tokens_used: int | None = None,
         cost_usd: float | None = None,
+        details: dict | None = None,
     ) -> AgentRun:
         run = self.get(run_id)
         return run.complete(
@@ -95,6 +120,7 @@ class InMemoryAgentRunRecorder:
             termination_reason=termination_reason,
             tokens_used=tokens_used,
             cost_usd=cost_usd,
+            details=details,
         )
 
     def fail(
@@ -103,10 +129,12 @@ class InMemoryAgentRunRecorder:
         *,
         termination_reason: TerminationReason = "error",
         output_ref: str | None = None,
+        details: dict | None = None,
     ) -> AgentRun:
         return self.get(run_id).fail(
             termination_reason=termination_reason,
             output_ref=output_ref,
+            details=details,
         )
 
     def fallback(
@@ -115,10 +143,12 @@ class InMemoryAgentRunRecorder:
         *,
         output_ref: str | None = None,
         termination_reason: TerminationReason = "fallback",
+        details: dict | None = None,
     ) -> AgentRun:
         return self.get(run_id).fallback(
             output_ref=output_ref,
             termination_reason=termination_reason,
+            details=details,
         )
 
     def get(self, run_id: str) -> AgentRun:
