@@ -11,10 +11,11 @@ def test_alembic_config_points_to_project_migrations():
     assert "paperintel" in config.get_main_option("sqlalchemy.url")
 
 
-def test_alembic_has_single_initial_head_revision():
+def test_alembic_has_single_head_revision():
     config = Config("alembic.ini")
     script = ScriptDirectory.from_config(config)
 
     heads = script.get_heads()
-    assert heads == ["20260504_0001"]
+    assert heads == ["20260511_0002"]
     assert Path("alembic/versions/20260504_0001_initial_session_schema.py").exists()
+    assert Path("alembic/versions/20260511_0002_paper_chunks.py").exists()

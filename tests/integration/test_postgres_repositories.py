@@ -7,9 +7,11 @@ from alembic.config import Config
 from api.in_memory_session_store import SessionNotFoundError
 from models.agent_runs import AgentRun
 from models.errors import ErrorCodes, make_error
+from models.retrieval import ChunkSource, PaperChunk
 from storage.db import make_engine, make_session_factory
 from storage.repositories import (
     PostgresAgentRunPersistence,
+    PostgresPaperChunkRepository,
     PostgresSessionStore,
     PostgresStructuredErrorRepository,
     clear_foundation_tables,
@@ -176,3 +178,59 @@ def test_postgres_structured_error_repository_round_trip(session_factory):
     errors = repository.list_for_session(session.id)
     assert [error.id for error in errors] == [first.id, second.id]
     assert [error.message for error in errors] == ["warning", "fatal"]
+
+
+def test_postgres_paper_chunk_repository_upserts_and_lists_by_paper(session_factory):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresPaperChunkRepository(session_factory)
+    first = PaperChunk(
+        id="2310.06825:chunk:0",
+        paper_id="2310.06825",
+        chunk_index=0,
+        text="Initial retrieval chunk.",
+        source=ChunkSource(
+            paper_id="2310.06825",
+            session_id=session.id,
+            arxiv_id="2310.06825",
+        ),
+    )
+    second = PaperChunk(
+        id="2310.06825:chunk:1",
+        paper_id="2310.06825",
+        chunk_index=1,
+        text="Second retrieval chunk.",
+        source=ChunkSource(
+            paper_id="2310.06825",
+            session_id=session.id,
+            arxiv_id="2310.06825",
+        ),
+    )
+
+    assert repository.upsert_many([first, second]).model_dump() == {
+        "inserted": 2,
+        "updated": 0,
+        "skipped": 0,
+    }
+
+    updated_first = first.model_copy(update={"text": "Updated retrieval chunk."})
+    assert repository.upsert_many([updated_first]).model_dump() == {
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+    }
+
+    loaded = repository.list_for_paper("2310.06825")
+    assert [chunk.id for chunk in loaded] == [
+        "2310.06825:chunk:0",
+        "2310.06825:chunk:1",
+    ]
+    assert loaded[0].text == "Updated retrieval chunk."
+
+    by_ids = repository.get_many_by_ids(
+        ["2310.06825:chunk:1", "missing", "2310.06825:chunk:0"]
+    )
+    assert [chunk.id for chunk in by_ids] == [
+        "2310.06825:chunk:1",
+        "2310.06825:chunk:0",
+    ]

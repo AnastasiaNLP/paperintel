@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -188,5 +188,49 @@ class AgentRunORM(Base):
     session: Mapped[SessionORM | None] = relationship(back_populates="agent_runs")
 
 
+class PaperChunkORM(TimestampMixin, Base):
+    __tablename__ = "paper_chunks"
+
+    id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    paper_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_json: Mapped[dict[str, Any]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    location_json: Mapped[dict[str, Any]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    artifact_refs_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 Index("ix_turns_session_created_at", TurnORM.session_id, TurnORM.created_at)
 Index("ix_agent_runs_session_started_at", AgentRunORM.session_id, AgentRunORM.started_at)
+Index("ix_paper_chunks_paper_chunk", PaperChunkORM.paper_id, PaperChunkORM.chunk_index)
+Index("ix_paper_chunks_session_paper", PaperChunkORM.session_id, PaperChunkORM.paper_id)

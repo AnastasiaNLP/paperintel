@@ -1,7 +1,8 @@
 from models.agent_runs import AgentRun
 from models.errors import StructuredError
+from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
 from models.session import Session, Turn
-from storage.models import AgentRunORM, SessionORM, StructuredErrorORM, TurnORM
+from storage.models import AgentRunORM, PaperChunkORM, SessionORM, StructuredErrorORM, TurnORM
 
 
 def session_to_orm(session: Session) -> SessionORM:
@@ -137,4 +138,45 @@ def orm_to_agent_run(orm: AgentRunORM) -> AgentRun:
         details=orm.details_json or {},
         started_at=orm.started_at,
         finished_at=orm.finished_at,
+    )
+
+
+def paper_chunk_to_orm(chunk: PaperChunk) -> PaperChunkORM:
+    return PaperChunkORM(
+        id=chunk.id,
+        paper_id=chunk.paper_id,
+        session_id=chunk.source.session_id,
+        paper_index=chunk.source.paper_index,
+        chunk_index=chunk.chunk_index,
+        chunk_type=chunk.chunk_type,
+        text=chunk.text,
+        source_json=chunk.source.model_dump(mode="json"),
+        location_json=chunk.location.model_dump(mode="json"),
+        artifact_refs_json=[
+            artifact.model_dump(mode="json") for artifact in chunk.artifact_refs
+        ],
+        metadata_json=chunk.metadata,
+        embedding_model=chunk.embedding_model,
+        embedding_dimensions=chunk.embedding_dimensions,
+        created_at=chunk.created_at,
+    )
+
+
+def orm_to_paper_chunk(orm: PaperChunkORM) -> PaperChunk:
+    return PaperChunk(
+        id=orm.id,
+        paper_id=orm.paper_id,
+        chunk_index=orm.chunk_index,
+        text=orm.text,
+        chunk_type=orm.chunk_type,
+        source=ChunkSource(**(orm.source_json or {})),
+        location=ChunkLocation(**(orm.location_json or {})),
+        artifact_refs=[
+            EvidenceArtifact(**artifact)
+            for artifact in list(orm.artifact_refs_json or [])
+        ],
+        metadata=orm.metadata_json or {},
+        embedding_model=orm.embedding_model,
+        embedding_dimensions=orm.embedding_dimensions,
+        created_at=orm.created_at,
     )

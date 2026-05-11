@@ -3,6 +3,7 @@ from sqlalchemy.dialects import postgresql
 from storage.models import (
     AgentRunORM,
     Base,
+    PaperChunkORM,
     SessionORM,
     StructuredErrorORM,
     TurnORM,
@@ -19,6 +20,7 @@ def test_initial_storage_metadata_contains_foundation_tables():
         "turns",
         "agent_runs",
         "structured_errors",
+        "paper_chunks",
     }.issubset(Base.metadata.tables.keys())
 
 
@@ -80,3 +82,31 @@ def test_structured_error_table_matches_error_contract_columns():
         "details_json",
     ]:
         assert name in columns
+
+
+def test_paper_chunk_table_matches_retrieval_contract_columns():
+    columns = PaperChunkORM.__table__.c
+
+    for name in [
+        "paper_id",
+        "session_id",
+        "paper_index",
+        "chunk_index",
+        "chunk_type",
+        "text",
+        "source_json",
+        "location_json",
+        "artifact_refs_json",
+        "metadata_json",
+        "embedding_model",
+        "embedding_dimensions",
+        "created_at",
+        "updated_at",
+    ]:
+        assert name in columns
+
+    assert columns.id.primary_key
+    assert isinstance(_postgres_type(columns.source_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.location_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.artifact_refs_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.metadata_json), postgresql.JSONB)

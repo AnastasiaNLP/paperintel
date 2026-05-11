@@ -1,3 +1,5 @@
+from typing import Sequence
+
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy.orm import sessionmaker
@@ -7,18 +9,21 @@ from api.in_memory_session_store import SessionNotFoundError
 from api.session_store import SessionStore
 from models.agent_runs import AgentRun
 from models.errors import StructuredError
+from models.retrieval import PaperChunk, UpsertChunksResult
 from models.session import Persona, Session, SessionPhase, Turn, TurnRole
 from storage.mappers import (
     agent_run_to_orm,
     orm_to_agent_run,
+    orm_to_paper_chunk,
     orm_to_session,
     orm_to_structured_error,
     orm_to_turn,
+    paper_chunk_to_orm,
     session_to_orm,
     structured_error_to_orm,
     turn_to_orm,
 )
-from storage.models import AgentRunORM, SessionORM, StructuredErrorORM, TurnORM
+from storage.models import AgentRunORM, PaperChunkORM, SessionORM, StructuredErrorORM, TurnORM
 
 
 class PostgresSessionStore(SessionStore):
@@ -152,7 +157,63 @@ class PostgresStructuredErrorRepository:
             return [orm_to_structured_error(row) for row in rows]
 
 
+class PostgresPaperChunkRepository:
+    def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
+        self.session_factory = session_factory
+
+    def upsert_many(self, chunks: list[PaperChunk]) -> UpsertChunksResult:
+        if not chunks:
+            return UpsertChunksResult()
+
+        chunk_ids = [chunk.id for chunk in chunks]
+        with self.session_factory() as db:
+            existing_ids = set(
+                db.execute(
+                    select(PaperChunkORM.id).where(PaperChunkORM.id.in_(chunk_ids))
+                )
+                .scalars()
+                .all()
+            )
+            for chunk in chunks:
+                db.merge(paper_chunk_to_orm(chunk))
+            db.commit()
+
+        updated = len(existing_ids)
+        inserted = len(chunks) - updated
+        return UpsertChunksResult(inserted=inserted, updated=updated, skipped=0)
+
+    def list_for_paper(self, paper_id: str) -> list[PaperChunk]:
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(PaperChunkORM)
+                    .where(PaperChunkORM.paper_id == paper_id)
+                    .order_by(PaperChunkORM.chunk_index.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [orm_to_paper_chunk(row) for row in rows]
+
+    def get_many_by_ids(self, chunk_ids: Sequence[str]) -> list[PaperChunk]:
+        if not chunk_ids:
+            return []
+
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(PaperChunkORM).where(PaperChunkORM.id.in_(list(chunk_ids)))
+                )
+                .scalars()
+                .all()
+            )
+
+        chunks_by_id = {row.id: orm_to_paper_chunk(row) for row in rows}
+        return [chunks_by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in chunks_by_id]
+
+
 def clear_foundation_tables(db: DbSession) -> None:
+    db.execute(delete(PaperChunkORM))
     db.execute(delete(TurnORM))
     db.execute(delete(AgentRunORM))
     db.execute(delete(StructuredErrorORM))

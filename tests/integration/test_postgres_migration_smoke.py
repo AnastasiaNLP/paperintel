@@ -35,11 +35,12 @@ def test_alembic_upgrade_and_downgrade_against_postgres():
             "turns",
             "agent_runs",
             "structured_errors",
+            "paper_chunks",
         }.issubset(inspector.get_table_names())
 
         with engine.connect() as conn:
             version = conn.execute(text("select version_num from alembic_version")).scalar()
-        assert version == "20260504_0001"
+        assert version == "20260511_0002"
     finally:
         command.downgrade(config, "base")
         engine.dispose()
