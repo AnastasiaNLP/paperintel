@@ -103,7 +103,7 @@ def test_current_url_uses_batch_url_for_batch_mode():
     assert _current_url(state, 1) == "https://arxiv.org/abs/2305.14314"
 
 
-def test_report_finalize_packs_success_slot_and_resets_scratch_state():
+def test_report_finalize_packs_success_slot_and_preserves_retrieval_inputs():
     state = _base_state()
 
     result = report_finalize_node(state)
@@ -111,22 +111,9 @@ def test_report_finalize_packs_success_slot_and_resets_scratch_state():
     assert result["processing_stage"] == "report_finalize"
     assert result["current_paper_index"] == 1
     assert result["errors"] == []
-    assert result["metadata"] is None
-    assert result["raw_text"] is None
-    assert result["pdf_path"] is None
-    assert result["text_by_page"] is None
-    assert result["method_extraction"] is None
-    assert result["benchmarks"] == []
-    assert result["production_readiness"] is None
-    assert result["engineer_report"] is None
-    assert result["full_markdown_report"] is None
-    assert result["ingestion_provenance"] is None
-    assert result["confidence_scores"] == {}
-    assert result["needs_human_review"] is False
-    assert result["human_review_reason"] is None
-    assert result["paper_failed"] is False
-    assert result["paper_failure_reason"] is None
-    assert result["failed_node"] is None
+    assert "metadata" not in result
+    assert "raw_text" not in result
+    assert "text_by_page" not in result
 
     papers = result["papers"]
     assert isinstance(papers, list)

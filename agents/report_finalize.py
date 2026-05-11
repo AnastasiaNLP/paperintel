@@ -87,5 +87,4 @@ def report_finalize_node(state: PaperIntelState | dict) -> dict:
         "current_paper_index": paper_index + 1,
         "processing_stage": "report_finalize",
         "errors": [],
-        **_SCRATCH_RESET,
     }

@@ -9,6 +9,7 @@ from models.schemas import EngineerReport, PaperSlot
 
 STUB_MODULE_NAMES = [
     "agents.benchmark",
+    "agents.chunk_and_index",
     "agents.comparator",
     "agents.extraction",
     "agents.evidence_critic",
@@ -171,6 +172,13 @@ class Scenario:
             "failed_node": None,
         }
 
+    def chunk_and_index(self, state):
+        return {
+            "processing_stage": "chunk_and_index",
+            "chunk_indexing_status": "skipped",
+            "chunk_count": 0,
+        }
+
     def paper_failure_finalize(self, state):
         current_index = state.get("current_paper_index", 0)
         input_url = (
@@ -224,6 +232,7 @@ class Scenario:
 def _load_graph_with_scenario(scenario: Scenario):
     stub_modules = {
         "agents.benchmark": ("benchmark_analyst_agent", scenario.benchmark),
+        "agents.chunk_and_index": ("chunk_and_index_node", scenario.chunk_and_index),
         "agents.comparator": ("comparator_agent", scenario.comparator),
         "agents.extraction": ("extraction_agent", scenario.extraction),
         "agents.evidence_critic": ("evidence_critic_agent", scenario.evidence_critic),

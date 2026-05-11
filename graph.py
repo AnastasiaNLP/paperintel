@@ -4,6 +4,7 @@ from typing import Literal
 from langgraph.graph import END, StateGraph
 
 from agents.benchmark import benchmark_analyst_agent
+from agents.chunk_and_index import chunk_and_index_node
 from agents.comparator import comparator_agent
 from agents.extraction import extraction_agent
 from agents.evidence_critic import evidence_critic_agent
@@ -71,6 +72,7 @@ def build_graph() -> StateGraph:
     graph.add_node("report", report_agent)
     graph.add_node("evidence_critic", evidence_critic_agent)
     graph.add_node("report_finalize", report_finalize_node)
+    graph.add_node("chunk_and_index", chunk_and_index_node)
     graph.add_node("paper_failure_finalize", paper_failure_finalize_node)
     graph.add_node("comparator", comparator_agent)
 
@@ -132,8 +134,9 @@ def build_graph() -> StateGraph:
 
     graph.add_edge("report", "evidence_critic")
     graph.add_edge("evidence_critic", "report_finalize")
+    graph.add_edge("report_finalize", "chunk_and_index")
     graph.add_conditional_edges(
-        "report_finalize",
+        "chunk_and_index",
         route_after_finalize,
         {
             "ingestion": "ingestion",

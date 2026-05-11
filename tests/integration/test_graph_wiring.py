@@ -7,6 +7,7 @@ import pytest
 
 STUB_MODULE_NAMES = [
     "agents.benchmark",
+    "agents.chunk_and_index",
     "agents.comparator",
     "agents.extraction",
     "agents.evidence_critic",
@@ -36,6 +37,7 @@ def _cleanup_stubbed_graph_modules():
 def _load_graph_with_stubs():
     stub_modules = {
         "agents.benchmark": ("benchmark_analyst_agent", lambda state: {}),
+        "agents.chunk_and_index": ("chunk_and_index_node", lambda state: {}),
         "agents.comparator": ("comparator_agent", lambda state: {}),
         "agents.extraction": ("extraction_agent", lambda state: {}),
         "agents.evidence_critic": ("evidence_critic_agent", lambda state: {}),

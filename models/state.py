@@ -24,6 +24,7 @@ ProcessingStage = Literal[
     "readiness",
     "report",
     "report_finalize",
+    "chunk_and_index",
     "paper_failure_finalize",
     "comparator",
     "comparison_completed",
@@ -82,6 +83,9 @@ class PaperIntelState(TypedDict):
     paper_failed: bool
     paper_failure_reason: Optional[str]
     failed_node: Optional[str]
+    chunk_indexing_status: Optional[Literal["skipped", "success", "failed"]]
+    chunk_indexing_error: Optional[str]
+    chunk_count: Optional[int]
 
     # Metadata
     messages: Annotated[list, add_messages]
