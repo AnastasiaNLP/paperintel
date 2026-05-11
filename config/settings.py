@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     langchain_tracing_v2: str = "true"
     langchain_project: str = "paperintel"
     postgres_url: str = "postgresql://paperintel:dev_password@localhost:5432/paperintel"
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_collection: str = "paper_chunks"
+    qdrant_timeout: float = 10.0
     haiku_model: str = "claude-haiku-4-5-20251001"
     sonnet_model: str = "claude-sonnet-4-6"
     openai_model: str = "gpt-4o-mini"
