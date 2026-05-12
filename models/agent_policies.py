@@ -31,6 +31,13 @@ DEFAULT_AGENT_POLICIES: dict[str, AgentRuntimePolicy] = {
         timeout_seconds=None,
         fallback_strategy="skip_review_on_no_report",
     ),
+    "answer_agent": AgentRuntimePolicy(
+        max_iterations=1,
+        max_tool_calls=1,
+        max_tokens=4_000,
+        timeout_seconds=60,
+        fallback_strategy="insufficient_evidence_response",
+    ),
 }
 
 CONSERVATIVE_AGENT_POLICY = AgentRuntimePolicy(
