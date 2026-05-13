@@ -52,6 +52,13 @@ DEFAULT_AGENT_POLICIES: dict[str, AgentRuntimePolicy] = {
         timeout_seconds=15,
         fallback_strategy="ask_clarification",
     ),
+    "retrieval_planner": AgentRuntimePolicy(
+        max_iterations=2,
+        max_tool_calls=4,
+        max_tokens=2_000,
+        timeout_seconds=30,
+        fallback_strategy="return_best_effort_evidence",
+    ),
 }
 
 CONSERVATIVE_AGENT_POLICY = AgentRuntimePolicy(

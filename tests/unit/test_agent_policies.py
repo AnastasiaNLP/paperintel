@@ -67,6 +67,7 @@ def test_current_pipeline_agent_policies_are_registered():
         "answer_agent",
         "citation_critic",
         "intent_router",
+        "retrieval_planner",
     }
 
     assert expected.issubset(DEFAULT_AGENT_POLICIES.keys())
