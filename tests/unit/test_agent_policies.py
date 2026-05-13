@@ -61,6 +61,12 @@ def test_unknown_agent_policy_non_strict_uses_conservative_default():
 
 
 def test_current_pipeline_agent_policies_are_registered():
-    expected = {"report", "evidence_critic", "answer_agent", "citation_critic"}
+    expected = {
+        "report",
+        "evidence_critic",
+        "answer_agent",
+        "citation_critic",
+        "intent_router",
+    }
 
     assert expected.issubset(DEFAULT_AGENT_POLICIES.keys())

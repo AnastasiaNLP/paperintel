@@ -45,6 +45,13 @@ DEFAULT_AGENT_POLICIES: dict[str, AgentRuntimePolicy] = {
         timeout_seconds=60,
         fallback_strategy="downgrade_after_repair_exhaustion",
     ),
+    "intent_router": AgentRuntimePolicy(
+        max_iterations=1,
+        max_tool_calls=1,
+        max_tokens=1_500,
+        timeout_seconds=15,
+        fallback_strategy="ask_clarification",
+    ),
 }
 
 CONSERVATIVE_AGENT_POLICY = AgentRuntimePolicy(
