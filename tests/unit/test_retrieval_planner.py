@@ -140,7 +140,7 @@ def test_retrieval_planner_builds_deterministic_math_plan():
     assert run.llm_call_count == 0
 
 
-def test_retrieval_planner_passes_query_filters_to_retrieval_layer():
+def test_retrieval_planner_filters_chunk_type_but_uses_sections_only_as_query_hints():
     layer = RecordingRetrievalLayer(result_sets=[[_result()]])
 
     retrieval_planner_agent(_state(), config=_config(layer))
@@ -149,10 +149,10 @@ def test_retrieval_planner_passes_query_filters_to_retrieval_layer():
     assert query.session_id == "session-1"
     assert query.paper_ids == ["2310.06825"]
     assert query.limit == 8
-    assert query.filters == {
-        "chunk_types_priority": ["equation", "text"],
-        "section_queries": ["Method", "Objective", "Loss", "Training"],
-    }
+    assert query.filters == {"chunk_type": ["equation", "text"]}
+    assert "Method" in query.query
+    assert "Objective" in query.query
+    assert "section_queries" not in query.filters
     assert layer.assemble_calls[0]["max_chunks"] == 8
 
 

@@ -180,10 +180,7 @@ def _search_query_from_plan(
         session_id=session_id,
         paper_ids=plan.paper_ids,
         limit=plan.k,
-        filters={
-            "chunk_types_priority": plan.chunk_types_priority,
-            "section_queries": plan.section_queries,
-        },
+        filters={"chunk_type": plan.chunk_types_priority},
     )
 
 
