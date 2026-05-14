@@ -41,6 +41,22 @@ class InMemorySessionStore:
         session.updated_at = utc_now()
         return deepcopy(session)
 
+    def add_active_paper(self, session_id: str, paper_id: str) -> Session:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise SessionNotFoundError(f"Session not found: {session_id}")
+        if paper_id in session.active_paper_ids:
+            return deepcopy(session)
+
+        updated = session.model_copy(
+            update={
+                "active_paper_ids": [*session.active_paper_ids, paper_id],
+                "updated_at": utc_now(),
+            }
+        )
+        self._sessions[session_id] = updated
+        return deepcopy(updated)
+
     def append_turn(
         self,
         session_id: str,

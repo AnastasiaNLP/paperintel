@@ -21,6 +21,9 @@ class SessionStore(Protocol):
     def update_phase(self, session_id: str, phase: SessionPhase) -> Session:
         ...
 
+    def add_active_paper(self, session_id: str, paper_id: str) -> Session:
+        ...
+
     def append_turn(
         self,
         session_id: str,

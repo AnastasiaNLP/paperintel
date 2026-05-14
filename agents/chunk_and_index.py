@@ -2,6 +2,8 @@ from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
+from api.in_memory_session_store import SessionNotFoundError
+from api.session_store import SessionStore
 from agents.report_finalize import _SCRATCH_RESET
 from models.errors import ErrorCodes, make_error
 from models.schemas import PaperSlot
@@ -54,6 +56,13 @@ def _retrieval_layer(config: RunnableConfig | None) -> RetrievalLayer:
     )
 
 
+def _session_store(config: RunnableConfig | None) -> SessionStore | None:
+    store = _configurable(config).get("session_store")
+    if store is not None and hasattr(store, "add_active_paper"):
+        return store
+    return None
+
+
 def _last_finalized_slot(state: PaperIntelState | dict) -> PaperSlot | None:
     papers = state.get("papers") or []
     if not papers:
@@ -77,6 +86,26 @@ def _reset_with_status(
         "errors": errors or [],
         **_SCRATCH_RESET,
     }
+
+
+def _active_paper_warning(message: str, exc: Exception) -> Any:
+    if isinstance(exc, SessionNotFoundError):
+        return make_error(
+            ErrorCodes.WARNING,
+            message,
+            node="chunk_and_index",
+            severity="error",
+            recoverable=False,
+            exception_type=type(exc).__name__,
+        )
+    return make_error(
+        ErrorCodes.WARNING,
+        message,
+        node="chunk_and_index",
+        severity="warning",
+        recoverable=True,
+        exception_type=type(exc).__name__,
+    )
 
 
 def chunk_and_index_node(
@@ -117,7 +146,27 @@ def chunk_and_index_node(
             return _reset_with_status(status="skipped", chunk_count=0)
 
         _retrieval_layer(config).upsert_chunks(result.chunks)
-        return _reset_with_status(status="success", chunk_count=len(result.chunks))
+        errors = []
+        session_id = _configurable(config).get("session_id")
+        session_store = _session_store(config)
+        if session_id and session_store is not None:
+            try:
+                session_store.add_active_paper(session_id, result.paper_id)
+            except Exception as exc:
+                errors.append(
+                    _active_paper_warning(
+                        (
+                            "chunk_and_index could not mark paper as active "
+                            f"for session {session_id}: {exc}"
+                        ),
+                        exc,
+                    )
+                )
+        return _reset_with_status(
+            status="success",
+            chunk_count=len(result.chunks),
+            errors=errors,
+        )
     except Exception as exc:
         message = f"chunk_and_index failed for paper {slot.paper_index}: {exc}"
         return _reset_with_status(

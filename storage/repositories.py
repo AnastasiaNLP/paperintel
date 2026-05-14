@@ -63,6 +63,19 @@ class PostgresSessionStore(SessionStore):
             db.refresh(orm)
             return orm_to_session(orm)
 
+    def add_active_paper(self, session_id: str, paper_id: str) -> Session:
+        with self.session_factory() as db:
+            orm = db.get(SessionORM, session_id)
+            if orm is None:
+                raise SessionNotFoundError(f"Session not found: {session_id}")
+
+            current_ids = list(orm.active_paper_ids or [])
+            if paper_id not in current_ids:
+                orm.active_paper_ids = [*current_ids, paper_id]
+                db.commit()
+                db.refresh(orm)
+            return orm_to_session(orm)
+
     def append_turn(
         self,
         session_id: str,

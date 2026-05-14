@@ -73,6 +73,27 @@ def test_postgres_session_store_updates_phase(session_factory):
     assert store.require_session(session.id).phase == "qa"
 
 
+def test_postgres_session_store_adds_active_paper(session_factory):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+
+    updated = store.add_active_paper(session.id, "2310.06825")
+
+    assert updated.active_paper_ids == ["2310.06825"]
+    assert store.require_session(session.id).active_paper_ids == ["2310.06825"]
+
+
+def test_postgres_session_store_add_active_paper_is_idempotent(session_factory):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+
+    store.add_active_paper(session.id, "2310.06825")
+    store.add_active_paper(session.id, "2310.06825")
+    updated = store.add_active_paper(session.id, "2401.12345")
+
+    assert updated.active_paper_ids == ["2310.06825", "2401.12345"]
+
+
 def test_postgres_session_store_appends_and_lists_recent_turns(session_factory):
     store = PostgresSessionStore(session_factory)
     session = store.create_session()
