@@ -65,9 +65,10 @@ Implemented production data foundation:
 - explicit `ChatHandler.create_session(...)`
 - explicit `ChatHandler.handle_message(session_id, message)`
 - `Session`, `Turn`, `HandlerResult`, and `GraphInvocationResult` models
-- `Session.persona` field (engineer / researcher / techlead) stored but
-  not yet consumed by the analysis flow (persona-aware behavior planned
-  for agentic layer rollout)
+- `Session.persona` field (engineer / researcher / techlead), consumed by
+  the QA team: Intent Router propagates persona, Retrieval Planner uses it
+  for chunk type and section priorities, and Answer Agent uses persona-
+  specific prompt templates. The analysis pipeline remains persona-neutral.
 - `SessionStore` protocol
 - `InMemorySessionStore`
 - `PostgresSessionStore`
@@ -135,7 +136,8 @@ Planned layers:
 - session budgets
 - discovery agents (Research Strategist, Searcher, Selection Advisor)
 - comparison analyst and synthesis agents
-- critic conflict resolution with explicit claim provenance
+- critic conflict resolution (Citation Critic vs Evidence Critic
+  disagreements), deferred pending structured claim provenance tracking
 - DeepEval, LangSmith, Prometheus, and Grafana observability
 
 ---
@@ -181,11 +183,13 @@ Planned layers:
 │                                                                  │
 │  intent_router                                                   │
 │      ↓                                                           │
-│  retrieval_planner -> answer_agent -> citation_critic            │
-│                                      │                           │
-│                                      ├─ repair_context ->        │
-│                                      │  answer_agent             │
-│                                      └─ accepted -> END          │
+│      ├─ qa_* -> retrieval_planner -> answer_agent ->             │
+│      │         citation_critic                                   │
+│      │              ├─ repair_context -> answer_agent            │
+│      │              └─ accepted -> END                           │
+│      ├─ clarification / unclear / discover / select ->           │
+│      │         clarification_response -> END                     │
+│      └─ analyze_paper -> analysis_requested_response -> END      │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
                                ▼
@@ -433,7 +437,13 @@ User question in existing session
 │ intent + paper refs   │
 │ AgentRun              │
 └──────────┬───────────┘
-           ▼
+           │
+           ├── clarification / unclear ──► clarification_response ──► END
+           │
+           ├── analyze_paper ────────────► analysis_requested_response ──► END
+           │
+           └── qa_* intents
+                    ▼
 ┌──────────────────────┐
 │ Retrieval Planner     │
 │ query, chunk types,   │
@@ -515,6 +525,8 @@ across the codebase and is low priority compared to feature work.
 
 - [docs/AGENT_CONTRACT.md](docs/AGENT_CONTRACT.md) — how to wrap a node
   in the AgentRun lifecycle and AgentRuntimePolicy contract
+- [docs/CHUNKING_STRATEGY.md](docs/CHUNKING_STRATEGY.md) — chunking
+  decisions for retrieval, citations, page tracking, and embedding model
 
 ---
 
@@ -617,6 +629,12 @@ The test suite has three categories:
 
 Offline tests must not require external API calls or a database URL.
 
+Current coverage:
+
+- 315 not-live unit and integration tests
+- 12 DB-marked tests skipped unless `PAPERINTEL_TEST_DATABASE_URL` is set
+- 1 live end-to-end QA conversation test requiring the full real stack
+
 ```bash
 LANGCHAIN_TRACING_V2=false PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 ```
@@ -660,6 +678,8 @@ docker compose up -d postgres qdrant
 Expected live markers include:
 
 ```text
+LIVE_QA_ANALYSIS_SECONDS=...
+LIVE_QA_QUESTION_SECONDS=...
 LIVE_QA_ACTIVE_PAPER_IDS=...
 LIVE_QA_INTENT=qa_factual
 LIVE_QA_CITATION_COUNT=...
@@ -668,3 +688,6 @@ LIVE_QA_FAILED_RUNS=0
 LIVE_QA_QDRANT_CLEANUP=success
 LIVE_QA_POSTGRES_CLEANUP=success
 ```
+
+The current live QA run is expected to take roughly 90 seconds on a local
+Docker Postgres/Qdrant stack.
