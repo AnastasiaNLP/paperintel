@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from models.agent_runs import AgentRun
 from models.errors import StructuredError
 
 
@@ -54,6 +55,9 @@ class GraphInvocationResult(BaseModel):
     intent: str | None = None
     referenced_paper_ids: list[str] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
+    needs_analysis: bool = False
+    agent_runs: list[AgentRun] = Field(default_factory=list)
+    errors: list[StructuredError] = Field(default_factory=list)
     next_phase: SessionPhase | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
 
@@ -65,6 +69,9 @@ class HandlerResult(BaseModel):
     intent: str | None = None
     referenced_paper_ids: list[str] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
+    needs_analysis: bool = False
+    agent_runs: list[AgentRun] = Field(default_factory=list)
+    errors: list[StructuredError] = Field(default_factory=list)
     user_turn_id: str
     assistant_turn_id: str
     error: StructuredError | None = None

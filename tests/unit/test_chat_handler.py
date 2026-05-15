@@ -4,6 +4,7 @@ from agents.agent_run_recorder import InMemoryAgentRunPersistence
 from api.chat_handler import ChatHandler
 from api.in_memory_session_store import InMemorySessionStore, SessionNotFoundError
 from models.errors import ErrorCodes, StructuredError
+from models.qa import AnswerDraft
 
 
 class FakeRunner:
@@ -25,7 +26,11 @@ class FakeRunner:
         return self.result
 
 
-def _handler(runner=None, persistence=None):
+class FakeRetrievalLayer:
+    pass
+
+
+def _handler(runner=None, persistence=None, analysis_runner=None, retrieval_layer=None):
     store = InMemorySessionStore()
     runner = runner or FakeRunner()
     persistence = persistence or InMemoryAgentRunPersistence()
@@ -33,7 +38,9 @@ def _handler(runner=None, persistence=None):
         ChatHandler(
             store=store,
             conversation_runner=runner,
+            analysis_runner=analysis_runner,
             agent_run_persistence=persistence,
+            retrieval_layer=retrieval_layer,
         ),
         store,
         runner,
@@ -78,7 +85,8 @@ def test_handle_message_writes_user_turn_before_graph_and_assistant_after():
     assert turns[1].artifact_refs == ["artifact-1"]
     assert result.user_turn_id == turns[0].id
     assert result.assistant_turn_id == turns[1].id
-    assert runner.calls[0]["input"]["message"] == "What is in this paper?"
+    assert runner.calls[0]["input"]["user_message"] == "What is in this paper?"
+    assert "message" not in runner.calls[0]["input"]
 
 
 def test_handle_message_updates_phase_from_graph_result():
@@ -93,17 +101,24 @@ def test_handle_message_updates_phase_from_graph_result():
 
 def test_handler_propagates_session_id_and_persistence_to_graph_config():
     persistence = InMemoryAgentRunPersistence()
-    handler, _, runner, _ = _handler(persistence=persistence)
+    retrieval_layer = FakeRetrievalLayer()
+    handler, store, runner, _ = _handler(
+        persistence=persistence,
+        retrieval_layer=retrieval_layer,
+    )
     session = handler.create_session()
+    store.add_active_paper(session.id, "paper-1")
 
     handler.handle_message(session.id, "hello")
 
     call = runner.calls[0]
     assert call["input"]["session_id"] == session.id
-    assert call["input"]["phase"] == "idle"
     assert call["input"]["persona"] == "engineer"
+    assert call["input"]["referenced_paper_ids"] == ["paper-1"]
     assert call["config"]["configurable"]["session_id"] == session.id
+    assert call["config"]["configurable"]["session_store"] is store
     assert call["config"]["configurable"]["agent_run_persistence"] is persistence
+    assert call["config"]["configurable"]["retrieval_layer"] is retrieval_layer
 
 
 def test_graph_failure_preserves_user_turn_and_writes_structured_error_turn():
@@ -122,6 +137,7 @@ def test_graph_failure_preserves_user_turn_and_writes_structured_error_turn():
     assert turns[1].error.details["exception_type"] == "RuntimeError"
     assert result.phase == "failed"
     assert result.error == turns[1].error
+    assert result.errors == [turns[1].error]
     assert store.require_session(session.id).phase == "failed"
 
 
@@ -140,7 +156,7 @@ def test_two_messages_in_same_session_accumulate_turn_history():
         "assistant response",
     ]
     assert len(runner.calls) == 2
-    assert runner.calls[1]["input"]["phase"] == "qa"
+    assert runner.calls[1]["input"]["user_message"] == "second"
 
 
 def test_graph_invocation_result_and_handler_result_are_separate_types():
@@ -151,3 +167,52 @@ def test_graph_invocation_result_and_handler_result_are_separate_types():
 
     assert hasattr(result, "user_turn_id")
     assert not hasattr(result, "raw")
+
+
+def test_conversation_answer_draft_becomes_response_text():
+    answer = AnswerDraft(
+        question="What is the method?",
+        answer_text="It uses retrieval.",
+        persona="engineer",
+    )
+    runner = FakeRunner(result={"answer_draft": answer, "intent": "qa_factual"})
+    handler, store, _, _ = _handler(runner=runner)
+    session = handler.create_session()
+
+    result = handler.handle_message(session.id, "What is the method?")
+
+    assert result.response_text == "It uses retrieval."
+    assert store.list_recent_turns(session.id)[1].content == "It uses retrieval."
+
+
+def test_conversation_clarification_becomes_response_text():
+    runner = FakeRunner(
+        result={
+            "intent": "clarification_needed",
+            "needs_clarification": True,
+            "clarification_question": "Which paper do you mean?",
+        }
+    )
+    handler, _, _, _ = _handler(runner=runner)
+    session = handler.create_session()
+
+    result = handler.handle_message(session.id, "What about the second paper?")
+
+    assert result.response_text == "Which paper do you mean?"
+    assert result.intent == "clarification_needed"
+
+
+def test_analyze_paper_without_analysis_runner_returns_controlled_response():
+    handler, store, runner, _ = _handler()
+    session = handler.create_session()
+
+    result = handler.handle_message(session.id, "https://arxiv.org/abs/2310.06825")
+
+    assert runner.calls == []
+    assert result.intent == "analyze_paper"
+    assert result.needs_analysis is True
+    assert "analysis is configured" in result.response_text
+    assert [turn.role for turn in store.list_recent_turns(session.id)] == [
+        "user",
+        "assistant",
+    ]
