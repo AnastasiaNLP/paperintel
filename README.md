@@ -4,15 +4,18 @@ PaperIntel is a research intelligence system for AI/ML papers. It is designed to
 help engineers, researchers, and technical leads analyze known papers today and
 grow into persistent discovery, comparison, and conversational QA workflows.
 
-The current implementation has two strong foundations:
+The current implementation has three strong foundations:
 
 - a known-paper analysis pipeline for arXiv URLs, PDFs, and URL batches
 - a production data foundation with sessions, turns, structured errors,
   AgentRun tracing, runtime policies, Alembic migrations, and Postgres-backed
   repositories
+- a retrieval-backed conversational QA flow with Intent Router, Evidence
+  Retrieval Planner, Answer Agent, Citation Critic, bounded repair, and a
+  live end-to-end QA test against real Postgres, Qdrant, and LLM services
 
-Discovery, retrieval, full conversational QA, jobs, outbox, cache, and transport
-APIs are planned but not implemented yet.
+Discovery, jobs, outbox, cache, artifact storage, transport APIs, and critic
+conflict resolution are planned but not implemented yet.
 
 ---
 
@@ -25,6 +28,10 @@ APIs are planned but not implemented yet.
   graph state, AgentRuntimePolicy schema with selective enforcement,
   persistence seam (Noop / InMemory / Postgres), applied to `report` and
   `evidence_critic` nodes. Checkpoint serialization verified.
+- **Retrieval + QA Foundation (closed):** chunking after report finalization,
+  Postgres/Qdrant-backed retrieval, ConversationGraph, ChatHandler routing
+  between analysis and conversation flows, four production-shaped QA agents,
+  Citation Critic repair loop, and live QA conversation verification.
 - **Earlier — Repository hygiene:** structured errors, runnable baseline,
   test layout (offline vs live), LLM provider abstraction.
 
@@ -44,6 +51,7 @@ Implemented analysis pipeline:
 - engineer report generation
 - Evidence Critic review after report generation
 - report finalization into `PaperSlot`
+- chunking and indexing after report finalization
 - multi-paper comparison
 - LangGraph orchestration
 - batch processing for multiple paper URLs
@@ -73,6 +81,32 @@ Implemented production data foundation:
 - `api/app_factory.create_chat_handler(...)` for application bootstrap
 - manual and automated Postgres smoke tests
 
+Implemented retrieval and QA foundation:
+
+- `models/retrieval.py` domain contracts: `PaperChunk`, `CitationRef`,
+  `EvidenceBundle`, `ChunkSearchQuery`, `EvidenceArtifact`
+- `services/chunking.py` and `ChunkingService`
+- `PaperChunk` Postgres storage and Alembic migration
+- `QdrantChunkStore` with deterministic point IDs and idempotent collection setup
+- `PostgresQdrantRetrievalLayer`
+- `InMemoryRetrievalLayer` for deterministic tests
+- `chunk_and_index` graph node after `report_finalize`
+- non-fatal indexing failures: paper analysis can complete even if indexing fails
+- `Session.active_paper_ids` updated only after successful indexing
+- `models/qa.py` contracts: `IntentResolution`, `EvidencePlan`,
+  `AnswerDraft`, `CriticReview`, `RepairContext`, `QAResult`
+- `Intent Router` for intent classification and paper reference resolution
+- `Evidence Retrieval Planner` for persona-aware retrieval planning
+- `Answer Agent` with persona-aware grounded answers
+- `Citation Critic` with bounded repair loop
+- `services/repair.py` centralized repair semantics
+- `graph_conversation.py` ConversationGraph:
+  `intent_router -> retrieval_planner -> answer_agent -> citation_critic`
+- `ChatHandler` routing:
+  paper URL messages go to analysis, questions go to conversation QA
+- live QA end-to-end test covering real analysis, retrieval, answer,
+  citations, repair loop, AgentRun persistence, and cleanup
+
 Implemented controlled agent contract:
 
 - `AgentRun` lifecycle in graph state
@@ -84,28 +118,24 @@ Implemented controlled agent contract:
 - report policy warning when `llm_call_count` exceeds `max_tool_calls`
 - checkpoint serialization coverage for real `AgentRun` objects
 
-**Note on scope:** the production agent contract is currently implemented for
-two nodes: `report` (wrapped workflow processor with real `llm_call_count`
-enforcement) and `evidence_critic` (first production-shaped critic, MVP
-deterministic mode). Other LLM-assisted nodes — extraction, benchmark,
-readiness, comparator — remain analysis pipeline processors. Wrapping them in
-the full AgentRun / AgentRuntimePolicy contract is planned for the agentic
-layer rollout.
+**Note on scope:** the production agent contract is implemented for
+`report`, `evidence_critic`, and the QA team:
+`intent_router`, `retrieval_planner`, `answer_agent`, and `citation_critic`.
+Other LLM-assisted analysis nodes — extraction, benchmark, readiness,
+comparator — remain analysis pipeline processors. Wrapping them in the full
+AgentRun / AgentRuntimePolicy contract is planned for later hardening.
 
 Planned layers:
 
 - FastAPI, Gradio, and MCP transport layer
-- real `ConversationGraph`
-- intent routing and reference resolution
-- retrieval with Qdrant
 - artifact storage for PDFs, raw text, page images, formulas, and agent outputs
 - paper cache with versioning
 - pg_boss jobs
 - outbox events
 - session budgets
 - discovery agents (Research Strategist, Searcher, Selection Advisor)
-- QA agents (Intent Router, Evidence Retrieval Planner, Answer, Citation Critic)
 - comparison analyst and synthesis agents
+- critic conflict resolution with explicit claim provenance
 - DeepEval, LangSmith, Prometheus, and Grafana observability
 
 ---
@@ -122,12 +152,15 @@ Planned layers:
 │  - writes user turn before graph call                            │
 │  - writes assistant turn after graph call                        │
 │  - graph failure -> StructuredError                              │
-│  - passes session_id + AgentRunPersistence via RunnableConfig    │
+│  - routes paper URLs to analysis graph                           │
+│  - routes questions to conversation graph                         │
+│  - passes session_id, SessionStore, RetrievalLayer,               │
+│    AgentRunPersistence via RunnableConfig                         │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
                                ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                    CURRENT GRAPH PIPELINE                        │
+│                    ANALYSIS GRAPH PIPELINE                       │
 │                                                                  │
 │  supervisor                                                      │
 │      ↓                                                           │
@@ -135,8 +168,24 @@ Planned layers:
 │      ↓                                                           │
 │  report -> evidence_critic -> report_finalize                    │
 │      ↓                                                           │
+│  chunk_and_index                                                 │
+│      ↓                                                           │
 │      ├─ next paper in batch -> ingestion                         │
-│      └─ 2+ completed papers -> comparator -> END                 │
+│      ├─ 2+ completed papers -> comparator -> END                 │
+│      └─ single paper -> END                                      │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                    CONVERSATION GRAPH                            │
+│                                                                  │
+│  intent_router                                                   │
+│      ↓                                                           │
+│  retrieval_planner -> answer_agent -> citation_critic            │
+│                                      │                           │
+│                                      ├─ repair_context ->        │
+│                                      │  answer_agent             │
+│                                      └─ accepted -> END          │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
                                ▼
@@ -153,6 +202,10 @@ Planned layers:
 │    - PostgresAgentRunPersistence                                 │
 │                                                                  │
 │  PostgresStructuredErrorRepository                               │
+│  PaperChunkRepository                                            │
+│  QdrantChunkStore                                                │
+│  RetrievalLayer                                                  │
+│  Repair service                                                  │
 │  SQLAlchemy mappers (Pydantic ↔ ORM)                             │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
@@ -165,11 +218,13 @@ Planned layers:
 │  - turns                                                         │
 │  - agent_runs                                                    │
 │  - structured_errors                                             │
+│  - paper_chunks                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-This is not yet the final discovery/QA system. It is the stateful production
-foundation that the future conversation and retrieval layers will use.
+This is still not the final discovery system, but it is now a working
+known-paper analysis and conversational QA system with retrieval-backed answers,
+citations, AgentRun persistence, and bounded critic repair.
 
 ---
 
@@ -271,8 +326,8 @@ foundation that the future conversation and retrieval layers will use.
 ```
 
 The target architecture is intentionally broader than the current code. The
-current implemented subset is the known-paper analysis pipeline plus the durable
-session and agent-run foundation.
+current implemented subset is the known-paper analysis pipeline, durable session
+and agent-run foundation, retrieval layer, and conversational QA flow.
 
 ---
 
@@ -338,6 +393,12 @@ Known arXiv URL / PDF / batch URLs
 │ stores PaperSlot      │
 │ and resets scratch    │
 └──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Chunk and Index       │
+│ chunking, embeddings, │
+│ Postgres + Qdrant     │
+└──────────┬───────────┘
            │
            ├── next paper in batch ──► Ingestion Agent
            │
@@ -352,8 +413,64 @@ Known arXiv URL / PDF / batch URLs
 ```
 
 The orchestration is deterministic. The analysis steps are LLM-assisted, and the
-production-shaped agent contract is currently implemented for `report` and
-`evidence_critic`.
+production-shaped agent contract is implemented for `report`, `evidence_critic`,
+and the QA team.
+
+---
+
+## Implemented Conversation QA Flow
+
+The conversation path handles questions about papers that have completed
+analysis and indexing. Paper URL messages are routed to the analysis graph;
+questions are routed to the conversation graph.
+
+```text
+User question in existing session
+          │
+          ▼
+┌──────────────────────┐
+│ Intent Router         │
+│ intent + paper refs   │
+│ AgentRun              │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Retrieval Planner     │
+│ query, chunk types,   │
+│ section hints         │
+│ AgentRun              │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Retrieval Layer       │
+│ Postgres + Qdrant     │
+│ EvidenceBundle        │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Answer Agent          │
+│ persona-aware answer  │
+│ citations             │
+│ AgentRun              │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Citation Critic       │
+│ groundedness review   │
+│ repair decision       │
+│ AgentRun              │
+└──────────┬───────────┘
+           │
+           ├── repair_context ──► Answer Agent
+           │
+           └── accepted ──► HandlerResult
+```
+
+Repair is bounded by `MAX_REPAIR_ITERATIONS = 2` and centralized in
+`services/repair.py`. The live QA test exercises the full real stack:
+analysis graph, chunk indexing, active paper tracking, conversation graph,
+retrieval, cited answer generation, Citation Critic repair, AgentRun
+persistence, and cleanup.
 
 ---
 
@@ -364,21 +481,26 @@ agents/
   Workflow processors:
     ingestion, extraction, benchmark, readiness, report, comparator
   Production-shaped agents:
-    evidence_critic
+    evidence_critic, intent_router, retrieval_planner, answer_agent,
+    citation_critic
   Graph gates and finalizers:
-    human_review, report_finalize, paper_failure_finalize, supervisor
+    human_review, report_finalize, paper_failure_finalize, supervisor,
+    chunk_and_index
   Support modules:
     agent_run_recorder, error_utils, llm_provider
 
 api/             ChatHandler, app_factory, SessionStore protocol, InMemorySessionStore
+services/        chunking, retrieval layer, Qdrant store, embeddings, repair
 storage/         SQLAlchemy ORM models, mappers, Postgres repositories
 alembic/         Database migrations
 docs/            Engineering documentation
 tools/           External API clients (arXiv, S2, GitHub, HF) and PDF parser
-models/          Pydantic schemas: state, session, agent_runs, policies, errors
+models/          Pydantic schemas: state, session, retrieval, qa, agent_runs,
+                 policies, errors
 config/          Settings and LLM prompt files
 tests/           unit/ + integration/ (offline + db-marked) + live/
 graph.py         Main LangGraph assembly with serializer allowlist
+graph_conversation.py ConversationGraph assembly for QA
 ```
 
 **Note on naming:** the `agents/` directory contains both workflow processors
@@ -404,6 +526,7 @@ across the codebase and is low priority compared to feature work.
 - (Optional) PostgreSQL 16 — for durable session storage and Postgres-
   backed graph checkpointing. Not required for offline tests or default
   in-memory usage.
+- (Optional) Qdrant — required for retrieval-backed QA and live QA tests.
 
 ---
 
@@ -424,6 +547,9 @@ LLM_PROVIDER
 OPENAI_MODEL
 DATABASE_URL                       # production Postgres connection (optional)
 PAPERINTEL_TEST_DATABASE_URL       # test Postgres for db-marked tests (optional)
+PAPERINTEL_QDRANT_TEST_URL         # test Qdrant for live retrieval tests (optional)
+QDRANT_URL
+QDRANT_COLLECTION
 ```
 
 Use `LLM_PROVIDER=anthropic` or `LLM_PROVIDER=openai`.
@@ -448,10 +574,10 @@ pip install -e .
 
 ## Database
 
-Start local Postgres:
+Start local Postgres and Qdrant:
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres qdrant
 ```
 
 Run migrations:
@@ -473,6 +599,7 @@ select id, persona, phase, original_query from sessions;
 select role, content, intent, referenced_paper_ids, artifact_refs from turns order by created_at;
 select id, agent_name, status, output_ref, details_json from agent_runs;
 select id, code, message, severity from structured_errors;
+select id, paper_id, chunk_index, chunk_type from paper_chunks order by created_at desc limit 10;
 ```
 
 ---
@@ -520,4 +647,24 @@ Live tests require network access and real credentials:
 
 ```bash
 LANGCHAIN_TRACING_V2=false PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q tests/live -m live
+```
+
+The full QA conversation live test needs Postgres, Qdrant, OpenAI embeddings,
+and the configured LLM provider:
+
+```bash
+docker compose up -d postgres qdrant
+.venv/bin/python -m dotenv run -- env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest -s tests/live/test_qa_conversation_live.py
+```
+
+Expected live markers include:
+
+```text
+LIVE_QA_ACTIVE_PAPER_IDS=...
+LIVE_QA_INTENT=qa_factual
+LIVE_QA_CITATION_COUNT=...
+LIVE_QA_AGENT_RUNS=...
+LIVE_QA_FAILED_RUNS=0
+LIVE_QA_QDRANT_CLEANUP=success
+LIVE_QA_POSTGRES_CLEANUP=success
 ```
