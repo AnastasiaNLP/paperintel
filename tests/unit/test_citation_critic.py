@@ -195,6 +195,36 @@ def test_citation_critic_infers_repair_when_claim_lists_non_empty(mock_call_llm)
 
 
 @patch("agents.citation_critic._call_llm")
+def test_citation_critic_ignores_repair_flag_without_issues_or_instructions(
+    mock_call_llm,
+):
+    mock_call_llm.return_value = (
+        _review_payload(
+            unsupported_claims=[],
+            missing_evidence=[],
+            contradictions=[],
+            needs_repair=True,
+            repair_instructions=[],
+        ),
+        None,
+    )
+
+    result = citation_critic_agent(_state(), config=_config())
+
+    run = _run(result)
+    review = result["critic_review"]
+    assert review.needs_repair is False
+    assert review.repair_instructions == []
+    assert result["repair_context"] is None
+    assert "answer_draft" not in result
+    assert run.status == "completed"
+    assert run.details["needs_repair"] is False
+    assert run.details["unsupported_claims"] == 0
+    assert run.details["missing_evidence"] == 0
+    assert run.details["contradictions"] == 0
+
+
+@patch("agents.citation_critic._call_llm")
 def test_citation_critic_downgrades_after_max_repair_iterations(mock_call_llm):
     mock_call_llm.return_value = (
         _review_payload(

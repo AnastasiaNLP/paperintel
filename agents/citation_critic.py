@@ -217,9 +217,12 @@ def _normalize_review(
         return None, "confidence_adjustments must be an object"
 
     needs_repair = bool(payload.get("needs_repair", False))
-    if (unsupported_claims or missing_evidence or contradictions) and not needs_repair:
+    has_review_issues = bool(unsupported_claims or missing_evidence or contradictions)
+    if has_review_issues and not needs_repair:
         needs_repair = True
-    if needs_repair and not repair_instructions:
+    if needs_repair and not has_review_issues and not repair_instructions:
+        needs_repair = False
+    if needs_repair and has_review_issues and not repair_instructions:
         repair_instructions = [
             "Rewrite the answer so every substantive claim is supported by the provided chunks."
         ]
