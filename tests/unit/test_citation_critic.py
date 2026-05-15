@@ -115,7 +115,7 @@ def test_citation_critic_accepts_grounded_answer(mock_call_llm):
     review = result["critic_review"]
     assert review.reviewed_answer_id == "answer-1"
     assert review.needs_repair is False
-    assert "repair_context" not in result
+    assert result["repair_context"] is None
     assert run.agent_name == "citation_critic"
     assert run.model == "claude-sonnet-4-6"
     assert run.status == "completed"
@@ -144,6 +144,7 @@ def test_citation_critic_skips_insufficient_evidence_answer():
     run = _run(result)
     review = result["critic_review"]
     assert review.needs_repair is False
+    assert result["repair_context"] is None
     assert run.status == "completed"
     assert run.termination_reason == "skipped"
     assert run.llm_call_count == 0
@@ -211,7 +212,7 @@ def test_citation_critic_downgrades_after_max_repair_iterations(mock_call_llm):
 
     run = _run(result)
     downgraded = result["answer_draft"]
-    assert "repair_context" not in result
+    assert result["repair_context"] is None
     assert downgraded.confidence == 0.3
     assert downgraded.limitations_noted is True
     assert "Limited evidence note" in downgraded.answer_text
@@ -225,6 +226,7 @@ def test_citation_critic_fails_without_answer_draft():
 
     run = _run(result)
     assert run.status == "failed"
+    assert result["repair_context"] is None
     assert run.details["stage"] == "input"
     assert result["errors"][0].agent == "citation_critic"
     assert result["errors"][0].agent_run_id == run.id

@@ -290,6 +290,7 @@ def answer_agent(
         run.fail(output_ref="state:errors", details={"error": error, "stage": "input"})
         return _with_agent_run(
             {
+                "repair_context": None,
                 "errors": [
                     _structured_error(
                         error,
@@ -308,6 +309,7 @@ def answer_agent(
         run.fail(output_ref="state:errors", details={"error": error, "stage": "persona"})
         return _with_agent_run(
             {
+                "repair_context": None,
                 "errors": [
                     _structured_error(
                         error,
@@ -337,7 +339,11 @@ def answer_agent(
                 "repair_iteration": repair_iteration,
             },
         )
-        return _with_agent_run({"answer_draft": answer}, run, persistence)
+        return _with_agent_run(
+            {"answer_draft": answer, "repair_context": None},
+            run,
+            persistence,
+        )
 
     system_prompt = _PROMPTS[persona]
     user_content = _build_evidence_json(question, evidence)
@@ -362,6 +368,7 @@ def answer_agent(
         _apply_policy_warning(run, policy)
         return _with_agent_run(
             {
+                "repair_context": None,
                 "errors": [
                     _structured_error(
                         llm_error,
@@ -385,6 +392,7 @@ def answer_agent(
         _apply_policy_warning(run, policy)
         return _with_agent_run(
             {
+                "repair_context": None,
                 "errors": [
                     _structured_error(
                         error,
@@ -414,6 +422,7 @@ def answer_agent(
         _apply_policy_warning(run, policy)
         return _with_agent_run(
             {
+                "repair_context": None,
                 "errors": [
                     _structured_error(
                         error,
@@ -438,4 +447,8 @@ def answer_agent(
         },
     )
     _apply_policy_warning(run, policy)
-    return _with_agent_run({"answer_draft": answer}, run, persistence)
+    return _with_agent_run(
+        {"answer_draft": answer, "repair_context": None},
+        run,
+        persistence,
+    )

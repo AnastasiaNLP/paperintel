@@ -296,6 +296,7 @@ def citation_critic_agent(
         run.fail(output_ref="state:errors", details={"error": error, "stage": "input"})
         return _with_agent_run(
             {
+                "repair_context": None,
                 "errors": [
                     _structured_error(
                         error,
@@ -322,7 +323,11 @@ def citation_critic_agent(
                 "fallback_reason": "insufficient_evidence_no_review_needed",
             },
         )
-        return _with_agent_run({"critic_review": review}, run, persistence)
+        return _with_agent_run(
+            {"critic_review": review, "repair_context": None},
+            run,
+            persistence,
+        )
 
     evidence = state.get("evidence_bundle")
     if not isinstance(evidence, EvidenceBundle) or not evidence.results:
@@ -330,6 +335,7 @@ def citation_critic_agent(
         run.fail(output_ref="state:errors", details={"error": error, "stage": "input"})
         return _with_agent_run(
             {
+                "repair_context": None,
                 "errors": [
                     _structured_error(
                         error,
@@ -356,6 +362,7 @@ def citation_critic_agent(
         _apply_policy_warning(run, policy)
         return _with_agent_run(
             {
+                "repair_context": None,
                 "errors": [
                     _structured_error(
                         llm_error,
@@ -379,6 +386,7 @@ def citation_critic_agent(
         _apply_policy_warning(run, policy)
         return _with_agent_run(
             {
+                "repair_context": None,
                 "errors": [
                     _structured_error(
                         error,
@@ -402,6 +410,7 @@ def citation_critic_agent(
         _apply_policy_warning(run, policy)
         return _with_agent_run(
             {
+                "repair_context": None,
                 "errors": [
                     _structured_error(
                         error,
@@ -415,7 +424,7 @@ def citation_critic_agent(
             persistence,
         )
 
-    result: dict[str, Any] = {"critic_review": review}
+    result: dict[str, Any] = {"critic_review": review, "repair_context": None}
     details = {
         "needs_repair": review.needs_repair,
         "unsupported_claims": len(review.unsupported_claims),

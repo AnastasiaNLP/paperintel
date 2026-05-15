@@ -237,6 +237,7 @@ def test_answer_agent_repair_context_propagates_iteration_and_instructions(
     draft = result["answer_draft"]
     user_content = mock_call_llm.call_args.args[1]
     assert draft.repair_iteration == 1
+    assert result["repair_context"] is None
     assert run.details["repair_iteration"] == 1
     assert "Remove unsupported latency claim." in user_content
     assert f"repair_context:{repair_context.id}" in run.input_refs
