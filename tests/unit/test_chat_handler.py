@@ -174,6 +174,7 @@ def test_conversation_answer_draft_becomes_response_text():
         question="What is the method?",
         answer_text="It uses retrieval.",
         persona="engineer",
+        citations=[],
     )
     runner = FakeRunner(result={"answer_draft": answer, "intent": "qa_factual"})
     handler, store, _, _ = _handler(runner=runner)
@@ -182,6 +183,7 @@ def test_conversation_answer_draft_becomes_response_text():
     result = handler.handle_message(session.id, "What is the method?")
 
     assert result.response_text == "It uses retrieval."
+    assert result.citations == []
     assert store.list_recent_turns(session.id)[1].content == "It uses retrieval."
 
 

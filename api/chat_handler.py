@@ -109,6 +109,7 @@ class ChatHandler:
             phase=session.phase,
             intent=graph_result.intent,
             referenced_paper_ids=graph_result.referenced_paper_ids,
+            citations=graph_result.citations,
             artifact_refs=graph_result.artifact_refs,
             needs_analysis=graph_result.needs_analysis,
             agent_runs=graph_result.agent_runs,
@@ -174,25 +175,31 @@ def _normalize_conversation_result(raw: dict[str, Any]) -> GraphInvocationResult
     answer_draft = raw.get("answer_draft")
     if isinstance(answer_draft, AnswerDraft):
         response_text = answer_draft.answer_text
+        citations = list(answer_draft.citations)
     elif raw.get("needs_analysis"):
         response_text = str(
             raw.get("clarification_question")
             or "Please send the paper URL directly so I can analyze it."
         )
+        citations = []
     elif raw.get("clarification_question"):
         response_text = str(raw["clarification_question"])
+        citations = []
     elif raw.get("errors"):
         response_text = "I could not complete that request safely. Please try again."
+        citations = []
     else:
         response_text = str(
             raw.get("response_text")
             or "I am not sure how to respond. Could you rephrase?"
         )
+        citations = []
 
     return GraphInvocationResult(
         response_text=response_text,
         intent=raw.get("intent"),
         referenced_paper_ids=list(raw.get("referenced_paper_ids") or []),
+        citations=citations,
         artifact_refs=list(raw.get("artifact_refs") or []),
         needs_analysis=bool(raw.get("needs_analysis", False)),
         agent_runs=list(raw.get("agent_runs") or []),

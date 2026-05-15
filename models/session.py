@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from models.agent_runs import AgentRun
 from models.errors import StructuredError
+from models.retrieval import CitationRef
 
 
 Persona: TypeAlias = Literal["engineer", "researcher", "techlead"]
@@ -54,6 +55,7 @@ class GraphInvocationResult(BaseModel):
     response_text: str
     intent: str | None = None
     referenced_paper_ids: list[str] = Field(default_factory=list)
+    citations: list[CitationRef] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
     needs_analysis: bool = False
     agent_runs: list[AgentRun] = Field(default_factory=list)
@@ -68,6 +70,7 @@ class HandlerResult(BaseModel):
     phase: SessionPhase
     intent: str | None = None
     referenced_paper_ids: list[str] = Field(default_factory=list)
+    citations: list[CitationRef] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
     needs_analysis: bool = False
     agent_runs: list[AgentRun] = Field(default_factory=list)
