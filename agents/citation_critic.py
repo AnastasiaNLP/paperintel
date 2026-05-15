@@ -19,6 +19,8 @@ from services.repair import (
     build_repair_context,
     is_repair_exhausted,
     latest_agent_run_id,
+    normalize_repair_decision,
+    should_trigger_repair,
 )
 
 logger = logging.getLogger(__name__)
@@ -216,16 +218,13 @@ def _normalize_review(
     if not isinstance(confidence_adjustments, dict):
         return None, "confidence_adjustments must be an object"
 
-    needs_repair = bool(payload.get("needs_repair", False))
-    has_review_issues = bool(unsupported_claims or missing_evidence or contradictions)
-    if has_review_issues and not needs_repair:
-        needs_repair = True
-    if needs_repair and not has_review_issues and not repair_instructions:
-        needs_repair = False
-    if needs_repair and has_review_issues and not repair_instructions:
-        repair_instructions = [
-            "Rewrite the answer so every substantive claim is supported by the provided chunks."
-        ]
+    needs_repair, repair_instructions = normalize_repair_decision(
+        needs_repair=bool(payload.get("needs_repair", False)),
+        unsupported_claims=unsupported_claims,
+        missing_evidence=missing_evidence,
+        contradictions=contradictions,
+        repair_instructions=repair_instructions,
+    )
 
     try:
         return (
@@ -436,7 +435,7 @@ def citation_critic_agent(
         "repair_iteration": answer_draft.repair_iteration,
     }
 
-    if review.needs_repair and is_repair_exhausted(answer_draft):
+    if should_trigger_repair(review) and is_repair_exhausted(answer_draft):
         downgraded = _downgrade_answer(answer_draft, review)
         result["answer_draft"] = downgraded
         run.fallback(
@@ -450,7 +449,7 @@ def citation_critic_agent(
         _apply_policy_warning(run, policy)
         return _with_agent_run(result, run, persistence)
 
-    if review.needs_repair:
+    if should_trigger_repair(review):
         original_run_id = latest_agent_run_id(
             state.get("agent_runs", []) or [],
             agent_name="answer_agent",
