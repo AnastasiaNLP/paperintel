@@ -24,6 +24,7 @@ class ConversationState(TypedDict, total=False):
     intent: Intent
     referenced_paper_ids: list[str]
     needs_clarification: bool
+    needs_analysis: bool
     clarification_question: str | None
 
     evidence_plan: EvidencePlan
