@@ -1,7 +1,7 @@
 # Chunking Strategy
 
-Stage C retrieval is built around durable paper chunks and later Qdrant vectors.
-Chunking runs after the analysis report has been finalized:
+Retrieval is built around durable paper chunks and Qdrant vectors. Chunking runs
+after the analysis report has been finalized:
 
 ```text
 ingestion -> extraction -> benchmark -> readiness -> report
@@ -9,21 +9,20 @@ ingestion -> extraction -> benchmark -> readiness -> report
 -> [next paper | comparator | END]
 ```
 
-Indexing is non-fatal. If `chunk_and_index` fails in a later stage, the paper
-has still been analyzed and finalized.
+Indexing is non-fatal. If `chunk_and_index` fails, the paper has still been
+analyzed and finalized.
 
 ## Embedding Contract
 
 - Model: `text-embedding-3-small`
 - Dimensions: `1536`
-- Embeddings are not generated in C.1.
-- The chunk metadata stores the expected model and dimensions so C.2 can create
-  a matching Qdrant collection.
+- The chunk metadata stores the expected model and dimensions so Qdrant
+  collections can be validated before indexing.
 
 ## Paper Identity
 
-For Stage C, `paper_id` is the canonical paper identifier, normally the arXiv id
-without a version suffix, for example `2310.06825`.
+`paper_id` is the canonical paper identifier, normally the arXiv id without a
+version suffix, for example `2310.06825`.
 
 This is intentionally not a session-scoped UUID. Chunks should be reusable
 across sessions and pipeline reruns. If arXiv metadata is unavailable, the
@@ -32,7 +31,7 @@ paper index, but that fallback is treated as lower-quality provenance.
 
 ## Chunk Types
 
-`ChunkType` is part of the domain model from C.0:
+`ChunkType` is part of the retrieval domain model:
 
 - `abstract`
 - `text`
@@ -42,12 +41,14 @@ paper index, but that fallback is treated as lower-quality provenance.
 - `caption`
 - `reference`
 
-C.1 emits `abstract` and `text` chunks. Tables, equations, figures, and captions
-are represented in the contract for future extraction but are not parsed yet.
+The current chunking service emits `abstract` and `text` chunks. Tables,
+equations, figures, and captions are represented in the contract for future
+extraction but are not parsed yet.
 
 ## Size And Overlap
 
-C.1 uses character-based chunking to avoid adding tokenizer dependencies.
+The chunking service uses character-based chunking to avoid adding tokenizer
+dependencies.
 
 - Target chunk size: `2400` characters
 - Overlap: `300` characters
@@ -59,7 +60,8 @@ requiring model-specific tokenizers.
 
 ## Page And Section Tracking
 
-When `text_by_page` is available, C.1 chunks per page and preserves:
+When `text_by_page` is available, the chunking service chunks per page and
+preserves:
 
 - `page_start`
 - `page_end`
@@ -73,13 +75,13 @@ location metadata and can later be used by citations.
 ## Evidence Artifacts
 
 `EvidenceArtifact` supports tables, equations, figures, page images, PDFs, and
-raw text through `storage_ref`. C.1 does not upload artifacts to S3 or MinIO.
-The field exists so C.2-C.4 and Stage D can connect retrieval chunks to durable
-objects without changing the retrieval contract.
+raw text through `storage_ref`. The current implementation does not upload
+artifacts to S3 or MinIO. The field exists so retrieval chunks can later connect
+to durable objects without changing the retrieval contract.
 
 ## Deterministic IDs
 
-C.1 chunk ids are deterministic:
+Chunk ids are deterministic:
 
 ```text
 {paper_id}:chunk:{chunk_index}
