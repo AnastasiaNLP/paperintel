@@ -39,6 +39,7 @@ class PaperIntelService:
         return self.handler.store.require_session(session_id)
 
     def list_turns(self, session_id: str, *, limit: int = 50) -> list[Turn]:
+        self.handler.store.require_session(session_id)
         return self.handler.store.list_recent_turns(session_id, limit=limit)
 
     def health(self) -> HealthStatus:

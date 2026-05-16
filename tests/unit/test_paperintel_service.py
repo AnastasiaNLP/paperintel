@@ -139,6 +139,13 @@ def test_service_list_turns_returns_history_from_store():
     assert service.list_turns(session.id, limit=1) == [second]
 
 
+def test_service_list_turns_requires_session_before_listing():
+    service = PaperIntelService(handler=FakeHandler())
+
+    with pytest.raises(SessionNotFoundError):
+        service.list_turns("missing")
+
+
 def test_service_health_without_checker_returns_basic_ok():
     service = PaperIntelService(handler=FakeHandler())
 
