@@ -85,6 +85,10 @@ class QdrantChunkStore:
                 f"{distance!r}, expected {self.distance!r}"
             )
 
+    def check_connection(self) -> None:
+        """Verify that the Qdrant service is reachable."""
+        self.client.get_collections()
+
     def upsert_chunks(self, chunks: Sequence[EmbeddedChunk]) -> UpsertChunksResult:
         for embedded in chunks:
             _validate_vector(embedded.vector, self.vector_size)

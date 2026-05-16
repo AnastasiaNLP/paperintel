@@ -139,3 +139,20 @@ def test_ensure_collection_is_idempotent_for_existing_collection():
     store.ensure_collection()
 
     assert client.create_calls == 0
+
+
+def test_qdrant_store_check_connection_uses_public_health_contract():
+    class CollectionsClient:
+        def __init__(self):
+            self.calls = 0
+
+        def get_collections(self):
+            self.calls += 1
+            return []
+
+    client = CollectionsClient()
+    store = QdrantChunkStore(client=client)
+
+    store.check_connection()
+
+    assert client.calls == 1
