@@ -1,8 +1,16 @@
 from models.agent_runs import AgentRun
+from models.discovery import SearchCandidate
 from models.errors import StructuredError
 from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
 from models.session import Session, Turn
-from storage.models import AgentRunORM, PaperChunkORM, SessionORM, StructuredErrorORM, TurnORM
+from storage.models import (
+    AgentRunORM,
+    PaperChunkORM,
+    SearchCandidateORM,
+    SessionORM,
+    StructuredErrorORM,
+    TurnORM,
+)
 
 
 def session_to_orm(session: Session) -> SessionORM:
@@ -179,4 +187,50 @@ def orm_to_paper_chunk(orm: PaperChunkORM) -> PaperChunk:
         embedding_model=orm.embedding_model,
         embedding_dimensions=orm.embedding_dimensions,
         created_at=orm.created_at,
+    )
+
+
+def search_candidate_to_orm(candidate: SearchCandidate) -> SearchCandidateORM:
+    return SearchCandidateORM(
+        id=candidate.id,
+        session_id=candidate.session_id,
+        discovery_turn_id=candidate.discovery_turn_id,
+        display_rank=candidate.display_rank,
+        status=candidate.status,
+        title=candidate.title,
+        url=candidate.url,
+        source=candidate.source,
+        authors=candidate.authors,
+        year=candidate.year,
+        arxiv_id=candidate.arxiv_id,
+        abstract=candidate.abstract,
+        published_at=candidate.published_at,
+        score=candidate.score,
+        reasons=candidate.reasons,
+        metadata_json=candidate.metadata,
+        created_at=candidate.created_at,
+        updated_at=candidate.updated_at,
+    )
+
+
+def orm_to_search_candidate(orm: SearchCandidateORM) -> SearchCandidate:
+    return SearchCandidate(
+        id=orm.id,
+        session_id=orm.session_id,
+        discovery_turn_id=orm.discovery_turn_id,
+        display_rank=orm.display_rank,
+        status=orm.status,
+        title=orm.title,
+        url=orm.url,
+        source=orm.source,
+        authors=list(orm.authors or []),
+        year=orm.year,
+        arxiv_id=orm.arxiv_id,
+        abstract=orm.abstract,
+        published_at=orm.published_at,
+        score=orm.score,
+        reasons=list(orm.reasons or []),
+        metadata=orm.metadata_json or {},
+        created_at=orm.created_at,
+        updated_at=orm.updated_at,
     )

@@ -37,6 +37,19 @@ def analysis_requested_response_node(state: ConversationState) -> dict[str, Any]
     }
 
 
+def discovery_requested_response_node(state: ConversationState) -> dict[str, Any]:
+    """Terminal node for messages routed as paper-discovery requests."""
+    topic = state.get("discovery_topic") or state.get("user_message")
+    return {
+        "needs_discovery": True,
+        "discovery_topic": topic,
+        "clarification_question": (
+            state.get("clarification_question")
+            or "Discovery is not wired yet. I can search for papers on this topic once discovery is configured."
+        ),
+    }
+
+
 def route_after_intent(state: ConversationState) -> str:
     """Route by Intent Router output."""
     if state.get("needs_clarification"):
@@ -47,6 +60,8 @@ def route_after_intent(state: ConversationState) -> str:
         return "retrieval_planner"
     if intent == "analyze_paper":
         return "analysis_requested_response"
+    if intent == "discover":
+        return "discovery_requested_response"
     return "clarification_response"
 
 
@@ -67,6 +82,7 @@ def build_conversation_graph(checkpointer=None):
     graph.add_node("citation_critic", citation_critic_agent)
     graph.add_node("clarification_response", clarification_response_node)
     graph.add_node("analysis_requested_response", analysis_requested_response_node)
+    graph.add_node("discovery_requested_response", discovery_requested_response_node)
 
     graph.set_entry_point("intent_router")
 
@@ -77,6 +93,7 @@ def build_conversation_graph(checkpointer=None):
             "retrieval_planner": "retrieval_planner",
             "clarification_response": "clarification_response",
             "analysis_requested_response": "analysis_requested_response",
+            "discovery_requested_response": "discovery_requested_response",
         },
     )
 
@@ -94,5 +111,6 @@ def build_conversation_graph(checkpointer=None):
 
     graph.add_edge("clarification_response", END)
     graph.add_edge("analysis_requested_response", END)
+    graph.add_edge("discovery_requested_response", END)
 
     return graph.compile(checkpointer=checkpointer)

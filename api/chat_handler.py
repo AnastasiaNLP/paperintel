@@ -112,6 +112,8 @@ class ChatHandler:
             citations=graph_result.citations,
             artifact_refs=graph_result.artifact_refs,
             needs_analysis=graph_result.needs_analysis,
+            needs_discovery=graph_result.needs_discovery,
+            discovery_topic=graph_result.discovery_topic,
             agent_runs=graph_result.agent_runs,
             errors=graph_result.errors,
             user_turn_id=user_turn.id,
@@ -182,6 +184,12 @@ def _normalize_conversation_result(raw: dict[str, Any]) -> GraphInvocationResult
             or "Please send the paper URL directly so I can analyze it."
         )
         citations = []
+    elif raw.get("needs_discovery"):
+        response_text = str(
+            raw.get("clarification_question")
+            or "I can search for papers on that topic once discovery is configured."
+        )
+        citations = []
     elif raw.get("clarification_question"):
         response_text = str(raw["clarification_question"])
         citations = []
@@ -202,6 +210,8 @@ def _normalize_conversation_result(raw: dict[str, Any]) -> GraphInvocationResult
         citations=citations,
         artifact_refs=list(raw.get("artifact_refs") or []),
         needs_analysis=bool(raw.get("needs_analysis", False)),
+        needs_discovery=bool(raw.get("needs_discovery", False)),
+        discovery_topic=raw.get("discovery_topic"),
         agent_runs=list(raw.get("agent_runs") or []),
         errors=_structured_errors(raw.get("errors") or []),
         next_phase=raw.get("next_phase"),

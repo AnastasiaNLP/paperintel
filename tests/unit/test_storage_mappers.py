@@ -1,4 +1,7 @@
+from datetime import datetime, timezone
+
 from models.agent_runs import AgentRun
+from models.discovery import SearchCandidate
 from models.errors import ErrorCodes, StructuredError, make_error
 from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
 from models.session import Session, Turn
@@ -7,9 +10,11 @@ from storage.mappers import (
     orm_to_agent_run,
     orm_to_paper_chunk,
     orm_to_session,
+    orm_to_search_candidate,
     orm_to_structured_error,
     orm_to_turn,
     paper_chunk_to_orm,
+    search_candidate_to_orm,
     session_to_orm,
     structured_error_to_orm,
     turn_to_orm,
@@ -123,3 +128,26 @@ def test_paper_chunk_mapper_round_trip():
     mapped = orm_to_paper_chunk(paper_chunk_to_orm(chunk))
 
     assert mapped == chunk
+
+
+def test_search_candidate_mapper_round_trip():
+    candidate = SearchCandidate(
+        session_id="session-1",
+        discovery_turn_id="turn-1",
+        display_rank=1,
+        status="selected",
+        title="Attention Is All You Need",
+        url="https://arxiv.org/abs/1706.03762",
+        authors=["Ashish Vaswani"],
+        year=2017,
+        arxiv_id="1706.03762",
+        abstract="Transformer paper.",
+        published_at=datetime(2017, 6, 12, tzinfo=timezone.utc),
+        score=0.95,
+        reasons=["exact title match"],
+        metadata={"provider_rank": 1},
+    )
+
+    mapped = orm_to_search_candidate(search_candidate_to_orm(candidate))
+
+    assert mapped == candidate

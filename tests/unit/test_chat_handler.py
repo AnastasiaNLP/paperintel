@@ -218,3 +218,22 @@ def test_analyze_paper_without_analysis_runner_returns_controlled_response():
         "user",
         "assistant",
     ]
+
+
+def test_conversation_discovery_signal_becomes_controlled_response():
+    runner = FakeRunner(
+        result={
+            "intent": "discover",
+            "needs_discovery": True,
+            "discovery_topic": "long context memory for agents",
+        }
+    )
+    handler, _, _, _ = _handler(runner=runner)
+    session = handler.create_session()
+
+    result = handler.handle_message(session.id, "Find papers about agent memory")
+
+    assert result.intent == "discover"
+    assert result.needs_discovery is True
+    assert result.discovery_topic == "long context memory for agents"
+    assert "discovery is configured" in result.response_text

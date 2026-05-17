@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Sequence, get_args
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session as DbSession
@@ -8,6 +8,7 @@ from agents.agent_run_recorder import AgentRunPersistence
 from api.in_memory_session_store import SessionNotFoundError
 from api.session_store import SessionStore
 from models.agent_runs import AgentRun
+from models.discovery import CandidateStatus, SearchCandidate
 from models.errors import StructuredError
 from models.retrieval import PaperChunk, UpsertChunksResult
 from models.session import Persona, Session, SessionPhase, Turn, TurnRole
@@ -16,14 +17,23 @@ from storage.mappers import (
     orm_to_agent_run,
     orm_to_paper_chunk,
     orm_to_session,
+    orm_to_search_candidate,
     orm_to_structured_error,
     orm_to_turn,
     paper_chunk_to_orm,
+    search_candidate_to_orm,
     session_to_orm,
     structured_error_to_orm,
     turn_to_orm,
 )
-from storage.models import AgentRunORM, PaperChunkORM, SessionORM, StructuredErrorORM, TurnORM
+from storage.models import (
+    AgentRunORM,
+    PaperChunkORM,
+    SearchCandidateORM,
+    SessionORM,
+    StructuredErrorORM,
+    TurnORM,
+)
 
 
 class PostgresSessionStore(SessionStore):
@@ -225,7 +235,85 @@ class PostgresPaperChunkRepository:
         return [chunks_by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in chunks_by_id]
 
 
+class PostgresSearchCandidateRepository:
+    def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
+        self.session_factory = session_factory
+
+    def upsert_many(self, candidates: list[SearchCandidate]) -> list[SearchCandidate]:
+        if not candidates:
+            return []
+
+        with self.session_factory() as db:
+            for candidate in candidates:
+                db.merge(search_candidate_to_orm(candidate))
+            db.commit()
+        return candidates
+
+    def list_for_discovery_turn(
+        self,
+        session_id: str,
+        discovery_turn_id: str,
+    ) -> list[SearchCandidate]:
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(SearchCandidateORM)
+                    .where(SearchCandidateORM.session_id == session_id)
+                    .where(SearchCandidateORM.discovery_turn_id == discovery_turn_id)
+                    .order_by(SearchCandidateORM.display_rank.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [orm_to_search_candidate(row) for row in rows]
+
+    def list_latest_for_session(self, session_id: str) -> list[SearchCandidate]:
+        with self.session_factory() as db:
+            latest_turn_id = (
+                db.execute(
+                    select(SearchCandidateORM.discovery_turn_id)
+                    .where(SearchCandidateORM.session_id == session_id)
+                    .order_by(SearchCandidateORM.created_at.desc())
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if latest_turn_id is None:
+                return []
+
+            rows = (
+                db.execute(
+                    select(SearchCandidateORM)
+                    .where(SearchCandidateORM.session_id == session_id)
+                    .where(SearchCandidateORM.discovery_turn_id == latest_turn_id)
+                    .order_by(SearchCandidateORM.display_rank.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [orm_to_search_candidate(row) for row in rows]
+
+    def update_status(
+        self,
+        candidate_id: str,
+        status: CandidateStatus,
+    ) -> SearchCandidate | None:
+        if status not in get_args(CandidateStatus):
+            raise ValueError(f"Invalid search candidate status: {status}")
+
+        with self.session_factory() as db:
+            orm = db.get(SearchCandidateORM, candidate_id)
+            if orm is None:
+                return None
+            orm.status = status
+            db.commit()
+            db.refresh(orm)
+            return orm_to_search_candidate(orm)
+
+
 def clear_foundation_tables(db: DbSession) -> None:
+    db.execute(delete(SearchCandidateORM))
     db.execute(delete(PaperChunkORM))
     db.execute(delete(TurnORM))
     db.execute(delete(AgentRunORM))

@@ -4,9 +4,15 @@ from models.errors import make_error
 
 
 def test_conversation_state_partial_fields_allowed():
-    state: ConversationState = {"session_id": "session-1"}
+    state: ConversationState = {
+        "session_id": "session-1",
+        "needs_discovery": True,
+        "discovery_topic": "agent memory",
+    }
 
     assert state["session_id"] == "session-1"
+    assert state["needs_discovery"] is True
+    assert state["discovery_topic"] == "agent memory"
 
 
 def test_conversation_state_accumulates_agent_runs():

@@ -58,6 +58,8 @@ class GraphInvocationResult(BaseModel):
     citations: list[CitationRef] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
     needs_analysis: bool = False
+    needs_discovery: bool = False
+    discovery_topic: str | None = None
     agent_runs: list[AgentRun] = Field(default_factory=list)
     errors: list[StructuredError] = Field(default_factory=list)
     next_phase: SessionPhase | None = None
@@ -73,6 +75,8 @@ class HandlerResult(BaseModel):
     citations: list[CitationRef] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
     needs_analysis: bool = False
+    needs_discovery: bool = False
+    discovery_topic: str | None = None
     agent_runs: list[AgentRun] = Field(default_factory=list)
     errors: list[StructuredError] = Field(default_factory=list)
     user_turn_id: str

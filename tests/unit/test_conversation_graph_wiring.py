@@ -4,6 +4,7 @@ from graph_conversation import (
     analysis_requested_response_node,
     build_conversation_graph,
     clarification_response_node,
+    discovery_requested_response_node,
     route_after_critic,
     route_after_intent,
 )
@@ -34,6 +35,7 @@ def test_graph_has_all_required_nodes():
         "citation_critic",
         "clarification_response",
         "analysis_requested_response",
+        "discovery_requested_response",
     }.issubset(_compiled_graph_nodes(graph))
 
 
@@ -49,6 +51,7 @@ def test_graph_has_terminal_edges_to_end():
     edges = _compiled_graph_edges(graph)
     assert ("clarification_response", END) in edges
     assert ("analysis_requested_response", END) in edges
+    assert ("discovery_requested_response", END) in edges
 
 
 def test_route_after_intent_qa_factual_goes_to_planner():
@@ -90,8 +93,10 @@ def test_route_after_intent_unclear_goes_to_clarification():
     assert route_after_intent({"intent": "unclear"}) == "clarification_response"
 
 
-def test_route_after_intent_discover_goes_to_clarification():
-    assert route_after_intent({"intent": "discover"}) == "clarification_response"
+def test_route_after_intent_discover_goes_to_discovery_requested():
+    assert route_after_intent({"intent": "discover"}) == (
+        "discovery_requested_response"
+    )
 
 
 def test_route_after_intent_select_papers_goes_to_clarification():
@@ -142,3 +147,24 @@ def test_analysis_requested_response_node_sets_needs_analysis():
             "Please send the paper URL directly so I can analyze it."
         ),
     }
+
+
+def test_discovery_requested_response_node_sets_needs_discovery():
+    assert discovery_requested_response_node(
+        {
+            "user_message": "Find papers about agent memory",
+            "discovery_topic": "agent memory",
+        }
+    ) == {
+        "needs_discovery": True,
+        "discovery_topic": "agent memory",
+        "clarification_question": (
+            "Discovery is not wired yet. I can search for papers on this topic once discovery is configured."
+        ),
+    }
+
+
+def test_discovery_requested_response_node_uses_user_message_as_topic_fallback():
+    assert discovery_requested_response_node(
+        {"user_message": "Find papers about long context memory"}
+    )["discovery_topic"] == "Find papers about long context memory"

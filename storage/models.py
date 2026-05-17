@@ -1,7 +1,16 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -59,6 +68,10 @@ class SessionORM(TimestampMixin, Base):
         cascade="all, delete-orphan",
     )
     structured_errors: Mapped[list["StructuredErrorORM"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+    search_candidates: Mapped[list["SearchCandidateORM"]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
     )
@@ -230,7 +243,69 @@ class PaperChunkORM(TimestampMixin, Base):
     embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class SearchCandidateORM(TimestampMixin, Base):
+    __tablename__ = "search_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('proposed', 'selected', 'analyzed', 'rejected')",
+            name="ck_search_candidates_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    discovery_turn_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    display_rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    authors: Mapped[list[str]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    arxiv_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    score: Mapped[float | None] = mapped_column(nullable=True)
+    reasons: Mapped[list[str]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+
+    session: Mapped[SessionORM] = relationship(back_populates="search_candidates")
+
+
 Index("ix_turns_session_created_at", TurnORM.session_id, TurnORM.created_at)
 Index("ix_agent_runs_session_started_at", AgentRunORM.session_id, AgentRunORM.started_at)
 Index("ix_paper_chunks_paper_chunk", PaperChunkORM.paper_id, PaperChunkORM.chunk_index)
 Index("ix_paper_chunks_session_paper", PaperChunkORM.session_id, PaperChunkORM.paper_id)
+Index(
+    "ix_search_candidates_session_turn_rank",
+    SearchCandidateORM.session_id,
+    SearchCandidateORM.discovery_turn_id,
+    SearchCandidateORM.display_rank,
+)
+Index(
+    "ix_search_candidates_session_status",
+    SearchCandidateORM.session_id,
+    SearchCandidateORM.status,
+)

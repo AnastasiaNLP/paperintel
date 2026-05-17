@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 
 import pytest
 from alembic import command
@@ -6,12 +7,14 @@ from alembic.config import Config
 
 from api.in_memory_session_store import SessionNotFoundError
 from models.agent_runs import AgentRun
+from models.discovery import SearchCandidate
 from models.errors import ErrorCodes, make_error
 from models.retrieval import ChunkSource, PaperChunk
 from storage.db import make_engine, make_session_factory
 from storage.repositories import (
     PostgresAgentRunPersistence,
     PostgresPaperChunkRepository,
+    PostgresSearchCandidateRepository,
     PostgresSessionStore,
     PostgresStructuredErrorRepository,
     clear_foundation_tables,
@@ -255,3 +258,49 @@ def test_postgres_paper_chunk_repository_upserts_and_lists_by_paper(session_fact
         "2310.06825:chunk:1",
         "2310.06825:chunk:0",
     ]
+
+
+def test_postgres_search_candidate_repository_round_trip(session_factory):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresSearchCandidateRepository(session_factory)
+    first = SearchCandidate(
+        session_id=session.id,
+        discovery_turn_id="turn-1",
+        display_rank=1,
+        title="Attention Is All You Need",
+        url="https://arxiv.org/abs/1706.03762",
+        arxiv_id="1706.03762",
+        published_at=datetime(2017, 6, 12, tzinfo=timezone.utc),
+        score=0.95,
+        reasons=["exact phrase match"],
+    )
+    second = SearchCandidate(
+        session_id=session.id,
+        discovery_turn_id="turn-1",
+        display_rank=2,
+        title="BERT",
+        url="https://arxiv.org/abs/1810.04805",
+        arxiv_id="1810.04805",
+        score=0.75,
+    )
+
+    repository.upsert_many([second, first])
+
+    loaded = repository.list_for_discovery_turn(session.id, "turn-1")
+    assert [candidate.id for candidate in loaded] == [first.id, second.id]
+    assert loaded[0].status == "proposed"
+
+    updated = repository.update_status(first.id, "selected")
+    assert updated is not None
+    assert updated.status == "selected"
+
+    latest = repository.list_latest_for_session(session.id)
+    assert [candidate.id for candidate in latest] == [first.id, second.id]
+
+
+def test_postgres_search_candidate_repository_rejects_invalid_status(session_factory):
+    repository = PostgresSearchCandidateRepository(session_factory)
+
+    with pytest.raises(ValueError):
+        repository.update_status("missing", "invalid")  # type: ignore[arg-type]
