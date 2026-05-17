@@ -7,6 +7,7 @@ from models.errors import ErrorCodes, StructuredError, make_error
 from models.qa import AnswerDraft
 from models.session import GraphInvocationResult, HandlerResult, Persona, Session
 from services.retrieval_layer import RetrievalLayer
+from services.selection_parser import SelectionHandler
 
 
 class ConversationRunner(Protocol):
@@ -32,6 +33,7 @@ class ChatHandler:
         analysis_runner: AnalysisRunner | None = None,
         agent_run_persistence: AgentRunPersistence | None = None,
         retrieval_layer: RetrievalLayer | None = None,
+        selection_handler: SelectionHandler | None = None,
     ) -> None:
         self.store = store
         self.conversation_runner = conversation_runner
@@ -40,6 +42,7 @@ class ChatHandler:
             agent_run_persistence or NoopAgentRunPersistence()
         )
         self.retrieval_layer = retrieval_layer
+        self.selection_handler = selection_handler
 
     def create_session(
         self,
@@ -122,11 +125,54 @@ class ChatHandler:
         )
 
     def _route_message(self, session: Session, message: str) -> GraphInvocationResult:
+        if session.phase == "selection":
+            return self._handle_selection(session, message)
+
         url = _extract_paper_url(message)
         if url is not None:
             return self._invoke_analysis(session, url)
 
         return self._invoke_conversation(session, message)
+
+    def _handle_selection(self, session: Session, message: str) -> GraphInvocationResult:
+        if self.selection_handler is None:
+            return GraphInvocationResult(
+                response_text=(
+                    "Paper selection is not configured yet. Please ask for a new "
+                    "paper search or send a paper URL directly."
+                ),
+                intent="select_papers",
+                next_phase=session.phase,
+                raw={"selection_handler_missing": True},
+            )
+
+        result = self.selection_handler.handle(session_id=session.id, message=message)
+        if result.selection is None:
+            return GraphInvocationResult(
+                response_text=result.response_text,
+                intent="select_papers",
+                next_phase="selection",
+                raw={
+                    "selection_errors": result.errors,
+                    "selected_candidate_ids": [],
+                },
+            )
+
+        return GraphInvocationResult(
+            response_text=result.response_text,
+            intent="select_papers",
+            referenced_paper_ids=[
+                candidate.arxiv_id
+                for candidate in result.candidates
+                if candidate.arxiv_id is not None
+            ],
+            next_phase="idle",
+            raw={
+                "selection": result.selection.model_dump(mode="json"),
+                "selected_candidate_ids": result.selection.selected_candidate_ids,
+                "selected_display_ranks": result.selection.display_ranks,
+            },
+        )
 
     def _invoke_conversation(
         self,

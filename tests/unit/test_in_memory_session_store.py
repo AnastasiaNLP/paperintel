@@ -12,6 +12,22 @@ def test_store_returns_copies_not_mutable_internal_objects():
     assert store.require_session(session.id).phase == "idle"
 
 
+def test_store_sets_selected_candidate_ids_idempotently():
+    store = InMemorySessionStore()
+    session = store.create_session()
+
+    updated = store.set_selected_candidate_ids(
+        session.id,
+        ["candidate-1", "candidate-2", "candidate-1"],
+    )
+
+    assert updated.selected_candidate_ids == ["candidate-1", "candidate-2"]
+    assert store.require_session(session.id).selected_candidate_ids == [
+        "candidate-1",
+        "candidate-2",
+    ]
+
+
 def test_append_and_list_recent_turns():
     store = InMemorySessionStore()
     session = store.create_session()

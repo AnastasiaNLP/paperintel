@@ -57,6 +57,25 @@ class InMemorySessionStore:
         self._sessions[session_id] = updated
         return deepcopy(updated)
 
+    def set_selected_candidate_ids(
+        self,
+        session_id: str,
+        candidate_ids: list[str],
+    ) -> Session:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise SessionNotFoundError(f"Session not found: {session_id}")
+
+        deduped = list(dict.fromkeys(candidate_ids))
+        updated = session.model_copy(
+            update={
+                "selected_candidate_ids": deduped,
+                "updated_at": utc_now(),
+            }
+        )
+        self._sessions[session_id] = updated
+        return deepcopy(updated)
+
     def append_turn(
         self,
         session_id: str,

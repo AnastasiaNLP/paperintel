@@ -24,6 +24,13 @@ class SessionStore(Protocol):
     def add_active_paper(self, session_id: str, paper_id: str) -> Session:
         ...
 
+    def set_selected_candidate_ids(
+        self,
+        session_id: str,
+        candidate_ids: list[str],
+    ) -> Session:
+        ...
+
     def append_turn(
         self,
         session_id: str,

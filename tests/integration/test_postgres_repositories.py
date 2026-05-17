@@ -97,6 +97,22 @@ def test_postgres_session_store_add_active_paper_is_idempotent(session_factory):
     assert updated.active_paper_ids == ["2310.06825", "2401.12345"]
 
 
+def test_postgres_session_store_sets_selected_candidate_ids(session_factory):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+
+    updated = store.set_selected_candidate_ids(
+        session.id,
+        ["candidate-1", "candidate-2", "candidate-1"],
+    )
+
+    assert updated.selected_candidate_ids == ["candidate-1", "candidate-2"]
+    assert store.require_session(session.id).selected_candidate_ids == [
+        "candidate-1",
+        "candidate-2",
+    ]
+
+
 def test_postgres_session_store_appends_and_lists_recent_turns(session_factory):
     store = PostgresSessionStore(session_factory)
     session = store.create_session()

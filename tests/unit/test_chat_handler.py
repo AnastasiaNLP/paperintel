@@ -3,8 +3,10 @@ import pytest
 from agents.agent_run_recorder import InMemoryAgentRunPersistence
 from api.chat_handler import ChatHandler
 from api.in_memory_session_store import InMemorySessionStore, SessionNotFoundError
+from models.discovery import SearchCandidate
 from models.errors import ErrorCodes, StructuredError
 from models.qa import AnswerDraft
+from services.selection_parser import SelectionHandler
 
 
 class FakeRunner:
@@ -28,6 +30,36 @@ class FakeRunner:
 
 class FakeRetrievalLayer:
     pass
+
+
+class FakeCandidateRepository:
+    def __init__(self, candidates):
+        self.candidates = list(candidates)
+        self.updated = []
+
+    def list_latest_for_session(self, session_id: str):
+        return list(self.candidates)
+
+    def update_status(self, candidate_id: str, status: str):
+        self.updated.append((candidate_id, status))
+        for candidate in self.candidates:
+            if candidate.id == candidate_id:
+                return candidate.model_copy(update={"status": status})
+        return None
+
+
+def _candidate(rank: int) -> SearchCandidate:
+    arxiv_id = f"2401.0000{rank}"
+    return SearchCandidate(
+        id=f"candidate-{rank}",
+        session_id="session-1",
+        discovery_turn_id="turn-1",
+        display_rank=rank,
+        title=f"Paper {rank}",
+        url=f"https://arxiv.org/abs/{arxiv_id}",
+        arxiv_id=arxiv_id,
+        year=2024,
+    )
 
 
 def _handler(runner=None, persistence=None, analysis_runner=None, retrieval_layer=None):
@@ -237,3 +269,73 @@ def test_conversation_discovery_signal_becomes_controlled_response():
     assert result.needs_discovery is True
     assert result.discovery_topic == "long context memory for agents"
     assert "discovery is configured" in result.response_text
+
+
+def test_handler_routes_selection_phase_to_selection_handler():
+    store = InMemorySessionStore()
+    runner = FakeRunner()
+    repository = FakeCandidateRepository([_candidate(1), _candidate(2), _candidate(3)])
+    selection_handler = SelectionHandler(
+        session_store=store,
+        candidate_repository=repository,
+    )
+    handler = ChatHandler(
+        store=store,
+        conversation_runner=runner,
+        selection_handler=selection_handler,
+    )
+    session = handler.create_session()
+    store.update_phase(session.id, "selection")
+
+    result = handler.handle_message(session.id, "use 1 and 3")
+
+    assert runner.calls == []
+    assert result.intent == "select_papers"
+    assert result.phase == "idle"
+    assert result.referenced_paper_ids == ["2401.00001", "2401.00003"]
+    assert repository.updated == [
+        ("candidate-1", "selected"),
+        ("candidate-3", "selected"),
+    ]
+    assert store.require_session(session.id).selected_candidate_ids == [
+        "candidate-1",
+        "candidate-3",
+    ]
+    assert "Selected 2 papers" in result.response_text
+
+
+def test_handler_keeps_selection_phase_on_invalid_selection():
+    store = InMemorySessionStore()
+    runner = FakeRunner()
+    repository = FakeCandidateRepository([_candidate(1), _candidate(2)])
+    selection_handler = SelectionHandler(
+        session_store=store,
+        candidate_repository=repository,
+    )
+    handler = ChatHandler(
+        store=store,
+        conversation_runner=runner,
+        selection_handler=selection_handler,
+    )
+    session = handler.create_session()
+    store.update_phase(session.id, "selection")
+
+    result = handler.handle_message(session.id, "use 9")
+
+    assert runner.calls == []
+    assert result.phase == "selection"
+    assert repository.updated == []
+    assert "Available numbers" in result.response_text
+
+
+def test_handler_selection_phase_without_selection_handler_returns_controlled_response():
+    handler, store, runner, _ = _handler()
+    session = handler.create_session()
+    store.update_phase(session.id, "selection")
+
+    result = handler.handle_message(session.id, "use 1")
+
+    assert runner.calls == []
+    assert result.intent == "select_papers"
+    assert result.phase == "selection"
+    assert "not configured" in result.response_text

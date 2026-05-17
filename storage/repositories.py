@@ -86,6 +86,21 @@ class PostgresSessionStore(SessionStore):
                 db.refresh(orm)
             return orm_to_session(orm)
 
+    def set_selected_candidate_ids(
+        self,
+        session_id: str,
+        candidate_ids: list[str],
+    ) -> Session:
+        with self.session_factory() as db:
+            orm = db.get(SessionORM, session_id)
+            if orm is None:
+                raise SessionNotFoundError(f"Session not found: {session_id}")
+
+            orm.selected_candidate_ids = list(dict.fromkeys(candidate_ids))
+            db.commit()
+            db.refresh(orm)
+            return orm_to_session(orm)
+
     def append_turn(
         self,
         session_id: str,
