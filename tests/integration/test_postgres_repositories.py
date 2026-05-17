@@ -299,6 +299,42 @@ def test_postgres_search_candidate_repository_round_trip(session_factory):
     assert [candidate.id for candidate in latest] == [first.id, second.id]
 
 
+def test_postgres_search_candidate_repository_repeated_upsert_preserves_display_ranks(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresSearchCandidateRepository(session_factory)
+    first = SearchCandidate(
+        session_id=session.id,
+        discovery_turn_id="turn-1",
+        display_rank=1,
+        title="Attention Is All You Need",
+        url="https://arxiv.org/abs/1706.03762",
+        arxiv_id="1706.03762",
+        score=0.95,
+    )
+    second = SearchCandidate(
+        session_id=session.id,
+        discovery_turn_id="turn-1",
+        display_rank=2,
+        title="BERT",
+        url="https://arxiv.org/abs/1810.04805",
+        arxiv_id="1810.04805",
+        score=0.75,
+    )
+    batch = [first, second]
+
+    repository.upsert_many(batch)
+    repository.upsert_many(batch)
+
+    loaded = repository.list_for_discovery_turn(session.id, "turn-1")
+    assert [(candidate.id, candidate.display_rank) for candidate in loaded] == [
+        (first.id, 1),
+        (second.id, 2),
+    ]
+
+
 def test_postgres_search_candidate_repository_rejects_invalid_status(session_factory):
     repository = PostgresSearchCandidateRepository(session_factory)
 
