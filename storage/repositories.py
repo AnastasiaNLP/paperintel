@@ -28,7 +28,9 @@ from storage.mappers import (
 )
 from storage.models import (
     AgentRunORM,
+    ComparisonArtifactORM,
     PaperChunkORM,
+    PaperWorkspaceORM,
     SearchCandidateORM,
     SessionORM,
     StructuredErrorORM,
@@ -346,6 +348,8 @@ class PostgresSearchCandidateRepository:
 
 
 def clear_foundation_tables(db: DbSession) -> None:
+    db.execute(delete(ComparisonArtifactORM))
+    db.execute(delete(PaperWorkspaceORM))
     db.execute(delete(SearchCandidateORM))
     db.execute(delete(PaperChunkORM))
     db.execute(delete(TurnORM))

@@ -1,19 +1,24 @@
 from datetime import datetime, timezone
 
 from models.agent_runs import AgentRun
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.errors import ErrorCodes, StructuredError, make_error
 from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
 from models.session import Session, Turn
 from storage.mappers import (
     agent_run_to_orm,
+    comparison_artifact_to_orm,
     orm_to_agent_run,
+    orm_to_comparison_artifact,
     orm_to_paper_chunk,
+    orm_to_paper_workspace,
     orm_to_session,
     orm_to_search_candidate,
     orm_to_structured_error,
     orm_to_turn,
     paper_chunk_to_orm,
+    paper_workspace_to_orm,
     search_candidate_to_orm,
     session_to_orm,
     structured_error_to_orm,
@@ -151,3 +156,35 @@ def test_search_candidate_mapper_round_trip():
     mapped = orm_to_search_candidate(search_candidate_to_orm(candidate))
 
     assert mapped == candidate
+
+
+def test_paper_workspace_mapper_round_trip():
+    workspace = PaperWorkspace(
+        session_id="session-1",
+        paper_id="1706.03762",
+        title="Attention Is All You Need",
+        source_url="https://arxiv.org/abs/1706.03762",
+        pipeline_stage="chunk_and_index",
+        finalized_report_json={"recommended_action": "prototype"},
+        method_extraction_json={"method_name": "Transformer"},
+        benchmarks_json=[{"task": "translation", "metric": "BLEU"}],
+        readiness_json={"maturity_level": "experimental"},
+        full_markdown_report="# Report",
+    )
+
+    mapped = orm_to_paper_workspace(paper_workspace_to_orm(workspace))
+
+    assert mapped == workspace
+
+
+def test_comparison_artifact_mapper_round_trip():
+    artifact = ComparisonArtifact(
+        session_id="session-1",
+        paper_ids=["1706.03762", "2605.16113"],
+        comparison_report_json={"winner_basis": "readiness_dominant"},
+        comparison_markdown="# Paper Comparison",
+    )
+
+    mapped = orm_to_comparison_artifact(comparison_artifact_to_orm(artifact))
+
+    assert mapped == artifact

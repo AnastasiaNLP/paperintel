@@ -3,7 +3,9 @@ from sqlalchemy.dialects import postgresql
 from storage.models import (
     AgentRunORM,
     Base,
+    ComparisonArtifactORM,
     PaperChunkORM,
+    PaperWorkspaceORM,
     SearchCandidateORM,
     SessionORM,
     StructuredErrorORM,
@@ -23,6 +25,8 @@ def test_initial_storage_metadata_contains_foundation_tables():
         "structured_errors",
         "paper_chunks",
         "search_candidates",
+        "paper_workspaces",
+        "comparison_artifacts",
     }.issubset(Base.metadata.tables.keys())
 
 
@@ -145,3 +149,50 @@ def test_search_candidate_table_matches_discovery_contract_columns():
     assert isinstance(_postgres_type(columns.authors), postgresql.JSONB)
     assert isinstance(_postgres_type(columns.reasons), postgresql.JSONB)
     assert isinstance(_postgres_type(columns.metadata_json), postgresql.JSONB)
+
+
+def test_paper_workspace_table_matches_artifact_contract_columns():
+    columns = PaperWorkspaceORM.__table__.c
+
+    for name in [
+        "session_id",
+        "paper_id",
+        "title",
+        "source_url",
+        "pipeline_stage",
+        "finalized_report_json",
+        "method_extraction_json",
+        "benchmarks_json",
+        "readiness_json",
+        "full_markdown_report",
+        "created_at",
+        "updated_at",
+    ]:
+        assert name in columns
+
+    assert columns.id.primary_key
+    assert "uq_paper_workspaces_session_paper" in {
+        constraint.name for constraint in PaperWorkspaceORM.__table__.constraints
+    }
+    assert isinstance(_postgres_type(columns.finalized_report_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.method_extraction_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.benchmarks_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.readiness_json), postgresql.JSONB)
+
+
+def test_comparison_artifact_table_matches_group_artifact_contract_columns():
+    columns = ComparisonArtifactORM.__table__.c
+
+    for name in [
+        "session_id",
+        "paper_ids",
+        "comparison_report_json",
+        "comparison_markdown",
+        "created_at",
+        "updated_at",
+    ]:
+        assert name in columns
+
+    assert columns.id.primary_key
+    assert isinstance(_postgres_type(columns.paper_ids), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.comparison_report_json), postgresql.JSONB)

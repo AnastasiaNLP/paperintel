@@ -1,11 +1,14 @@
 from models.agent_runs import AgentRun
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.errors import StructuredError
 from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
 from models.session import Session, Turn
 from storage.models import (
     AgentRunORM,
+    ComparisonArtifactORM,
     PaperChunkORM,
+    PaperWorkspaceORM,
     SearchCandidateORM,
     SessionORM,
     StructuredErrorORM,
@@ -231,6 +234,70 @@ def orm_to_search_candidate(orm: SearchCandidateORM) -> SearchCandidate:
         score=orm.score,
         reasons=list(orm.reasons or []),
         metadata=orm.metadata_json or {},
+        created_at=orm.created_at,
+        updated_at=orm.updated_at,
+    )
+
+
+def paper_workspace_to_orm(workspace: PaperWorkspace) -> PaperWorkspaceORM:
+    return PaperWorkspaceORM(
+        id=workspace.id,
+        session_id=workspace.session_id,
+        paper_id=workspace.paper_id,
+        title=workspace.title,
+        source_url=workspace.source_url,
+        pipeline_stage=workspace.pipeline_stage,
+        finalized_report_json=workspace.finalized_report_json,
+        method_extraction_json=workspace.method_extraction_json,
+        benchmarks_json=workspace.benchmarks_json,
+        readiness_json=workspace.readiness_json,
+        full_markdown_report=workspace.full_markdown_report,
+        created_at=workspace.created_at,
+        updated_at=workspace.updated_at,
+    )
+
+
+def orm_to_paper_workspace(orm: PaperWorkspaceORM) -> PaperWorkspace:
+    return PaperWorkspace(
+        id=orm.id,
+        session_id=orm.session_id,
+        paper_id=orm.paper_id,
+        title=orm.title,
+        source_url=orm.source_url,
+        pipeline_stage=orm.pipeline_stage,
+        finalized_report_json=orm.finalized_report_json,
+        method_extraction_json=orm.method_extraction_json,
+        benchmarks_json=list(orm.benchmarks_json or []),
+        readiness_json=orm.readiness_json,
+        full_markdown_report=orm.full_markdown_report,
+        created_at=orm.created_at,
+        updated_at=orm.updated_at,
+    )
+
+
+def comparison_artifact_to_orm(
+    artifact: ComparisonArtifact,
+) -> ComparisonArtifactORM:
+    return ComparisonArtifactORM(
+        id=artifact.id,
+        session_id=artifact.session_id,
+        paper_ids=artifact.paper_ids,
+        comparison_report_json=artifact.comparison_report_json,
+        comparison_markdown=artifact.comparison_markdown,
+        created_at=artifact.created_at,
+        updated_at=artifact.updated_at,
+    )
+
+
+def orm_to_comparison_artifact(
+    orm: ComparisonArtifactORM,
+) -> ComparisonArtifact:
+    return ComparisonArtifact(
+        id=orm.id,
+        session_id=orm.session_id,
+        paper_ids=list(orm.paper_ids or []),
+        comparison_report_json=orm.comparison_report_json,
+        comparison_markdown=orm.comparison_markdown,
         created_at=orm.created_at,
         updated_at=orm.updated_at,
     )
