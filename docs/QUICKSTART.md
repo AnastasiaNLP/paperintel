@@ -84,12 +84,39 @@ curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/ask \
   -d '{"question":"What is the main contribution of this paper?"}'
 ```
 
-## 6. Optional: MCP
+## 6. Optional: Discover Papers
+
+Search for candidate papers:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/discover \
+  -H 'content-type: application/json' \
+  -d '{"topic":"retrieval augmented generation"}'
+```
+
+Select papers by display number from the shortlist:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/select \
+  -H 'content-type: application/json' \
+  -d '{"selection":"use 1"}'
+```
+
+Analyze the selected papers, then ask questions as usual:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/analyze-selected
+```
+
+Discovery depends on the public arXiv API and may be rate-limited. If that
+happens, wait a few minutes and retry.
+
+## 7. Optional: MCP
 
 To use PaperIntel through an MCP client such as Claude Desktop, see
 [MCP_SETUP.md](MCP_SETUP.md).
 
-## 7. Tests
+## 8. Tests
 
 Run the default non-live suite:
 

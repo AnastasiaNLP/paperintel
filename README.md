@@ -16,6 +16,8 @@ and implementation implications" without losing grounding in the source text.
 - Answers questions about analyzed papers with citations.
 - Discovers recent papers for a topic, ranks candidates, and lets the user
   select papers by display number.
+- Analyzes selected discovery candidates, indexes them, and makes them
+  available for citation-backed QA.
 - Uses an adversarial Citation Critic with bounded repair to reduce unsupported
   confident claims.
 - Supports persona-aware answers: `engineer`, `researcher`, and `techlead`.
@@ -79,6 +81,10 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/select" \
   -d '{"selection":"use 1 and 3"}'
 
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze-selected"
+
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/ask" \
+  -H 'content-type: application/json' \
+  -d '{"question":"What is the main contribution of the selected paper?"}'
 ```
 
 For a runnable script, see [examples/rest_smoke.py](examples/rest_smoke.py).
@@ -140,7 +146,7 @@ LANGCHAIN_TRACING_V2=false PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 
 Current non-live coverage:
 
-- 461 passing unit and integration tests
+- 499 passing unit and integration tests
 - 12 DB-marked tests skipped unless `PAPERINTEL_TEST_DATABASE_URL` is set
 - live QA and discovery tests requiring real LLM credentials and local services
 
@@ -154,6 +160,17 @@ docker compose up -d postgres qdrant
 
 The live QA test is expected to take roughly 90 seconds on a local Docker
 Postgres/Qdrant stack.
+
+Live discovery-to-QA smoke:
+
+```bash
+docker compose up -d postgres qdrant
+.venv/bin/python -m dotenv run -- env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  .venv/bin/pytest -s tests/live/test_discovery_to_qa_live.py
+```
+
+Discovery live tests depend on the public arXiv API. They skip instead of
+failing when arXiv rate-limits all search queries.
 
 ## Current Limitations
 

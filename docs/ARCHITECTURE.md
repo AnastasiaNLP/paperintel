@@ -22,6 +22,7 @@ discover recent candidate papers for a research topic.
 │  - analyze_paper                                                 │
 │  - ask_question                                                  │
 │  - discover_papers / select_papers                               │
+│  - analyze_selected_papers                                       │
 │  - get_session / list_turns                                      │
 │  - health                                                        │
 └──────────────────────────────┬───────────────────────────────────┘
@@ -35,6 +36,7 @@ discover recent candidate papers for a research topic.
 │  - routes paper URLs to the analysis graph                       │
 │  - routes discovery requests to the discovery graph               │
 │  - routes selection turns while session.phase == selection        │
+│  - invokes batch analysis for selected discovery candidates       │
 │  - routes questions to the conversation graph                    │
 │  - passes session_store, retrieval_layer, and                    │
 │    agent_run_persistence through RunnableConfig                  │
@@ -42,41 +44,30 @@ discover recent candidate papers for a research topic.
                                │
           ┌────────────────────┬────────────────────┐
           ▼                    ▼                    ▼
-┌──────────────────────────────┐       ┌──────────────────────────────┐
-│        ANALYSIS GRAPH         │       │      CONVERSATION GRAPH      │
-│                              │       │                              │
-│ supervisor                   │       │ intent_router                │
-│   ↓                          │       │   ├─ qa_*                    │
-│ ingestion                    │       │   │    ↓                     │
-│   ↓                          │       │   │ retrieval_planner        │
-│ extraction                   │       │   │    ↓                     │
-│   ↓                          │       │   │ answer_agent             │
-│ benchmark                    │       │   │    ↓                     │
-│   ↓                          │       │   │ citation_critic          │
-│ readiness                    │       │   │    ├─ repair -> answer   │
-│   ↓                          │       │   │    └─ accepted -> END    │
-│ report                       │       │   ├─ clarification -> END    │
-│   ↓                          │       │   └─ analyze_paper -> END    │
-│ evidence_critic              │       │                              │
-│   ↓                          │       └──────────────────────────────┘
-│ report_finalize              │
-│   ↓                          │
-│ chunk_and_index              │       │   └─ discover -> END         │
-│   ├─ next paper -> ingestion │
-│   ├─ compare 2+ papers       │
-│   └─ END                     │
-└──────────────────────────────┘
-                       ┌──────────────────────────────┐
-                       │       DISCOVERY GRAPH         │
-                       │                              │
-                       │ research_strategist          │
-                       │   ↓                          │
-                       │ deterministic searcher       │
-                       │   ↓                          │
-                       │ selection_advisor            │
-                       │   ↓                          │
-                       │ END -> session.phase=select  │
-                       └──────────────────────────────┘
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│  ANALYSIS GRAPH  │  │ CONVERSATION     │  │ DISCOVERY GRAPH  │
+│                  │  │ GRAPH            │  │                  │
+│ supervisor       │  │ intent_router    │  │ research         │
+│   ↓              │  │   ├─ qa_*        │  │ strategist       │
+│ ingestion        │  │   │  ↓           │  │   ↓              │
+│   ↓              │  │ retrieval        │  │ deterministic    │
+│ extraction       │  │ planner          │  │ searcher         │
+│   ↓              │  │   ↓              │  │   ↓              │
+│ benchmark        │  │ answer_agent     │  │ selection        │
+│   ↓              │  │   ↓              │  │ advisor          │
+│ readiness        │  │ citation_critic  │  │   ↓              │
+│   ↓              │  │   ├─ repair      │  │ selection phase  │
+│ report           │  │   └─ END         │  │                  │
+│   ↓              │  │   ├─ clarify     │  │                  │
+│ evidence_critic  │  │   ├─ analyze     │  │                  │
+│   ↓              │  │   └─ discover    │  │                  │
+│ report_finalize  │  │                  │  │                  │
+│   ↓              │  │                  │  │                  │
+│ chunk_and_index  │  │                  │  │                  │
+│   ├─ next paper  │  │                  │  │                  │
+│   ├─ compare     │  │                  │  │                  │
+│   └─ END         │  │                  │  │                  │
+└──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
 ## Analysis Flow
@@ -131,6 +122,11 @@ about retrieval augmented generation":
    number.
 5. `ChatHandler` sets `session.phase = selection`; the next user selection is
    parsed deterministically and stored as selected candidate IDs.
+6. `PaperIntelService.analyze_selected_papers` resolves selected candidate IDs
+   to URLs, invokes the existing analysis graph in batch mode, and marks
+   candidates `analyzed` only after successful analysis.
+7. Successfully analyzed selected papers are indexed and become available for
+   retrieval-backed QA through the conversation graph.
 
 Only `research_strategist` and `selection_advisor` are LLM agents. Search,
 ranking, and selection parsing are deterministic components.

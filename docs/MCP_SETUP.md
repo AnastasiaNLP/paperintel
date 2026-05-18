@@ -18,7 +18,7 @@ docker compose up -d postgres qdrant
 
 ## Tools
 
-The MCP server exposes six tools:
+The MCP server exposes seven tools:
 
 - `create_session(persona)` creates a PaperIntel session and returns a session ID.
 - `analyze_paper(session_id, paper_url)` analyzes an arXiv or PDF URL. This is synchronous and can take about one minute.
@@ -102,6 +102,12 @@ Analyze the selected papers.
 
 Claude should call `analyze_selected_papers`. After analysis finishes, ask
 questions with `ask_paper`.
+
+The full discovery workflow is:
+
+```text
+create_session -> discover_papers -> select_papers -> analyze_selected_papers -> ask_paper
+```
 
 ## Troubleshooting
 

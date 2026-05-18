@@ -17,11 +17,21 @@ OpenAPI schema is the source of truth for request and response shapes.
   .venv/bin/uvicorn api.rest.main:app --host 127.0.0.1 --port 8000
 ```
 
-## Workflow
+## Workflows
+
+Known-paper QA:
 
 1. Create a session.
-2. Analyze a paper URL, or discover papers for a topic.
-3. Ask questions about analyzed papers, or select papers from the discovery shortlist.
+2. Analyze a paper URL.
+3. Ask questions about the analyzed paper.
+
+Discovery-to-QA:
+
+1. Create a session.
+2. Discover papers for a topic.
+3. Select papers from the numbered shortlist.
+4. Analyze selected papers.
+5. Ask questions about the analyzed selected papers.
 
 ## Endpoints
 
@@ -74,6 +84,10 @@ Discovery is synchronous and uses live arXiv search. If arXiv rate-limits a
 query, the response may include fewer candidates and the logs will include the
 HTTP status for diagnosis.
 
+After `/analyze-selected` succeeds, selected candidates are marked `analyzed`,
+the papers are indexed into Qdrant, and the session's `active_paper_ids` can be
+used by `/ask`.
+
 ## Notes
 
 - `/analyze` is synchronous and can take 50-90 seconds.
@@ -85,6 +99,8 @@ HTTP status for diagnosis.
 - `/analyze-selected` runs the existing analysis graph on selected candidate
   URLs. With multiple selected papers, the analysis graph uses batch mode and
   may also produce a comparison report.
+- `/analyze-selected` returns `400` if no candidates were selected and `409`
+  if selected candidates are not in the correct state for analysis.
 - API responses intentionally exclude internal `AgentRun` payloads and raw
   structured errors. Those are stored for observability, not returned as public
   transport data.

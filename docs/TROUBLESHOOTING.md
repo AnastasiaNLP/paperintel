@@ -47,6 +47,27 @@ QDRANT_URL=http://localhost:6333
 This is expected. Paper analysis is synchronous in the current REST and MCP
 adapters and can take about a minute for a typical arXiv paper.
 
+## Discovery returns no papers or live discovery tests skip
+
+Discovery uses the public arXiv API. If arXiv rate-limits requests, PaperIntel
+records warnings such as:
+
+```text
+Search query failed (HTTP 429): retrieval augmented generation
+```
+
+The live discovery tests skip when every arXiv search query is rate-limited.
+Wait a few minutes and retry. Partial rate limits are tolerated: if another
+query returns candidates, the workflow continues.
+
+## Analyze selected papers returns no active papers
+
+Selected-paper analysis depends on arXiv metadata and PDF retrieval for the
+chosen candidate. If arXiv metadata retrieval fails, the analysis phase is
+marked `failed` and the paper is not added to `active_paper_ids`.
+
+Try again later, or select a different candidate from the discovery shortlist.
+
 ## Asking questions returns weak or insufficient evidence
 
 Make sure the paper was successfully indexed. Check the session:
