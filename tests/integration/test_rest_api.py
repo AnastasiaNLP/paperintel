@@ -7,7 +7,7 @@ from api.rest.app import create_rest_app
 from models.api import HealthStatus
 from models.discovery import SearchCandidate
 from models.session import HandlerResult, Session, Turn
-from services.paperintel_service import InvalidSessionPhaseError
+from services.paperintel_service import InvalidSessionPhaseError, NoActivePapersError
 from services.selected_candidate_resolver import (
     NoSelectedCandidatesError,
     SelectedCandidateNotReadyError,
@@ -40,6 +40,7 @@ class FakeService:
         self.discover_calls = []
         self.select_calls = []
         self.analyze_selected_calls = []
+        self.synthesize_calls = []
         self.health_status = HealthStatus(healthy=True, checks={"basic": "ok"})
 
     def create_session(self, *, persona="engineer", original_query=None):
@@ -115,6 +116,17 @@ class FakeService:
             comparison_markdown="# Paper Comparison\n\n2605.1 vs 2605.3",
         )
 
+    def synthesize_papers(self, session_id, prompt=None):
+        self.get_session(session_id)
+        self.synthesize_calls.append((session_id, prompt))
+        return _handler_result(
+            session_id=session_id,
+            response_text="Synthesis answer.",
+            phase="qa",
+            intent="qa_comparison",
+            referenced_paper_ids=["1706.03762"],
+        )
+
     def health(self):
         return self.health_status
 
@@ -147,6 +159,11 @@ class CandidateNotReadyService(FakeService):
                 url="https://arxiv.org/abs/2605.1",
             )
         )
+
+
+class NoActivePapersService(FakeService):
+    def synthesize_papers(self, session_id, prompt=None):
+        raise NoActivePapersError(session_id)
 
 
 def _handler_result(
@@ -427,6 +444,56 @@ def test_analyze_selected_returns_409_when_candidate_not_ready():
 
     assert response.status_code == 409
     assert response.json()["error"] == "selected_candidate_not_ready"
+
+
+def test_synthesize_calls_service_with_optional_prompt():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/synthesize",
+        json={"prompt": "Compare implementation trade-offs."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["intent"] == "qa_comparison"
+    assert payload["response_text"] == "Synthesis answer."
+    assert service.synthesize_calls == [
+        ("session-1", "Compare implementation trade-offs.")
+    ]
+
+
+def test_synthesize_accepts_empty_body():
+    service = FakeService()
+
+    response = _request(service, "POST", "/sessions/session-1/synthesize")
+
+    assert response.status_code == 200
+    assert service.synthesize_calls == [("session-1", None)]
+
+
+def test_synthesize_returns_409_when_no_active_papers():
+    response = _request(
+        NoActivePapersService(),
+        "POST",
+        "/sessions/session-1/synthesize",
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "no_active_papers"
+
+
+def test_synthesize_rejects_prompt_over_max_length():
+    response = _request(
+        FakeService(),
+        "POST",
+        "/sessions/session-1/synthesize",
+        json={"prompt": "x" * 2001},
+    )
+
+    assert response.status_code == 422
 
 
 def test_message_response_shape_excludes_internal_fields():

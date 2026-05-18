@@ -16,6 +16,14 @@ class InvalidSessionPhaseError(ValueError):
         self.actual = actual
 
 
+class NoActivePapersError(ValueError):
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            f"Session {session_id} has no active papers. Analyze papers before synthesis."
+        )
+        self.session_id = session_id
+
+
 class SearchCandidateRepository(Protocol):
     def update_status(
         self,
@@ -66,6 +74,19 @@ class PaperIntelService:
     def ask_question(self, session_id: str, question: str) -> HandlerResult:
         return self.handler.handle_message(session_id, question)
 
+    def synthesize_papers(
+        self,
+        session_id: str,
+        prompt: str | None = None,
+    ) -> HandlerResult:
+        session = self.handler.store.require_session(session_id)
+        if not session.active_paper_ids:
+            raise NoActivePapersError(session_id)
+        question = (prompt or _DEFAULT_SYNTHESIS_PROMPT).strip()
+        if not question:
+            question = _DEFAULT_SYNTHESIS_PROMPT
+        return self.handler.handle_message(session_id, question)
+
     def discover_papers(self, session_id: str, topic_message: str) -> HandlerResult:
         topic_message = topic_message.strip()
         if not _looks_like_discovery_message(topic_message):
@@ -111,3 +132,10 @@ def _looks_like_discovery_message(message: str) -> bool:
     return any(word in normalized for word in discovery_words) and any(
         word in normalized for word in target_words
     )
+
+
+_DEFAULT_SYNTHESIS_PROMPT = (
+    "Synthesize the active papers. Compare their main contributions, methods, "
+    "trade-offs, limitations, and practical implications. Ground the answer in "
+    "the papers and include citations."
+)

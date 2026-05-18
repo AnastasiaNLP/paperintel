@@ -4,7 +4,11 @@ from api.in_memory_session_store import SessionNotFoundError
 from models.discovery import SearchCandidate
 from models.api import HealthStatus
 from models.session import HandlerResult, Session, Turn
-from services.paperintel_service import InvalidSessionPhaseError, PaperIntelService
+from services.paperintel_service import (
+    InvalidSessionPhaseError,
+    NoActivePapersError,
+    PaperIntelService,
+)
 from services.selected_candidate_resolver import NoSelectedCandidatesError
 
 
@@ -176,6 +180,51 @@ def test_service_ask_question_delegates_to_handler():
 
     assert result.response_text == "handled: What is the contribution?"
     assert handler.messages == [(session.id, "What is the contribution?")]
+
+
+def test_service_synthesize_papers_uses_default_prompt():
+    handler = FakeHandler()
+    service = PaperIntelService(handler=handler)
+    session = service.create_session()
+    handler.store.sessions[session.id] = session.model_copy(
+        update={"active_paper_ids": ["paper-1", "paper-2"]}
+    )
+
+    result = service.synthesize_papers(session.id)
+
+    assert result.response_text.startswith("handled: Synthesize the active papers")
+    assert handler.messages == [
+        (
+            session.id,
+            (
+                "Synthesize the active papers. Compare their main contributions, "
+                "methods, trade-offs, limitations, and practical implications. "
+                "Ground the answer in the papers and include citations."
+            ),
+        )
+    ]
+
+
+def test_service_synthesize_papers_uses_custom_prompt():
+    handler = FakeHandler()
+    service = PaperIntelService(handler=handler)
+    session = service.create_session()
+    handler.store.sessions[session.id] = session.model_copy(
+        update={"active_paper_ids": ["paper-1"]}
+    )
+
+    result = service.synthesize_papers(session.id, "Compare deployment risks.")
+
+    assert result.response_text == "handled: Compare deployment risks."
+    assert handler.messages == [(session.id, "Compare deployment risks.")]
+
+
+def test_service_synthesize_papers_requires_active_papers():
+    service = PaperIntelService(handler=FakeHandler())
+    session = service.create_session()
+
+    with pytest.raises(NoActivePapersError):
+        service.synthesize_papers(session.id)
 
 
 def test_service_discover_papers_delegates_to_handler():

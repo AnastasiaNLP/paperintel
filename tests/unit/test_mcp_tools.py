@@ -13,6 +13,7 @@ from mcp_server.tools import (
     format_discovery_result,
     get_session_tool,
     select_papers_tool,
+    synthesize_papers_tool,
 )
 from models.retrieval import CitationRef
 from models.session import HandlerResult, Session
@@ -34,6 +35,7 @@ class FakeService:
         self.discover_calls = []
         self.select_calls = []
         self.analyze_selected_calls = []
+        self.synthesize_calls = []
 
     def create_session(self, *, persona="engineer", original_query=None):
         self.create_calls.append({"persona": persona, "original_query": original_query})
@@ -107,6 +109,25 @@ class FakeService:
             assistant_turn_id="assistant-turn",
         )
 
+    def synthesize_papers(self, session_id, prompt=None):
+        self.synthesize_calls.append((session_id, prompt))
+        return HandlerResult(
+            session_id=session_id,
+            response_text="The papers trade off quality and deployment cost.",
+            phase="qa",
+            intent="qa_comparison",
+            citations=[
+                CitationRef(
+                    paper_id="1706.03762",
+                    chunk_id="1706.03762:chunk:2",
+                    page_start=2,
+                    page_end=2,
+                )
+            ],
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
     def get_session(self, session_id):
         return self.sessions[session_id]
 
@@ -116,6 +137,9 @@ class ExplodingService(FakeService):
         raise RuntimeError("internal details should not leak")
 
     def analyze_selected_papers(self, session_id):
+        raise RuntimeError("internal details should not leak")
+
+    def synthesize_papers(self, session_id, prompt=None):
         raise RuntimeError("internal details should not leak")
 
 
@@ -281,6 +305,69 @@ def test_analyze_selected_papers_handles_service_exception_safely():
     )
 
     assert "could not analyze the selected papers safely" in text
+    assert "internal details" not in text
+
+
+def test_synthesize_papers_tool_calls_service_with_prompt():
+    service = FakeService()
+
+    text = asyncio.run(
+        synthesize_papers_tool(
+            service,
+            session_id="session-1",
+            prompt="Compare implementation trade-offs.",
+        )
+    )
+
+    assert "quality and deployment cost" in text
+    assert "Sources:" in text
+    assert service.synthesize_calls == [
+        ("session-1", "Compare implementation trade-offs.")
+    ]
+
+
+def test_synthesize_papers_tool_calls_service_without_prompt():
+    service = FakeService()
+
+    text = asyncio.run(synthesize_papers_tool(service, session_id="session-1"))
+
+    assert "quality and deployment cost" in text
+    assert service.synthesize_calls == [("session-1", None)]
+
+
+def test_synthesize_papers_tool_treats_blank_prompt_as_default():
+    service = FakeService()
+
+    text = asyncio.run(
+        synthesize_papers_tool(service, session_id="session-1", prompt="   ")
+    )
+
+    assert "quality and deployment cost" in text
+    assert service.synthesize_calls == [("session-1", None)]
+
+
+def test_synthesize_papers_rejects_empty_session_id():
+    with pytest.raises(ValueError):
+        asyncio.run(synthesize_papers_tool(FakeService(), session_id=""))
+
+
+def test_synthesize_papers_rejects_too_long_prompt():
+    with pytest.raises(ValueError):
+        asyncio.run(
+            synthesize_papers_tool(
+                FakeService(),
+                session_id="session-1",
+                prompt="x" * 2001,
+            )
+        )
+
+
+def test_synthesize_papers_handles_service_exception_safely():
+    text = asyncio.run(
+        synthesize_papers_tool(ExplodingService(), session_id="session-1")
+    )
+
+    assert "could not synthesize the active papers safely" in text
     assert "internal details" not in text
 
 

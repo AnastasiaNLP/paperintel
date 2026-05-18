@@ -95,6 +95,24 @@ async def analyze_selected_papers_tool(
     return format_analysis_result(result)
 
 
+async def synthesize_papers_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    prompt: str | None = None,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    if prompt is not None:
+        prompt = prompt.strip() or None
+    if prompt is not None:
+        prompt = _validate_question(prompt)
+    try:
+        result = await _run_sync(service.synthesize_papers, session_id, prompt=prompt)
+    except Exception:
+        return _safe_error("synthesize the active papers")
+    return format_answer_result(result)
+
+
 async def get_session_tool(
     service: PaperIntelService,
     *,

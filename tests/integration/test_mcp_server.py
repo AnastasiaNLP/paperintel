@@ -58,6 +58,16 @@ class FakeService:
             assistant_turn_id="assistant-turn",
         )
 
+    def synthesize_papers(self, session_id, prompt=None):
+        return HandlerResult(
+            session_id=session_id,
+            response_text="Synthesis.",
+            phase="qa",
+            intent="qa_comparison",
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
     def get_session(self, session_id):
         return Session(id=session_id, phase="qa", active_paper_ids=["1706.03762"])
 
@@ -78,6 +88,7 @@ def test_mcp_server_builds_with_four_tools():
         "discover_papers",
         "select_papers",
         "analyze_selected_papers",
+        "synthesize_papers",
         "get_session",
     }.issubset(names)
 

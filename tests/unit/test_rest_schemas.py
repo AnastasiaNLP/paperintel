@@ -7,6 +7,7 @@ from api.rest.schemas import (
     DiscoverRequest,
     MessageResponse,
     SelectPapersRequest,
+    SynthesizeRequest,
 )
 from models.session import HandlerResult
 
@@ -38,6 +39,18 @@ def test_discover_request_rejects_empty_topic():
 def test_select_papers_request_rejects_empty_selection():
     with pytest.raises(ValidationError):
         SelectPapersRequest(selection="")
+
+
+def test_synthesize_request_allows_optional_prompt():
+    assert SynthesizeRequest().prompt is None
+    assert SynthesizeRequest(prompt="Compare implementation trade-offs.").prompt == (
+        "Compare implementation trade-offs."
+    )
+
+
+def test_synthesize_request_rejects_prompt_over_max_length():
+    with pytest.raises(ValidationError):
+        SynthesizeRequest(prompt="x" * 2001)
 
 
 def test_message_response_excludes_internal_handler_fields():

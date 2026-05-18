@@ -13,10 +13,15 @@ from api.rest.schemas import (
     MessageResponse,
     SelectPapersRequest,
     SessionResponse,
+    SynthesizeRequest,
     TurnsResponse,
     TurnResponse,
 )
-from services.paperintel_service import InvalidSessionPhaseError, PaperIntelService
+from services.paperintel_service import (
+    InvalidSessionPhaseError,
+    NoActivePapersError,
+    PaperIntelService,
+)
 from services.selected_candidate_resolver import (
     NoSelectedCandidatesError,
     SelectedCandidateNotReadyError,
@@ -51,6 +56,11 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     @app.exception_handler(SelectedCandidateNotReadyError)
     async def selected_candidate_not_ready_handler(request, exc):  # noqa: ANN001
         error = ErrorResponse(error="selected_candidate_not_ready", detail=str(exc))
+        return JSONResponse(status_code=409, content=error.model_dump(mode="json"))
+
+    @app.exception_handler(NoActivePapersError)
+    async def no_active_papers_handler(request, exc):  # noqa: ANN001
+        error = ErrorResponse(error="no_active_papers", detail=str(exc))
         return JSONResponse(status_code=409, content=error.model_dump(mode="json"))
 
     @app.exception_handler(Exception)
@@ -113,6 +123,17 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     @app.post("/sessions/{session_id}/analyze-selected", response_model=MessageResponse)
     async def analyze_selected_papers(session_id: str):
         result = service.analyze_selected_papers(session_id)
+        return MessageResponse.from_handler_result(result)
+
+    @app.post("/sessions/{session_id}/synthesize", response_model=MessageResponse)
+    async def synthesize_papers(
+        session_id: str,
+        payload: SynthesizeRequest | None = None,
+    ):
+        result = service.synthesize_papers(
+            session_id,
+            prompt=payload.prompt if payload is not None else None,
+        )
         return MessageResponse.from_handler_result(result)
 
     return app
