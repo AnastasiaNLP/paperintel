@@ -128,6 +128,18 @@ PaperIntel therefore has two comparison paths:
 - Conversational synthesis: produced on demand through QA over active paper
   chunks, with citations.
 
+This closes the current discovery plus comparison/synthesis MVP. Dedicated
+`comparison_analyst` and `synthesis_agent` components are intentionally
+deferred until artifact persistence exists. Without durable finalized reports,
+method extraction outputs, benchmark results, readiness outputs, and comparison
+reports, those agents would have to rely on transient graph state, markdown
+scraping, or re-analysis, which would make the design brittle.
+
+`agents/comparator.py` is a known transitional component. It remains the batch
+analysis comparator used after multi-paper analysis, and future work should
+migrate that behavior into a `comparison_analyst` path once durable artifacts
+can be loaded directly.
+
 ## Discovery Flow
 
 The discovery graph handles topic-level requests such as "find recent papers
@@ -165,6 +177,21 @@ Postgres stores durable product state:
 Qdrant stores chunk vectors. Point IDs are deterministic UUID5 values derived
 from stable chunk IDs, so repeated indexing updates instead of duplicating.
 
+## Next Artifact Persistence Slice
+
+The next persistence slice is intentionally narrow:
+
+- Postgres tables for finalized reports.
+- Postgres tables for method extraction outputs.
+- Postgres tables for benchmark results.
+- Postgres tables for readiness results.
+- Postgres tables for comparison reports.
+- Repository methods to reload these artifacts without re-running analysis.
+
+This slice does not include S3/object storage, paper cache versioning,
+outbox/job processing, or PDF/page-image asset storage. Those are separate
+later hardening layers.
+
 ## AgentRun Contract
 
 Production-shaped agents record:
@@ -191,8 +218,8 @@ See [AGENT_CONTRACT.md](AGENT_CONTRACT.md) for implementation details.
 
 - Analysis and discovery are synchronous through REST and MCP.
 - Discovery currently searches arXiv only.
-- Artifact storage for PDFs, page images, formulas, and large outputs is not
-  implemented yet.
+- Artifact persistence for finalized reports, extraction, benchmarks,
+  readiness, and comparison reports is not implemented yet.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
 - Authentication, rate limiting, and deployment hardening are future work.

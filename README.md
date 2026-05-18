@@ -154,7 +154,7 @@ LANGCHAIN_TRACING_V2=false PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 
 Current non-live coverage:
 
-- 499 passing unit and integration tests
+- 515 passing unit and integration tests in the default non-live/non-DB profile
 - 12 DB-marked tests skipped unless `PAPERINTEL_TEST_DATABASE_URL` is set
 - live QA and discovery tests requiring real LLM credentials and local services
 
@@ -180,12 +180,32 @@ docker compose up -d postgres qdrant
 Discovery live tests depend on the public arXiv API. They skip instead of
 failing when arXiv rate-limits all search queries.
 
+Recent live discovery-to-QA verification completed successfully in about 92
+seconds: discovery returned 10 candidates, one selected paper was analyzed and
+indexed, QA returned a cited answer with 3 citations, and all recorded agent
+runs completed without failures.
+
 ## Current Limitations
 
 - REST and MCP analysis/discovery calls are synchronous.
 - Discovery currently searches arXiv only.
-- Artifact storage for PDFs, page images, formulas, and large agent outputs is
-  not implemented yet.
+- Discovery plus comparison/synthesis is implemented as an MVP: discovery,
+  shortlist selection, selected-paper analysis, batch comparison artifacts, and
+  retrieval-backed synthesis are working.
+- Dedicated `comparison_analyst` and `synthesis_agent` components are deferred
+  until a durable artifact layer exists. Without persisted finalized reports,
+  extraction outputs, benchmarks, readiness outputs, and comparison reports, new
+  agents would have to depend on transient graph state, markdown scraping, or
+  re-analysis.
+- `agents/comparator.py` is a known transitional component: it remains the
+  batch analysis comparator for multi-paper analysis and is expected to migrate
+  into a future `comparison_analyst` path after artifact persistence is in
+  place.
+- The next artifact persistence slice is intentionally narrow: Postgres tables
+  for finalized reports, method extraction, benchmarks, readiness results, and
+  comparison reports, plus reload without re-analysis. S3/object storage, paper
+  cache versioning, outbox/job processing, and PDF asset storage are separate
+  later work.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
 - Authentication, rate limiting, and deployment hardening are future work.
