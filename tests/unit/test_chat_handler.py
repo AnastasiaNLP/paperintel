@@ -6,6 +6,14 @@ from api.in_memory_session_store import InMemorySessionStore, SessionNotFoundErr
 from models.discovery import SearchCandidate
 from models.errors import ErrorCodes, StructuredError
 from models.qa import AnswerDraft
+from models.schemas import (
+    BenchmarkResult,
+    EngineerReport,
+    MethodExtraction,
+    PaperMetadata,
+    PaperSlot,
+    ProductionReadiness,
+)
 from services.selection_parser import SelectionHandler
 
 
@@ -48,6 +56,25 @@ class FakeCandidateRepository:
         return None
 
 
+class FakeArtifactRepository:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.workspaces = []
+        self.comparisons = []
+
+    def upsert_workspace(self, workspace):
+        if self.error is not None:
+            raise self.error
+        self.workspaces.append(workspace)
+        return workspace
+
+    def save_comparison(self, artifact):
+        if self.error is not None:
+            raise self.error
+        self.comparisons.append(artifact)
+        return artifact
+
+
 def _candidate(rank: int) -> SearchCandidate:
     arxiv_id = f"2401.0000{rank}"
     return SearchCandidate(
@@ -62,7 +89,70 @@ def _candidate(rank: int) -> SearchCandidate:
     )
 
 
-def _handler(runner=None, persistence=None, analysis_runner=None, retrieval_layer=None):
+def _paper_slot(
+    *,
+    paper_index: int = 0,
+    arxiv_id: str = "2401.00001",
+    input_url: str | None = None,
+    completed: bool = True,
+) -> PaperSlot:
+    return PaperSlot(
+        paper_index=paper_index,
+        input_url=input_url or f"https://arxiv.org/abs/{arxiv_id}",
+        metadata=PaperMetadata(
+            title=f"Paper {arxiv_id}",
+            authors=["A. Author"],
+            arxiv_id=arxiv_id,
+            published_date="2024-01-01",
+            abstract="Abstract.",
+            categories=["cs.CL"],
+        ),
+        method_extraction=MethodExtraction(
+            method_name="Method",
+            description="Description.",
+            novelty_claim="Novelty.",
+            key_components=["component"],
+            compared_to=["baseline"],
+            limitations_stated=["limitation"],
+        ),
+        benchmarks=[
+            BenchmarkResult(
+                task="translation",
+                metric="BLEU",
+                value=42.0,
+            )
+        ],
+        production_readiness=ProductionReadiness(
+            has_open_code=True,
+            code_url="https://github.com/example/repo",
+            huggingface_model=None,
+            framework_integrations=["PyTorch"],
+            min_gpu_requirement="A100",
+            estimated_inference_cost=None,
+            dependencies=["torch"],
+            maturity_level="experimental",
+            maturity_reasoning="Prototype quality.",
+        ),
+        engineer_report=EngineerReport(
+            executive_summary="Summary.",
+            key_innovation="Innovation.",
+            practical_implications="Implications.",
+            implementation_difficulty="moderate",
+            recommended_action="prototype",
+            action_reasoning="Worth prototyping.",
+        ),
+        markdown_report="# Report",
+        completed=completed,
+    )
+
+
+def _handler(
+    runner=None,
+    persistence=None,
+    analysis_runner=None,
+    retrieval_layer=None,
+    artifact_repository=None,
+):
     store = InMemorySessionStore()
     runner = runner or FakeRunner()
     persistence = persistence or InMemoryAgentRunPersistence()
@@ -73,6 +163,7 @@ def _handler(runner=None, persistence=None, analysis_runner=None, retrieval_laye
             analysis_runner=analysis_runner,
             agent_run_persistence=persistence,
             retrieval_layer=retrieval_layer,
+            artifact_repository=artifact_repository,
         ),
         store,
         runner,
@@ -287,6 +378,137 @@ def test_analyze_selected_papers_invokes_analysis_batch():
     assert [turn.role for turn in turns] == ["user", "assistant"]
     assert turns[0].content == "Analyze selected papers"
     assert turns[0].intent == "analyze_paper"
+
+
+def test_handler_persists_single_analysis_workspace():
+    artifact_repository = FakeArtifactRepository()
+    analysis_runner = FakeRunner(
+        result={
+            "papers": [_paper_slot(arxiv_id="2401.00001")],
+            "full_markdown_report": "# Analysis complete",
+            "processing_stage": "chunk_and_index",
+            "next_phase": "qa",
+        }
+    )
+    handler, _, _, _ = _handler(
+        analysis_runner=analysis_runner,
+        artifact_repository=artifact_repository,
+    )
+    session = handler.create_session()
+
+    result = handler.handle_message(session.id, "https://arxiv.org/abs/2401.00001")
+
+    assert result.phase == "qa"
+    assert not result.errors
+    assert len(artifact_repository.workspaces) == 1
+    workspace = artifact_repository.workspaces[0]
+    assert workspace.session_id == session.id
+    assert workspace.paper_id == "2401.00001"
+    assert workspace.title == "Paper 2401.00001"
+    assert workspace.source_url == "https://arxiv.org/abs/2401.00001"
+    assert workspace.pipeline_stage == "chunk_and_index"
+    assert workspace.method_extraction_json["method_name"] == "Method"
+    assert workspace.benchmarks_json == [
+        {
+            "task": "translation",
+            "metric": "BLEU",
+            "value": 42.0,
+            "unit": None,
+            "baseline_comparison": None,
+            "conditions": None,
+        }
+    ]
+    assert workspace.readiness_json["maturity_level"] == "experimental"
+    assert workspace.finalized_report_json["recommended_action"] == "prototype"
+    assert workspace.full_markdown_report == "# Report"
+
+
+def test_analyze_selected_papers_persists_batch_workspaces_and_comparison():
+    artifact_repository = FakeArtifactRepository()
+    analysis_runner = FakeRunner(
+        result={
+            "papers": [
+                _paper_slot(paper_index=0, arxiv_id="2401.00001"),
+                _paper_slot(paper_index=1, arxiv_id="2401.00002"),
+            ],
+            "comparison_report": {"winner_basis": "readiness"},
+            "comparison_markdown": "# Paper Comparison",
+            "processing_stage": "comparison_completed",
+            "next_phase": "qa",
+        }
+    )
+    handler, _, _, _ = _handler(
+        analysis_runner=analysis_runner,
+        artifact_repository=artifact_repository,
+    )
+    session = handler.create_session()
+
+    result = handler.analyze_selected_papers(
+        session.id,
+        [
+            "https://arxiv.org/abs/2401.00001",
+            "https://arxiv.org/abs/2401.00002",
+        ],
+    )
+
+    assert result.phase == "qa"
+    assert [workspace.paper_id for workspace in artifact_repository.workspaces] == [
+        "2401.00001",
+        "2401.00002",
+    ]
+    assert len(artifact_repository.comparisons) == 1
+    comparison = artifact_repository.comparisons[0]
+    assert comparison.session_id == session.id
+    assert comparison.paper_ids == ["2401.00001", "2401.00002"]
+    assert comparison.comparison_report_json == {"winner_basis": "readiness"}
+    assert comparison.comparison_markdown == "# Paper Comparison"
+
+
+def test_handler_skips_artifact_persistence_for_failed_analysis():
+    artifact_repository = FakeArtifactRepository()
+    analysis_runner = FakeRunner(
+        result={
+            "papers": [_paper_slot(arxiv_id="2401.00001")],
+            "processing_stage": "failed",
+            "paper_failed": True,
+            "paper_failure_reason": "metadata failed",
+        }
+    )
+    handler, _, _, _ = _handler(
+        analysis_runner=analysis_runner,
+        artifact_repository=artifact_repository,
+    )
+    session = handler.create_session()
+
+    result = handler.handle_message(session.id, "https://arxiv.org/abs/2401.00001")
+
+    assert result.phase == "failed"
+    assert artifact_repository.workspaces == []
+    assert artifact_repository.comparisons == []
+
+
+def test_handler_artifact_persistence_failure_returns_warning():
+    artifact_repository = FakeArtifactRepository(error=RuntimeError("db down"))
+    analysis_runner = FakeRunner(
+        result={
+            "papers": [_paper_slot(arxiv_id="2401.00001")],
+            "full_markdown_report": "# Analysis complete",
+            "processing_stage": "chunk_and_index",
+            "next_phase": "qa",
+        }
+    )
+    handler, _, _, _ = _handler(
+        analysis_runner=analysis_runner,
+        artifact_repository=artifact_repository,
+    )
+    session = handler.create_session()
+
+    result = handler.handle_message(session.id, "https://arxiv.org/abs/2401.00001")
+
+    assert result.phase == "qa"
+    assert result.errors
+    assert result.errors[0].code == ErrorCodes.WARNING
+    assert "Artifact persistence failed" in result.errors[0].message
 
 
 def test_analyze_selected_papers_without_analysis_runner_returns_controlled_response():

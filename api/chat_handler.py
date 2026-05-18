@@ -3,9 +3,11 @@ from typing import Any, Protocol
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
 from api.session_store import SessionStore
-from models.errors import ErrorCodes, StructuredError, make_error
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SelectionAdvice
+from models.errors import ErrorCodes, StructuredError, make_error
 from models.qa import AnswerDraft
+from models.schemas import PaperSlot
 from models.session import GraphInvocationResult, HandlerResult, Persona, Session
 from services.retrieval_layer import RetrievalLayer
 from services.searcher import Searcher
@@ -24,6 +26,14 @@ class AnalysisRunner(Protocol):
 
 class DiscoveryRunner(Protocol):
     def invoke(self, input: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+
+class ArtifactRepository(Protocol):
+    def upsert_workspace(self, workspace: PaperWorkspace) -> PaperWorkspace:
+        ...
+
+    def save_comparison(self, artifact: ComparisonArtifact) -> ComparisonArtifact:
         ...
 
 
@@ -48,6 +58,7 @@ class ChatHandler:
         retrieval_layer: RetrievalLayer | None = None,
         searcher: Searcher | None = None,
         selection_handler: SelectionHandler | None = None,
+        artifact_repository: ArtifactRepository | None = None,
     ) -> None:
         self.store = store
         self.conversation_runner = conversation_runner
@@ -59,6 +70,7 @@ class ChatHandler:
         self.retrieval_layer = retrieval_layer
         self.searcher = searcher
         self.selection_handler = selection_handler
+        self.artifact_repository = artifact_repository
 
     def create_session(
         self,
@@ -111,6 +123,8 @@ class ChatHandler:
                 assistant_turn_id=assistant_turn.id,
                 error=error,
             )
+
+        self._persist_analysis_artifacts(session, graph_result)
 
         if graph_result.next_phase is not None:
             session = self.store.update_phase(session.id, graph_result.next_phase)
@@ -187,6 +201,8 @@ class ChatHandler:
                 error=error,
             )
 
+        self._persist_analysis_artifacts(session, graph_result)
+
         if graph_result.next_phase is not None:
             session = self.store.update_phase(session.id, graph_result.next_phase)
         else:
@@ -221,6 +237,43 @@ class ChatHandler:
             assistant_turn_id=assistant_turn.id,
             error=graph_result.errors[0] if graph_result.errors else None,
         )
+
+    def _persist_analysis_artifacts(
+        self,
+        session: Session,
+        graph_result: GraphInvocationResult,
+    ) -> None:
+        if self.artifact_repository is None:
+            return
+        if graph_result.intent != "analyze_paper":
+            return
+        if graph_result.next_phase == "failed" or graph_result.raw.get("paper_failed"):
+            return
+
+        try:
+            workspaces = _workspaces_from_analysis_raw(session.id, graph_result.raw)
+            for workspace in workspaces:
+                self.artifact_repository.upsert_workspace(workspace)
+
+            comparison = _comparison_from_analysis_raw(
+                session.id,
+                graph_result.raw,
+                paper_ids=[workspace.paper_id for workspace in workspaces],
+            )
+            if comparison is not None:
+                self.artifact_repository.save_comparison(comparison)
+        except Exception as exc:
+            graph_result.errors.append(
+                make_error(
+                    ErrorCodes.WARNING,
+                    f"Artifact persistence failed: {exc}",
+                    node="chat_handler",
+                    severity="warning",
+                    recoverable=True,
+                    session_id=session.id,
+                    exception_type=type(exc).__name__,
+                )
+            )
 
     def _route_message(
         self,
@@ -303,6 +356,7 @@ class ChatHandler:
                 "session_id": session.id,
                 "user_message": message,
                 "persona": session.persona,
+                "phase": session.phase,
                 "referenced_paper_ids": list(session.active_paper_ids),
                 "agent_runs": [],
                 "errors": [],
@@ -490,6 +544,89 @@ def _analysis_referenced_paper_ids(raw: dict[str, Any]) -> list[str]:
         if paper_id:
             ids.append(str(paper_id))
     return ids
+
+
+def _workspaces_from_analysis_raw(
+    session_id: str,
+    raw: dict[str, Any],
+) -> list[PaperWorkspace]:
+    stage = str(raw.get("processing_stage") or "completed")
+    workspaces = []
+    for slot in _paper_slots(raw.get("papers") or []):
+        if not slot.completed:
+            continue
+        paper_id = _paper_id_for_slot(slot)
+        if not paper_id:
+            continue
+        metadata = slot.metadata
+        workspaces.append(
+            PaperWorkspace(
+                session_id=session_id,
+                paper_id=paper_id,
+                title=getattr(metadata, "title", None),
+                source_url=slot.input_url,
+                pipeline_stage=stage,
+                finalized_report_json=_model_dump(slot.engineer_report),
+                method_extraction_json=_model_dump(slot.method_extraction),
+                benchmarks_json=[
+                    dumped
+                    for benchmark in slot.benchmarks
+                    if (dumped := _model_dump(benchmark)) is not None
+                ],
+                readiness_json=_model_dump(slot.production_readiness),
+                full_markdown_report=slot.markdown_report,
+            )
+        )
+    return workspaces
+
+
+def _comparison_from_analysis_raw(
+    session_id: str,
+    raw: dict[str, Any],
+    *,
+    paper_ids: list[str],
+) -> ComparisonArtifact | None:
+    markdown = raw.get("comparison_markdown")
+    if not markdown or len(paper_ids) < 2:
+        return None
+    return ComparisonArtifact(
+        session_id=session_id,
+        paper_ids=list(dict.fromkeys(paper_ids)),
+        comparison_report_json=_model_dump(raw.get("comparison_report")),
+        comparison_markdown=str(markdown),
+    )
+
+
+def _paper_slots(value: list[Any]) -> list[PaperSlot]:
+    slots = []
+    for item in value:
+        if isinstance(item, PaperSlot):
+            slots.append(item)
+        elif isinstance(item, dict):
+            try:
+                slots.append(PaperSlot(**item))
+            except Exception:
+                continue
+    return slots
+
+
+def _paper_id_for_slot(slot: PaperSlot) -> str | None:
+    arxiv_id = getattr(slot.metadata, "arxiv_id", None)
+    if arxiv_id:
+        return str(arxiv_id)
+    if slot.input_url:
+        return str(slot.input_url)
+    return None
+
+
+def _model_dump(value: Any) -> dict | None:
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return value
+    return None
 
 
 def _normalize_discovery_result(raw: dict[str, Any]) -> GraphInvocationResult:

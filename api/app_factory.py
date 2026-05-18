@@ -18,6 +18,7 @@ from storage.db import make_engine, make_session_factory
 from storage.repositories import (
     PostgresAgentRunPersistence,
     PostgresPaperChunkRepository,
+    PostgresPaperWorkspaceRepository,
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
 )
@@ -35,6 +36,7 @@ def create_chat_handler(
     session_factory = make_session_factory(engine)
     session_store = PostgresSessionStore(session_factory)
     candidate_repository = PostgresSearchCandidateRepository(session_factory)
+    artifact_repository = PostgresPaperWorkspaceRepository(session_factory)
     searcher = (
         Searcher(
             provider=ArxivSearchProvider(),
@@ -55,6 +57,7 @@ def create_chat_handler(
             session_store=session_store,
             candidate_repository=candidate_repository,
         ),
+        artifact_repository=artifact_repository,
     )
 
 
@@ -103,6 +106,7 @@ def create_paperintel_service(
 
         analysis_runner = build_graph().compile()
     candidate_repository = PostgresSearchCandidateRepository(session_factory)
+    artifact_repository = PostgresPaperWorkspaceRepository(session_factory)
     if discovery_runner is None:
         from graph_discovery import build_discovery_graph
 
@@ -126,6 +130,7 @@ def create_paperintel_service(
             session_store=session_store,
             candidate_repository=candidate_repository,
         ),
+        artifact_repository=artifact_repository,
     )
 
     health_checker = None
