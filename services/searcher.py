@@ -199,7 +199,9 @@ class Searcher:
             try:
                 raw_results.extend(self.provider.search(query))
             except Exception as exc:
-                warning = f"Search query failed: {query.query} ({type(exc).__name__})"
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                detail = f"HTTP {status_code}" if status_code else type(exc).__name__
+                warning = f"Search query failed ({detail}): {query.query}"
                 logger.warning(warning)
                 warnings.append(warning)
 

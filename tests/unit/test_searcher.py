@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from models.discovery import DiscoveryPlan, RawSearchResult, ResearchQuery, SearchCandidate
@@ -304,7 +305,26 @@ def test_searcher_tolerates_one_query_failure():
 
     assert len(result.candidates) == 1
     assert len(result.warnings) == 1
-    assert "broken query" in result.warnings[0]
+    assert result.warnings[0] == "Search query failed (RuntimeError): broken query"
+
+
+def test_searcher_warning_includes_http_status_code():
+    request = httpx.Request("GET", "https://export.arxiv.org/api/query")
+    response = httpx.Response(400, request=request)
+    http_error = httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    class FailingProvider:
+        def search(self, query: ResearchQuery) -> list[RawSearchResult]:
+            raise http_error
+
+    result = _searcher(FailingProvider()).search(
+        session_id="session-1",
+        discovery_turn_id="turn-1",
+        plan=_plan("broken query"),
+    )
+
+    assert result.candidates == []
+    assert result.warnings == ["Search query failed (HTTP 400): broken query"]
 
 
 def test_searcher_returns_empty_when_no_results():

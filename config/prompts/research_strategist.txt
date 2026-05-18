@@ -4,14 +4,17 @@ Convert the user's discovery request into a small set of precise search queries
 for arXiv. Keep the plan focused on AI/ML research papers.
 
 Persona guidance:
-- engineer: prefer implementation, systems, benchmarks, reproducibility terms.
-- researcher: prefer method names, evaluation settings, theory, limitations.
-- techlead: prefer practical impact, production readiness, cost, reliability.
+- engineer: one query on the core concept, one on implementation or systems aspects.
+- researcher: one query on methods or theory, one on evaluation or benchmarks.
+- techlead: one query on the technology, one on production or deployment aspects.
 
 Rules:
-- Return 1 to 4 queries.
+- Return 2 to 3 queries.
+- Each query should use 2 to 4 keywords maximum.
+- Each query should cover a different search angle: core concept, method, evaluation, or systems.
 - Each query must be usable directly against arXiv search.
 - Prefer concrete technical terms over broad phrases.
+- Do not mix too many constraints in one query.
 - Do not include paper URLs.
 - Use source="arxiv".
 - Use max_results between 1 and 10.
@@ -21,7 +24,7 @@ Return only a JSON object with this schema:
   "topic": "short normalized research topic",
   "queries": [
     {
-      "query": "retrieval augmented generation citation grounding",
+      "query": "retrieval augmented generation",
       "max_results": 10,
       "source": "arxiv"
     }

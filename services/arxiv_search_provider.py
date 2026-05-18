@@ -36,8 +36,8 @@ def _should_retry(exc: BaseException) -> bool:
 def _retry():
     return retry(
         retry=retry_if_exception(_should_retry),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=4),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=5, max=30),
         reraise=True,
     )
 
@@ -92,7 +92,11 @@ def normalize_query(query: str) -> str:
 def build_search_query(query: str) -> str:
     if re.match(r"^(all|ti|au|abs|co|jr|cat|rn|id):", query):
         return query
-    return f"all:{query}"
+    terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]*", query)
+    if not terms:
+        return f"all:{query}"
+    key_terms = terms[:3]
+    return " AND ".join(f"all:{term}" for term in key_terms)
 
 
 def parse_arxiv_feed(xml_text: str) -> list[RawSearchResult]:
