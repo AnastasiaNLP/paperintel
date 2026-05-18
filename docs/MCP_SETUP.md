@@ -18,7 +18,7 @@ docker compose up -d postgres qdrant
 
 ## Tools
 
-The MCP server exposes eight tools:
+The MCP server exposes eleven tools:
 
 - `create_session(persona)` creates a PaperIntel session and returns a session ID.
 - `analyze_paper(session_id, paper_url)` analyzes an arXiv or PDF URL. This is synchronous and can take about one minute.
@@ -28,6 +28,9 @@ The MCP server exposes eight tools:
 - `analyze_selected_papers(session_id)` analyzes papers selected from the discovery shortlist.
 - `synthesize_papers(session_id, prompt)` synthesizes active papers through retrieval-backed QA. The prompt is optional.
 - `get_session(session_id)` returns persona, phase, and active paper IDs.
+- `list_paper_workspaces(session_id)` lists persisted artifact summaries for analyzed papers.
+- `get_paper_workspace(session_id, paper_id)` returns a readable summary of one persisted paper workspace.
+- `get_latest_comparison(session_id)` returns the latest persisted batch comparison artifact.
 
 The server does not keep an implicit current session. Pass the `session_id` returned by `create_session` to later tool calls.
 
@@ -111,6 +114,26 @@ Synthesize the active papers and compare their implementation trade-offs.
 ```
 
 Claude should call `synthesize_papers`.
+
+To inspect saved artifacts without re-running analysis:
+
+```text
+Show the persisted workspaces for this PaperIntel session.
+```
+
+Claude should call `list_paper_workspaces`. For a specific paper:
+
+```text
+Show the saved workspace for paper 1706.03762.
+```
+
+Claude should call `get_paper_workspace`. For the latest batch comparison:
+
+```text
+Show the latest saved comparison for this session.
+```
+
+Claude should call `get_latest_comparison`.
 
 The full discovery workflow is:
 

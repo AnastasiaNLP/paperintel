@@ -72,6 +72,19 @@ def main() -> int:
     print(answer["response_text"])
     print("\nReferenced papers:", ", ".join(answer.get("referenced_paper_ids") or []))
     print("Citations:", len(answer.get("citations") or []))
+
+    print("\nLoading persisted workspaces...")
+    workspaces_response = httpx.get(
+        f"{BASE_URL}/sessions/{session_id}/workspaces",
+        timeout=10,
+    )
+    if not _check_response(workspaces_response, "load persisted workspaces"):
+        return 1
+    workspaces = workspaces_response.json().get("workspaces") or []
+    print("Workspaces:", len(workspaces))
+    if workspaces:
+        first = workspaces[0]
+        print("First workspace:", first.get("paper_id"), first.get("title"))
     return 0
 
 

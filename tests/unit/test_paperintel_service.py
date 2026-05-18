@@ -4,6 +4,7 @@ from api.in_memory_session_store import SessionNotFoundError
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.api import HealthStatus
+from models.errors import ErrorCodes, make_error
 from models.session import HandlerResult, Session, Turn
 from services.paperintel_service import (
     ComparisonNotFoundError,
@@ -333,6 +334,38 @@ def test_service_analyze_selected_papers_resolves_and_updates_statuses():
         ("2401.1", "analyzed"),
         ("2401.2", "analyzed"),
     ]
+
+
+def test_service_analyze_selected_papers_updates_statuses_with_warnings():
+    handler = FakeHandler()
+    handler.selected_analysis_result = HandlerResult(
+        session_id="session-1",
+        response_text="selected analysis complete",
+        phase="qa",
+        intent="analyze_paper",
+        errors=[
+            make_error(
+                ErrorCodes.WARNING,
+                "benchmarks missing",
+                severity="warning",
+                recoverable=True,
+            )
+        ],
+        user_turn_id="user-turn",
+        assistant_turn_id="assistant-turn",
+    )
+    repository = FakeCandidateRepository()
+    service = PaperIntelService(
+        handler=handler,
+        selected_candidate_resolver=FakeSelectedCandidateResolver([_candidate("2401.1")]),
+        candidate_repository=repository,
+    )
+    session = service.create_session()
+
+    result = service.analyze_selected_papers(session.id)
+
+    assert result.errors
+    assert repository.updates == [("2401.1", "analyzed")]
 
 
 def test_service_analyze_selected_papers_does_not_update_status_when_analysis_missing():

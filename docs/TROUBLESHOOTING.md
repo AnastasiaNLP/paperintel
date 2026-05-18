@@ -97,6 +97,16 @@ For on-demand comparison after papers are active, use `/synthesize` or the MCP
 `synthesize_papers` tool. That path uses retrieval-backed QA with citations
 rather than the batch comparator.
 
+## `GET /sessions/{id}/comparison` returns `comparison_not_found`
+
+This is expected until a multi-paper analysis has produced a batch comparison.
+Analyze at least two selected papers together with `/analyze-selected`, then
+retry the comparison endpoint or MCP `get_latest_comparison` tool.
+
+Single-paper analysis still persists a paper workspace. Use
+`/sessions/{id}/workspaces` or MCP `list_paper_workspaces` to inspect saved
+per-paper artifacts.
+
 ## LangSmith traces appear during local tests
 
 Disable tracing for local test runs:

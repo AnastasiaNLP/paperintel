@@ -84,6 +84,12 @@ curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/ask \
   -d '{"question":"What is the main contribution of this paper?"}'
 ```
 
+Reload the persisted artifact summary without re-running analysis:
+
+```bash
+curl -s http://127.0.0.1:8000/sessions/<SESSION_ID>/workspaces
+```
+
 ## 6. Optional: Discover Papers
 
 Search for candidate papers:
@@ -116,6 +122,12 @@ papers:
 curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/synthesize \
   -H 'content-type: application/json' \
   -d '{"prompt":"Compare implementation trade-offs across these papers."}'
+```
+
+Reload the latest persisted batch comparison:
+
+```bash
+curl -s http://127.0.0.1:8000/sessions/<SESSION_ID>/comparison
 ```
 
 Discovery depends on the public arXiv API and may be rate-limited. If that

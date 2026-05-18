@@ -20,6 +20,8 @@ and implementation implications" without losing grounding in the source text.
   available for citation-backed QA.
 - Produces a batch comparison report when multiple selected papers are analyzed
   together.
+- Persists analysis workspaces and batch comparison artifacts so they can be
+  reloaded without re-running analysis.
 - Synthesizes active papers on demand through retrieval-backed QA with
   citations.
 - Uses an adversarial Citation Critic with bounded repair to reduce unsupported
@@ -71,6 +73,8 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze" \
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/ask" \
   -H 'content-type: application/json' \
   -d '{"question":"What is the main contribution of this paper?"}'
+
+curl -s "http://127.0.0.1:8000/sessions/$SESSION_ID/workspaces"
 ```
 
 Discovery workflow:
@@ -93,6 +97,8 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/ask" \
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/synthesize" \
   -H 'content-type: application/json' \
   -d '{"prompt":"Compare the selected papers for implementation trade-offs."}'
+
+curl -s "http://127.0.0.1:8000/sessions/$SESSION_ID/comparison"
 ```
 
 For a runnable script, see [examples/rest_smoke.py](examples/rest_smoke.py).
@@ -154,8 +160,8 @@ LANGCHAIN_TRACING_V2=false PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 
 Current non-live coverage:
 
-- 515 passing unit and integration tests in the default non-live/non-DB profile
-- 12 DB-marked tests skipped unless `PAPERINTEL_TEST_DATABASE_URL` is set
+- 542 passing unit and integration tests in the default non-live/non-DB profile
+- 18 DB-marked tests skipped unless `PAPERINTEL_TEST_DATABASE_URL` is set
 - live QA and discovery tests requiring real LLM credentials and local services
 
 Live QA smoke:
@@ -193,19 +199,16 @@ runs completed without failures.
   shortlist selection, selected-paper analysis, batch comparison artifacts, and
   retrieval-backed synthesis are working.
 - Dedicated `comparison_analyst` and `synthesis_agent` components are deferred
-  until a durable artifact layer exists. Without persisted finalized reports,
-  extraction outputs, benchmarks, readiness outputs, and comparison reports, new
-  agents would have to depend on transient graph state, markdown scraping, or
-  re-analysis.
+  until the current artifact layer is used as their input contract. The durable
+  workspaces now exist; agent design, prompt contracts, and evaluation are a
+  separate follow-up.
 - `agents/comparator.py` is a known transitional component: it remains the
   batch analysis comparator for multi-paper analysis and is expected to migrate
-  into a future `comparison_analyst` path after artifact persistence is in
-  place.
-- The next artifact persistence slice is intentionally narrow: Postgres tables
-  for finalized reports, method extraction, benchmarks, readiness results, and
-  comparison reports, plus reload without re-analysis. S3/object storage, paper
-  cache versioning, outbox/job processing, and PDF asset storage are separate
-  later work.
+  into a future `comparison_analyst` path built on persisted artifacts.
+- Artifact persistence is intentionally narrow: Postgres stores finalized
+  reports, method extraction, benchmarks, readiness results, and comparison
+  reports. S3/object storage, paper cache versioning, outbox/job processing,
+  and PDF asset storage are separate later work.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
 - Authentication, rate limiting, and deployment hardening are future work.

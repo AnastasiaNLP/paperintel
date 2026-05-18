@@ -78,6 +78,36 @@ Expected tool:
 
 1. `synthesize_papers`
 
+## Inspect Persisted Artifacts
+
+```text
+Show the persisted paper workspaces for this session.
+```
+
+Expected tool:
+
+1. `list_paper_workspaces`
+
+For one paper:
+
+```text
+Show the saved workspace for paper 1706.03762.
+```
+
+Expected tool:
+
+1. `get_paper_workspace`
+
+For batch comparison:
+
+```text
+Show the latest saved comparison for this session.
+```
+
+Expected tool:
+
+1. `get_latest_comparison`
+
 ## Persona Examples
 
 Engineer:

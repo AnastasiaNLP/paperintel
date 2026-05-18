@@ -140,7 +140,11 @@ class PaperIntelService:
 
         selected = self.selected_candidate_resolver.resolve(session_id)
         result = self.handler.analyze_selected_papers(session_id, selected.urls)
-        if result.intent == "analyze_paper" and not result.needs_analysis and not result.errors:
+        if (
+            result.intent == "analyze_paper"
+            and result.phase == "qa"
+            and not result.needs_analysis
+        ):
             for candidate_id in selected.candidate_ids:
                 self.candidate_repository.update_status(candidate_id, "analyzed")
         return result

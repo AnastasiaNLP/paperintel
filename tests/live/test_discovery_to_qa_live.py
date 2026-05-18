@@ -65,6 +65,7 @@ def test_discovery_to_qa_live_end_to_end():
     from storage.repositories import (
         PostgresAgentRunPersistence,
         PostgresPaperChunkRepository,
+        PostgresPaperWorkspaceRepository,
         PostgresSearchCandidateRepository,
         PostgresSessionStore,
         clear_foundation_tables,
@@ -97,6 +98,7 @@ def test_discovery_to_qa_live_end_to_end():
 
         session_store = PostgresSessionStore(session_factory)
         candidate_repository = PostgresSearchCandidateRepository(session_factory)
+        artifact_repository = PostgresPaperWorkspaceRepository(session_factory)
         retrieval_layer = PostgresQdrantRetrievalLayer(
             chunk_repository=PostgresPaperChunkRepository(session_factory),
             vector_store=vector_store,
@@ -122,6 +124,7 @@ def test_discovery_to_qa_live_end_to_end():
                 session_store=session_store,
                 candidate_repository=candidate_repository,
             ),
+            artifact_repository=artifact_repository,
         )
         service = PaperIntelService(
             handler=handler,
@@ -130,6 +133,7 @@ def test_discovery_to_qa_live_end_to_end():
                 candidate_repository=candidate_repository,
             ),
             candidate_repository=candidate_repository,
+            artifact_repository=artifact_repository,
         )
 
         session = service.create_session(persona="engineer")
@@ -190,6 +194,12 @@ def test_discovery_to_qa_live_end_to_end():
             f"{','.join(candidate.status for candidate in analyzed_candidates)}",
             flush=True,
         )
+        workspaces = service.list_paper_workspaces(session.id)
+        workspace_ids = [workspace.paper_id for workspace in workspaces]
+        print(
+            f"LIVE_DISCOVERY_QA_WORKSPACE_IDS={','.join(workspace_ids)}",
+            flush=True,
+        )
 
         assert analysis_result.intent == "analyze_paper"
         if analysis_result.phase == "failed" and _is_external_arxiv_metadata_failure(
@@ -203,6 +213,10 @@ def test_discovery_to_qa_live_end_to_end():
         assert active_paper_ids
         assert analyzed_candidates
         assert all(candidate.status == "analyzed" for candidate in analyzed_candidates)
+        assert workspaces
+        assert set(active_paper_ids).issubset(set(workspace_ids))
+        workspace = service.get_paper_workspace(session.id, active_paper_ids[0])
+        assert workspace.full_markdown_report
 
         qa_started = time.monotonic()
         qa_result = service.ask_question(session.id, QA_QUESTION)

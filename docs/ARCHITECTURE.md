@@ -24,6 +24,7 @@ discover recent candidate papers for a research topic.
 │  - synthesize_papers                                             │
 │  - discover_papers / select_papers                               │
 │  - analyze_selected_papers                                       │
+│  - list/get paper workspaces and latest comparison               │
 │  - get_session / list_turns                                      │
 │  - health                                                        │
 └──────────────────────────────┬───────────────────────────────────┘
@@ -38,6 +39,7 @@ discover recent candidate papers for a research topic.
 │  - routes discovery requests to the discovery graph               │
 │  - routes selection turns while session.phase == selection        │
 │  - invokes batch analysis for selected discovery candidates       │
+│  - persists completed analysis artifacts after graph invocation   │
 │  - routes questions to the conversation graph                    │
 │  - passes session_store, retrieval_layer, and                    │
 │    agent_run_persistence through RunnableConfig                  │
@@ -97,6 +99,12 @@ runs the existing batch comparator and may return `comparison_markdown` plus a
 structured comparison report. This is a post-analysis artifact built from the
 structured outputs of the analyzed papers.
 
+After analysis graph invocation, `ChatHandler` persists durable artifacts in the
+service/handler layer. Graph nodes do not import database repositories. The
+write path reads completed `PaperSlot` state and stores per-paper workspaces;
+when a batch comparison exists, it stores a session-scoped comparison artifact.
+Failed analysis results are not written as successful artifacts.
+
 ## Conversation QA Flow
 
 The conversation graph handles questions about papers that were successfully
@@ -134,6 +142,11 @@ deferred until artifact persistence exists. Without durable finalized reports,
 method extraction outputs, benchmark results, readiness outputs, and comparison
 reports, those agents would have to rely on transient graph state, markdown
 scraping, or re-analysis, which would make the design brittle.
+
+Artifact persistence now provides that durable substrate. The dedicated
+comparison and synthesis agents remain deferred until their input contracts,
+prompt policies, and evaluation shape are designed on top of persisted
+workspaces.
 
 `agents/comparator.py` is a known transitional component. It remains the batch
 analysis comparator used after multi-paper analysis, and future work should
@@ -173,24 +186,30 @@ Postgres stores durable product state:
 - `structured_errors`
 - `paper_chunks`
 - `search_candidates`
+- `paper_workspaces`
+- `comparison_artifacts`
 
 Qdrant stores chunk vectors. Point IDs are deterministic UUID5 values derived
 from stable chunk IDs, so repeated indexing updates instead of duplicating.
 
-## Next Artifact Persistence Slice
+## Artifact Persistence
 
-The next persistence slice is intentionally narrow:
+Artifact persistence is intentionally narrow and Postgres-backed:
 
-- Postgres tables for finalized reports.
-- Postgres tables for method extraction outputs.
-- Postgres tables for benchmark results.
-- Postgres tables for readiness results.
-- Postgres tables for comparison reports.
-- Repository methods to reload these artifacts without re-running analysis.
+- `paper_workspaces` stores one session-scoped snapshot per analyzed paper,
+  keyed by `(session_id, paper_id)`.
+- A workspace contains finalized report JSON, method extraction JSON,
+  benchmark JSON, readiness JSON, and the markdown report.
+- `comparison_artifacts` stores session-scoped batch comparison artifacts for
+  groups of papers, including `paper_ids` and `comparison_markdown`.
+- REST and MCP read paths can reload these artifacts without re-running
+  analysis.
+- Re-analysis of the same paper in the same session uses last-write-wins
+  upsert semantics.
 
-This slice does not include S3/object storage, paper cache versioning,
-outbox/job processing, or PDF/page-image asset storage. Those are separate
-later hardening layers.
+This layer does not include S3/object storage, paper cache versioning,
+outbox/job processing, or PDF/page-image asset storage. Those are separate later
+hardening layers.
 
 ## AgentRun Contract
 
@@ -218,8 +237,8 @@ See [AGENT_CONTRACT.md](AGENT_CONTRACT.md) for implementation details.
 
 - Analysis and discovery are synchronous through REST and MCP.
 - Discovery currently searches arXiv only.
-- Artifact persistence for finalized reports, extraction, benchmarks,
-  readiness, and comparison reports is not implemented yet.
+- Artifact persistence is session-scoped. Global paper reuse without re-analysis
+  is deferred to a future PaperCache layer.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
 - Authentication, rate limiting, and deployment hardening are future work.

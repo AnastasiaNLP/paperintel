@@ -60,6 +60,7 @@ def test_discovery_to_comparison_live_end_to_end():
     from storage.repositories import (
         PostgresAgentRunPersistence,
         PostgresPaperChunkRepository,
+        PostgresPaperWorkspaceRepository,
         PostgresSearchCandidateRepository,
         PostgresSessionStore,
         clear_foundation_tables,
@@ -92,6 +93,7 @@ def test_discovery_to_comparison_live_end_to_end():
 
         session_store = PostgresSessionStore(session_factory)
         candidate_repository = PostgresSearchCandidateRepository(session_factory)
+        artifact_repository = PostgresPaperWorkspaceRepository(session_factory)
         retrieval_layer = PostgresQdrantRetrievalLayer(
             chunk_repository=PostgresPaperChunkRepository(session_factory),
             vector_store=vector_store,
@@ -116,6 +118,7 @@ def test_discovery_to_comparison_live_end_to_end():
                 session_store=session_store,
                 candidate_repository=candidate_repository,
             ),
+            artifact_repository=artifact_repository,
         )
         service = PaperIntelService(
             handler=handler,
@@ -124,6 +127,7 @@ def test_discovery_to_comparison_live_end_to_end():
                 candidate_repository=candidate_repository,
             ),
             candidate_repository=candidate_repository,
+            artifact_repository=artifact_repository,
         )
 
         session = service.create_session(persona="engineer")
@@ -209,6 +213,12 @@ def test_discovery_to_comparison_live_end_to_end():
             f"LIVE_DISCOVERY_COMPARISON_MARKDOWN_CHARS={len(comparison_markdown)}",
             flush=True,
         )
+        workspaces = service.list_paper_workspaces(session.id)
+        workspace_ids = [workspace.paper_id for workspace in workspaces]
+        print(
+            f"LIVE_DISCOVERY_COMPARISON_WORKSPACE_IDS={','.join(workspace_ids)}",
+            flush=True,
+        )
 
         assert analysis_result.intent == "analyze_paper"
         if analysis_result.phase == "failed" and _is_external_arxiv_metadata_failure(
@@ -222,8 +232,17 @@ def test_discovery_to_comparison_live_end_to_end():
         assert len(active_paper_ids) >= 2
         assert analyzed_candidates
         assert all(candidate.status == "analyzed" for candidate in analyzed_candidates)
+        assert len(workspaces) >= 2
+        assert set(active_paper_ids).issubset(set(workspace_ids))
         assert comparison_markdown
         assert "Paper Comparison" in comparison_markdown
+        comparison = service.get_latest_comparison(session.id)
+        print(
+            f"LIVE_DISCOVERY_COMPARISON_PERSISTED_PAPER_IDS={','.join(comparison.paper_ids)}",
+            flush=True,
+        )
+        assert comparison.comparison_markdown == comparison_markdown
+        assert len(comparison.paper_ids) >= 2
     finally:
         try:
             vector_store.client.delete_collection(collection_name=collection)

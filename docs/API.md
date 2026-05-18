@@ -33,6 +33,8 @@ Discovery-to-QA:
 4. Analyze selected papers.
 5. Ask questions about the analyzed selected papers.
 6. Optionally synthesize the active papers with a custom comparison prompt.
+7. Reload persisted paper workspaces or the latest batch comparison without
+   re-running analysis.
 
 ## Endpoints
 
@@ -42,6 +44,9 @@ Discovery-to-QA:
 | `POST` | `/sessions` | Create a session with persona `engineer`, `researcher`, or `techlead`. |
 | `GET` | `/sessions/{session_id}` | Get session state. |
 | `GET` | `/sessions/{session_id}/turns` | Get recent conversation turns. |
+| `GET` | `/sessions/{session_id}/workspaces` | List persisted artifact summaries for analyzed papers in the session. |
+| `GET` | `/sessions/{session_id}/workspaces/{paper_id}` | Get one persisted paper workspace. `paper_id` matches `active_paper_ids`, usually an arXiv ID. |
+| `GET` | `/sessions/{session_id}/comparison` | Get the latest persisted batch comparison artifact for the session. Returns `404` if none exists. |
 | `POST` | `/sessions/{session_id}/analyze` | Analyze a paper URL. URL validation happens at the API boundary. |
 | `POST` | `/sessions/{session_id}/ask` | Ask a question about active papers in the session. |
 | `POST` | `/sessions/{session_id}/discover` | Find candidate papers for a research topic and enter selection phase. |
@@ -66,6 +71,8 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze" \
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/ask" \
   -H 'content-type: application/json' \
   -d '{"question":"What is the main contribution?"}'
+
+curl -s "http://127.0.0.1:8000/sessions/$SESSION_ID/workspaces"
 ```
 
 ## Discovery Example
@@ -84,6 +91,8 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze-selected"
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/synthesize" \
   -H 'content-type: application/json' \
   -d '{"prompt":"Compare implementation trade-offs across these papers."}'
+
+curl -s "http://127.0.0.1:8000/sessions/$SESSION_ID/comparison"
 ```
 
 Discovery is synchronous and uses live arXiv search. If arXiv rate-limits a
@@ -94,9 +103,15 @@ After `/analyze-selected` succeeds, selected candidates are marked `analyzed`,
 the papers are indexed into Qdrant, and the session's `active_paper_ids` can be
 used by `/ask`.
 
+Successful analysis also writes durable artifact snapshots into Postgres. Use
+`/workspaces` to list analyzed papers, and `/workspaces/{paper_id}` to reload
+the finalized report, method extraction, benchmarks, readiness data, and
+markdown report without re-running analysis.
+
 If multiple selected papers are analyzed together, `/analyze-selected` may
 return `comparison_markdown`. This is a batch comparison artifact produced by
-the analysis graph from structured paper outputs.
+the analysis graph from structured paper outputs. It is also persisted and can
+be reloaded with `/comparison`.
 
 `/synthesize` is different: it asks the conversation QA flow to synthesize the
 currently active papers using retrieved chunks and citations. It accepts an
@@ -124,6 +139,9 @@ prompt.
   session has no active papers.
 - `/analyze-selected` returns `400` if no candidates were selected and `409`
   if selected candidates are not in the correct state for analysis.
+- `/sessions/{session_id}/comparison` returns `404` with
+  `comparison_not_found` until at least one multi-paper analysis has produced a
+  batch comparison.
 - API responses intentionally exclude internal `AgentRun` payloads and raw
   structured errors. Those are stored for observability, not returned as public
   transport data.
