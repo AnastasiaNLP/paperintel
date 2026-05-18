@@ -52,6 +52,36 @@ async def ask_paper_tool(
     return format_answer_result(result)
 
 
+async def discover_papers_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    topic: str,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    topic = _validate_non_empty("topic", topic)
+    try:
+        result = await _run_sync(service.discover_papers, session_id, topic)
+    except Exception:
+        return _safe_error("discover papers")
+    return format_discovery_result(result)
+
+
+async def select_papers_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    selection: str,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    selection = _validate_non_empty("selection", selection)
+    try:
+        result = await _run_sync(service.select_papers, session_id, selection)
+    except Exception:
+        return _safe_error("select papers")
+    return format_selection_result(result)
+
+
 async def get_session_tool(
     service: PaperIntelService,
     *,
@@ -70,7 +100,7 @@ def format_session_created(session: Session) -> str:
         "Created PaperIntel session.\n\n"
         f"Session ID: {session.id}\n"
         f"Persona: {session.persona}\n\n"
-        "Pass this session_id to analyze_paper and ask_paper."
+        "Pass this session_id to analyze_paper, ask_paper, or discover_papers."
     )
 
 
@@ -101,6 +131,27 @@ def format_answer_result(result: HandlerResult) -> str:
     citations = _format_citations(result)
     if citations:
         return f"{text}\n\nSources:\n{citations}"
+    return text
+
+
+def format_discovery_result(result: HandlerResult) -> str:
+    lines = [result.response_text.strip()]
+    if result.discovery_topic:
+        lines.append(f"\nTopic: {result.discovery_topic}")
+    if result.discovery_candidate_count is not None:
+        lines.append(f"Candidates found: {result.discovery_candidate_count}")
+    lines.append(f"Session phase: {result.phase}")
+    lines.append("\nReply with select_papers using display numbers, for example: 1, 3")
+    return "\n".join(line for line in lines if line)
+
+
+def format_selection_result(result: HandlerResult) -> str:
+    text = result.response_text.strip()
+    if result.selected_candidate_ids:
+        selected = "\n".join(
+            f"- {candidate_id}" for candidate_id in result.selected_candidate_ids
+        )
+        return f"{text}\n\nSelected candidate IDs:\n{selected}"
     return text
 
 

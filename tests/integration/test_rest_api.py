@@ -6,6 +6,7 @@ from api.in_memory_session_store import SessionNotFoundError
 from api.rest.app import create_rest_app
 from models.api import HealthStatus
 from models.session import HandlerResult, Session, Turn
+from services.paperintel_service import InvalidSessionPhaseError
 
 
 class FakeService:
@@ -31,6 +32,8 @@ class FakeService:
         self.created_payloads = []
         self.analyze_calls = []
         self.ask_calls = []
+        self.discover_calls = []
+        self.select_calls = []
         self.health_status = HealthStatus(healthy=True, checks={"basic": "ok"})
 
     def create_session(self, *, persona="engineer", original_query=None):
@@ -70,6 +73,30 @@ class FakeService:
             referenced_paper_ids=["1706.03762"],
         )
 
+    def discover_papers(self, session_id, topic):
+        self.get_session(session_id)
+        self.discover_calls.append((session_id, topic))
+        return _handler_result(
+            session_id=session_id,
+            response_text="Here are candidate papers. Reply with numbers.",
+            phase="selection",
+            intent="discover",
+            discovery_topic="agent memory",
+            discovery_candidate_count=3,
+        )
+
+    def select_papers(self, session_id, selection):
+        self.get_session(session_id)
+        self.select_calls.append((session_id, selection))
+        return _handler_result(
+            session_id=session_id,
+            response_text="Selected papers 1 and 3.",
+            phase="idle",
+            intent="select_papers",
+            referenced_paper_ids=["2605.1", "2605.3"],
+            selected_candidate_ids=["candidate-1", "candidate-3"],
+        )
+
     def health(self):
         return self.health_status
 
@@ -79,19 +106,31 @@ class ExplodingService(FakeService):
         raise RuntimeError("traceback details should not leak")
 
 
+class WrongPhaseService(FakeService):
+    def select_papers(self, session_id, selection):
+        raise InvalidSessionPhaseError(expected="selection", actual="idle")
+
+
 def _handler_result(
     *,
     session_id: str = "session-1",
     response_text: str = "OK",
+    phase: str = "qa",
     intent: str | None = None,
     referenced_paper_ids: list[str] | None = None,
+    discovery_topic: str | None = None,
+    discovery_candidate_count: int | None = None,
+    selected_candidate_ids: list[str] | None = None,
 ) -> HandlerResult:
     return HandlerResult(
         session_id=session_id,
         response_text=response_text,
-        phase="qa",
+        phase=phase,
         intent=intent,
         referenced_paper_ids=referenced_paper_ids or [],
+        discovery_topic=discovery_topic,
+        discovery_candidate_count=discovery_candidate_count,
+        selected_candidate_ids=selected_candidate_ids or [],
         user_turn_id="turn-user",
         assistant_turn_id="turn-assistant",
     )
@@ -225,6 +264,89 @@ def test_ask_calls_service():
     assert response.json()["intent"] == "qa_factual"
     assert response.json()["referenced_paper_ids"] == ["1706.03762"]
     assert service.ask_calls == [("session-1", "What is the contribution?")]
+
+
+def test_discover_requires_non_empty_topic():
+    response = _request(None, "POST", "/sessions/session-1/discover", json={"topic": ""})
+
+    assert response.status_code == 422
+
+
+def test_discover_calls_service():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/discover",
+        json={"topic": "Find papers about agent memory"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["intent"] == "discover"
+    assert payload["phase"] == "selection"
+    assert payload["discovery_topic"] == "agent memory"
+    assert payload["discovery_candidate_count"] == 3
+    assert service.discover_calls == [
+        ("session-1", "Find papers about agent memory")
+    ]
+
+
+def test_discover_accepts_bare_topic():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/discover",
+        json={"topic": "agent memory"},
+    )
+
+    assert response.status_code == 200
+    assert service.discover_calls == [("session-1", "agent memory")]
+
+
+def test_select_requires_non_empty_selection():
+    response = _request(
+        None,
+        "POST",
+        "/sessions/session-1/select",
+        json={"selection": ""},
+    )
+
+    assert response.status_code == 422
+
+
+def test_select_calls_service():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/select",
+        json={"selection": "use 1 and 3"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["intent"] == "select_papers"
+    assert payload["phase"] == "idle"
+    assert payload["referenced_paper_ids"] == ["2605.1", "2605.3"]
+    assert payload["selected_candidate_ids"] == ["candidate-1", "candidate-3"]
+    assert service.select_calls == [("session-1", "use 1 and 3")]
+
+
+def test_select_returns_409_when_session_not_in_selection_phase():
+    response = _request(
+        WrongPhaseService(),
+        "POST",
+        "/sessions/session-1/select",
+        json={"selection": "use 1"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "invalid_session_phase"
 
 
 def test_message_response_shape_excludes_internal_fields():

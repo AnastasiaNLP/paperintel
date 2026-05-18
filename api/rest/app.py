@@ -7,14 +7,16 @@ from api.rest.schemas import (
     AnalyzeRequest,
     AskRequest,
     CreateSessionRequest,
+    DiscoverRequest,
     ErrorResponse,
     HealthResponse,
     MessageResponse,
+    SelectPapersRequest,
     SessionResponse,
     TurnsResponse,
     TurnResponse,
 )
-from services.paperintel_service import PaperIntelService
+from services.paperintel_service import InvalidSessionPhaseError, PaperIntelService
 
 
 def create_rest_app(*, service: PaperIntelService) -> FastAPI:
@@ -31,6 +33,11 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     async def session_not_found_handler(request, exc):  # noqa: ANN001
         error = ErrorResponse(error="session_not_found", detail=str(exc))
         return JSONResponse(status_code=404, content=error.model_dump(mode="json"))
+
+    @app.exception_handler(InvalidSessionPhaseError)
+    async def invalid_session_phase_handler(request, exc):  # noqa: ANN001
+        error = ErrorResponse(error="invalid_session_phase", detail=str(exc))
+        return JSONResponse(status_code=409, content=error.model_dump(mode="json"))
 
     @app.exception_handler(Exception)
     async def internal_error_handler(request, exc):  # noqa: ANN001
@@ -77,6 +84,16 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     @app.post("/sessions/{session_id}/ask", response_model=MessageResponse)
     async def ask_question(session_id: str, payload: AskRequest):
         result = service.ask_question(session_id, payload.question)
+        return MessageResponse.from_handler_result(result)
+
+    @app.post("/sessions/{session_id}/discover", response_model=MessageResponse)
+    async def discover_papers(session_id: str, payload: DiscoverRequest):
+        result = service.discover_papers(session_id, payload.topic)
+        return MessageResponse.from_handler_result(result)
+
+    @app.post("/sessions/{session_id}/select", response_model=MessageResponse)
+    async def select_papers(session_id: str, payload: SelectPapersRequest):
+        result = service.select_papers(session_id, payload.selection)
         return MessageResponse.from_handler_result(result)
 
     return app

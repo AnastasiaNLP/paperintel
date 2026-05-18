@@ -28,6 +28,26 @@ class FakeService:
             assistant_turn_id="assistant-turn",
         )
 
+    def discover_papers(self, session_id, topic):
+        return HandlerResult(
+            session_id=session_id,
+            response_text="Candidates.",
+            phase="selection",
+            intent="discover",
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
+    def select_papers(self, session_id, selection):
+        return HandlerResult(
+            session_id=session_id,
+            response_text="Selected.",
+            phase="idle",
+            intent="select_papers",
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
     def get_session(self, session_id):
         return Session(id=session_id, phase="qa", active_paper_ids=["1706.03762"])
 
@@ -45,6 +65,8 @@ def test_mcp_server_builds_with_four_tools():
         "create_session",
         "analyze_paper",
         "ask_paper",
+        "discover_papers",
+        "select_papers",
         "get_session",
     }.issubset(names)
 

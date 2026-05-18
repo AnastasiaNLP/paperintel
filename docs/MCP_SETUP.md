@@ -18,11 +18,13 @@ docker compose up -d postgres qdrant
 
 ## Tools
 
-The MCP server exposes four tools:
+The MCP server exposes six tools:
 
 - `create_session(persona)` creates a PaperIntel session and returns a session ID.
 - `analyze_paper(session_id, paper_url)` analyzes an arXiv or PDF URL. This is synchronous and can take about one minute.
 - `ask_paper(session_id, question)` asks a question about papers analyzed in that session.
+- `discover_papers(session_id, topic)` searches for candidate papers on arXiv and returns a shortlist.
+- `select_papers(session_id, selection)` selects papers from the current discovery shortlist by display number.
 - `get_session(session_id)` returns persona, phase, and active paper IDs.
 
 The server does not keep an implicit current session. Pass the `session_id` returned by `create_session` to later tool calls.
@@ -76,9 +78,24 @@ What is the main contribution of that paper?
 
 Claude should call `ask_paper` with the same `session_id`.
 
+Discovery flow:
+
+```text
+Find recent papers about retrieval augmented generation.
+```
+
+Claude should call `discover_papers` with the same `session_id`. After the
+shortlist appears, choose papers by display number:
+
+```text
+Select papers 1 and 3.
+```
+
+Claude should call `select_papers`.
+
 ## Troubleshooting
 
 - Tool does not appear: restart Claude Desktop and verify the config path is absolute.
-- Analysis takes a long time: this is expected; paper analysis is synchronous in the current MCP adapter.
+- Analysis or discovery takes a long time: this is expected; both are synchronous in the current MCP adapter.
 - Server exits immediately: run `.venv/bin/python -m mcp_server.server` from the repository root to see import/configuration errors.
 - JSON-RPC parse errors: ensure the MCP server is not writing logs to stdout.

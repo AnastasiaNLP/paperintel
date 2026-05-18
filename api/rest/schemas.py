@@ -19,6 +19,14 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
 
 
+class DiscoverRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=500)
+
+
+class SelectPapersRequest(BaseModel):
+    selection: str = Field(min_length=1, max_length=500)
+
+
 class SessionResponse(BaseModel):
     id: str
     persona: Persona
@@ -50,6 +58,10 @@ class MessageResponse(BaseModel):
     citations: list[dict] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
     needs_analysis: bool = False
+    needs_discovery: bool = False
+    discovery_topic: str | None = None
+    discovery_candidate_count: int | None = None
+    selected_candidate_ids: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_handler_result(cls, result: HandlerResult) -> "MessageResponse":
@@ -62,6 +74,10 @@ class MessageResponse(BaseModel):
             citations=[citation.model_dump(mode="json") for citation in result.citations],
             artifact_refs=result.artifact_refs,
             needs_analysis=result.needs_analysis,
+            needs_discovery=result.needs_discovery,
+            discovery_topic=result.discovery_topic,
+            discovery_candidate_count=result.discovery_candidate_count,
+            selected_candidate_ids=result.selected_candidate_ids,
         )
 
 

@@ -3,6 +3,15 @@ from models.api import HealthStatus
 from models.session import HandlerResult, Persona, Session, Turn
 
 
+class InvalidSessionPhaseError(ValueError):
+    def __init__(self, *, expected: str, actual: str) -> None:
+        super().__init__(
+            f"Session is not in {expected} phase; current phase is {actual}."
+        )
+        self.expected = expected
+        self.actual = actual
+
+
 class PaperIntelService:
     """
     Product-facing application facade for PaperIntel.
@@ -35,6 +44,18 @@ class PaperIntelService:
     def ask_question(self, session_id: str, question: str) -> HandlerResult:
         return self.handler.handle_message(session_id, question)
 
+    def discover_papers(self, session_id: str, topic_message: str) -> HandlerResult:
+        topic_message = topic_message.strip()
+        if not _looks_like_discovery_message(topic_message):
+            topic_message = f"Find papers about {topic_message}"
+        return self.handler.handle_message(session_id, topic_message)
+
+    def select_papers(self, session_id: str, selection_message: str) -> HandlerResult:
+        session = self.handler.store.require_session(session_id)
+        if session.phase != "selection":
+            raise InvalidSessionPhaseError(expected="selection", actual=session.phase)
+        return self.handler.handle_message(session_id, selection_message)
+
     def get_session(self, session_id: str) -> Session:
         return self.handler.store.require_session(session_id)
 
@@ -46,3 +67,12 @@ class PaperIntelService:
         if self.health_checker is None:
             return HealthStatus(healthy=True, checks={"basic": "ok"})
         return self.health_checker.check()
+
+
+def _looks_like_discovery_message(message: str) -> bool:
+    normalized = message.casefold()
+    discovery_words = ("find", "search", "discover", "recommend")
+    target_words = ("paper", "papers", "literature", "research")
+    return any(word in normalized for word in discovery_words) and any(
+        word in normalized for word in target_words
+    )

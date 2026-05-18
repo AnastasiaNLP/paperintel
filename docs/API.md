@@ -20,8 +20,8 @@ OpenAPI schema is the source of truth for request and response shapes.
 ## Workflow
 
 1. Create a session.
-2. Analyze a paper URL.
-3. Ask questions about analyzed papers.
+2. Analyze a paper URL, or discover papers for a topic.
+3. Ask questions about analyzed papers, or select papers from the discovery shortlist.
 
 ## Endpoints
 
@@ -33,6 +33,8 @@ OpenAPI schema is the source of truth for request and response shapes.
 | `GET` | `/sessions/{session_id}/turns` | Get recent conversation turns. |
 | `POST` | `/sessions/{session_id}/analyze` | Analyze a paper URL. URL validation happens at the API boundary. |
 | `POST` | `/sessions/{session_id}/ask` | Ask a question about active papers in the session. |
+| `POST` | `/sessions/{session_id}/discover` | Find candidate papers for a research topic and enter selection phase. |
+| `POST` | `/sessions/{session_id}/select` | Select papers from the latest discovery shortlist by display number. |
 
 ## Example
 
@@ -53,11 +55,30 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/ask" \
   -d '{"question":"What is the main contribution?"}'
 ```
 
+## Discovery Example
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/discover" \
+  -H 'content-type: application/json' \
+  -d '{"topic":"Find recent papers about retrieval augmented generation"}'
+
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/select" \
+  -H 'content-type: application/json' \
+  -d '{"selection":"use 1 and 3"}'
+```
+
+Discovery is synchronous and uses live arXiv search. If arXiv rate-limits a
+query, the response may include fewer candidates and the logs will include the
+HTTP status for diagnosis.
+
 ## Notes
 
 - `/analyze` is synchronous and can take 50-90 seconds.
+- `/discover` is synchronous and depends on arXiv availability.
 - `/ask` works only after a paper has been successfully analyzed and indexed in
   the same session.
+- `/select` expects the session to be in `selection` phase after a discovery
+  response. Selection uses the display numbers shown to the user.
 - API responses intentionally exclude internal `AgentRun` payloads and raw
   structured errors. Those are stored for observability, not returned as public
   transport data.

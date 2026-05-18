@@ -38,6 +38,28 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
         )
 
     @mcp.tool()
+    async def discover_papers(session_id: str, topic: str) -> str:
+        """Find relevant papers for a research topic and present a shortlist."""
+        from mcp_server.tools import discover_papers_tool
+
+        return await discover_papers_tool(
+            service,
+            session_id=session_id,
+            topic=topic,
+        )
+
+    @mcp.tool()
+    async def select_papers(session_id: str, selection: str) -> str:
+        """Select papers from the current discovery shortlist by display number."""
+        from mcp_server.tools import select_papers_tool
+
+        return await select_papers_tool(
+            service,
+            session_id=session_id,
+            selection=selection,
+        )
+
+    @mcp.tool()
     async def get_session(session_id: str) -> str:
         """Get persona, phase, and active papers for a PaperIntel session."""
         from mcp_server.tools import get_session_tool

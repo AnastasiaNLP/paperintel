@@ -37,6 +37,26 @@ Expected tool:
 
 1. `get_session`
 
+## Discover Papers
+
+```text
+Using the same PaperIntel session, find recent papers about retrieval augmented generation.
+```
+
+Expected tool:
+
+1. `discover_papers`
+
+After PaperIntel returns a numbered shortlist:
+
+```text
+Select papers 1 and 3 from that shortlist.
+```
+
+Expected tool:
+
+1. `select_papers`
+
 ## Persona Examples
 
 Engineer:

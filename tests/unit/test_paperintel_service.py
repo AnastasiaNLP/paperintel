@@ -3,7 +3,7 @@ import pytest
 from api.in_memory_session_store import SessionNotFoundError
 from models.api import HealthStatus
 from models.session import HandlerResult, Session, Turn
-from services.paperintel_service import PaperIntelService
+from services.paperintel_service import InvalidSessionPhaseError, PaperIntelService
 
 
 class FakeHandler:
@@ -111,6 +111,48 @@ def test_service_ask_question_delegates_to_handler():
 
     assert result.response_text == "handled: What is the contribution?"
     assert handler.messages == [(session.id, "What is the contribution?")]
+
+
+def test_service_discover_papers_delegates_to_handler():
+    handler = FakeHandler()
+    service = PaperIntelService(handler=handler)
+    session = service.create_session()
+
+    result = service.discover_papers(session.id, "Find papers about agent memory")
+
+    assert result.response_text == "handled: Find papers about agent memory"
+    assert handler.messages == [(session.id, "Find papers about agent memory")]
+
+
+def test_service_discover_papers_wraps_bare_topic_for_routing():
+    handler = FakeHandler()
+    service = PaperIntelService(handler=handler)
+    session = service.create_session()
+
+    result = service.discover_papers(session.id, "agent memory")
+
+    assert result.response_text == "handled: Find papers about agent memory"
+    assert handler.messages == [(session.id, "Find papers about agent memory")]
+
+
+def test_service_select_papers_delegates_to_handler():
+    handler = FakeHandler()
+    service = PaperIntelService(handler=handler)
+    session = service.create_session()
+    handler.store.sessions[session.id] = session.model_copy(update={"phase": "selection"})
+
+    result = service.select_papers(session.id, "use 1 and 3")
+
+    assert result.response_text == "handled: use 1 and 3"
+    assert handler.messages == [(session.id, "use 1 and 3")]
+
+
+def test_service_select_papers_requires_selection_phase():
+    service = PaperIntelService(handler=FakeHandler())
+    session = service.create_session()
+
+    with pytest.raises(InvalidSessionPhaseError):
+        service.select_papers(session.id, "use 1")
 
 
 def test_service_get_session_returns_session_from_store():

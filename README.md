@@ -14,6 +14,8 @@ and implementation implications" without losing grounding in the source text.
 - Extracts method, benchmarks, implementation readiness, and engineering notes.
 - Chunks and indexes analyzed papers into Postgres + Qdrant.
 - Answers questions about analyzed papers with citations.
+- Discovers recent papers for a topic, ranks candidates, and lets the user
+  select papers by display number.
 - Uses an adversarial Citation Critic with bounded repair to reduce unsupported
   confident claims.
 - Supports persona-aware answers: `engineer`, `researcher`, and `techlead`.
@@ -65,6 +67,18 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/ask" \
   -d '{"question":"What is the main contribution of this paper?"}'
 ```
 
+Discovery workflow:
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/discover" \
+  -H 'content-type: application/json' \
+  -d '{"topic":"Find recent papers about retrieval augmented generation"}'
+
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/select" \
+  -H 'content-type: application/json' \
+  -d '{"selection":"use 1 and 3"}'
+```
+
 For a runnable script, see [examples/rest_smoke.py](examples/rest_smoke.py).
 
 ## MCP
@@ -90,7 +104,8 @@ PaperIntelService
     ↓
 ChatHandler
     ├─ analysis graph: ingest -> extract -> report -> critic -> chunk/index
-    └─ conversation graph: route -> retrieve -> answer -> citation critic
+    ├─ conversation graph: route -> retrieve -> answer -> citation critic
+    └─ discovery graph: plan -> arXiv search -> rank -> selection advice
 ```
 
 Full architecture details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -123,10 +138,9 @@ LANGCHAIN_TRACING_V2=false PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 
 Current non-live coverage:
 
-- 363 passing unit and integration tests
+- 461 passing unit and integration tests
 - 12 DB-marked tests skipped unless `PAPERINTEL_TEST_DATABASE_URL` is set
-- 1 live QA conversation test requiring real LLM credentials, Postgres, and
-  Qdrant
+- live QA and discovery tests requiring real LLM credentials and local services
 
 Live QA smoke:
 
@@ -141,8 +155,8 @@ Postgres/Qdrant stack.
 
 ## Current Limitations
 
-- Paper discovery agents are not implemented yet.
-- REST and MCP analysis calls are synchronous.
+- REST and MCP analysis/discovery calls are synchronous.
+- Discovery currently searches arXiv only.
 - Artifact storage for PDFs, page images, formulas, and large agent outputs is
   not implemented yet.
 - Critic conflict resolution is deferred until structured claim provenance is

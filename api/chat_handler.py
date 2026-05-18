@@ -137,6 +137,8 @@ class ChatHandler:
             needs_analysis=graph_result.needs_analysis,
             needs_discovery=graph_result.needs_discovery,
             discovery_topic=graph_result.discovery_topic,
+            discovery_candidate_count=graph_result.discovery_candidate_count,
+            selected_candidate_ids=graph_result.selected_candidate_ids,
             agent_runs=graph_result.agent_runs,
             errors=graph_result.errors,
             user_turn_id=user_turn.id,
@@ -206,6 +208,7 @@ class ChatHandler:
                 for candidate in result.candidates
                 if candidate.arxiv_id is not None
             ],
+            selected_candidate_ids=list(result.selection.selected_candidate_ids),
             next_phase="idle",
             raw={
                 "selection": result.selection.model_dump(mode="json"),
@@ -335,6 +338,8 @@ def _normalize_conversation_result(raw: dict[str, Any]) -> GraphInvocationResult
         needs_analysis=bool(raw.get("needs_analysis", False)),
         needs_discovery=bool(raw.get("needs_discovery", False)),
         discovery_topic=raw.get("discovery_topic"),
+        discovery_candidate_count=None,
+        selected_candidate_ids=[],
         agent_runs=list(raw.get("agent_runs") or []),
         errors=_structured_errors(raw.get("errors") or []),
         next_phase=raw.get("next_phase"),
@@ -391,11 +396,23 @@ def _normalize_discovery_result(raw: dict[str, Any]) -> GraphInvocationResult:
         intent="discover",
         needs_discovery=False,
         discovery_topic=raw.get("discovery_topic"),
+        discovery_candidate_count=_discovery_candidate_count(raw),
+        selected_candidate_ids=[],
         agent_runs=list(raw.get("agent_runs") or []),
         errors=_structured_errors(raw.get("errors") or []),
         next_phase=raw.get("next_phase") or "selection",
         raw=raw,
     )
+
+
+def _discovery_candidate_count(raw: dict[str, Any]) -> int | None:
+    advice = raw.get("selection_advice")
+    if isinstance(advice, SelectionAdvice):
+        return advice.candidate_count
+    candidates = raw.get("search_candidates")
+    if isinstance(candidates, list):
+        return len(candidates)
+    return None
 
 
 def _structured_errors(errors: list[Any]) -> list[StructuredError]:

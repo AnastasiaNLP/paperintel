@@ -1,9 +1,8 @@
 # PaperIntel Architecture
 
-PaperIntel is a known-paper analysis and conversational QA system for AI/ML
-papers. It currently focuses on papers the user explicitly analyzes by URL.
-Discovery, background jobs, artifact storage, and claim provenance are planned
-extensions.
+PaperIntel is a research intelligence system for AI/ML papers. It can analyze
+known papers by URL, answer grounded questions about analyzed papers, and
+discover recent candidate papers for a research topic.
 
 ## Implemented System
 
@@ -22,6 +21,7 @@ extensions.
 │  - create_session                                                │
 │  - analyze_paper                                                 │
 │  - ask_question                                                  │
+│  - discover_papers / select_papers                               │
 │  - get_session / list_turns                                      │
 │  - health                                                        │
 └──────────────────────────────┬───────────────────────────────────┘
@@ -33,13 +33,15 @@ extensions.
 │  - writes user turns before graph invocation                     │
 │  - writes assistant turns after graph invocation                  │
 │  - routes paper URLs to the analysis graph                       │
+│  - routes discovery requests to the discovery graph               │
+│  - routes selection turns while session.phase == selection        │
 │  - routes questions to the conversation graph                    │
 │  - passes session_store, retrieval_layer, and                    │
 │    agent_run_persistence through RunnableConfig                  │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
-          ┌────────────────────┴────────────────────┐
-          ▼                                         ▼
+          ┌────────────────────┬────────────────────┐
+          ▼                    ▼                    ▼
 ┌──────────────────────────────┐       ┌──────────────────────────────┐
 │        ANALYSIS GRAPH         │       │      CONVERSATION GRAPH      │
 │                              │       │                              │
@@ -59,11 +61,22 @@ extensions.
 │   ↓                          │       └──────────────────────────────┘
 │ report_finalize              │
 │   ↓                          │
-│ chunk_and_index              │
+│ chunk_and_index              │       │   └─ discover -> END         │
 │   ├─ next paper -> ingestion │
 │   ├─ compare 2+ papers       │
 │   └─ END                     │
 └──────────────────────────────┘
+                       ┌──────────────────────────────┐
+                       │       DISCOVERY GRAPH         │
+                       │                              │
+                       │ research_strategist          │
+                       │   ↓                          │
+                       │ deterministic searcher       │
+                       │   ↓                          │
+                       │ selection_advisor            │
+                       │   ↓                          │
+                       │ END -> session.phase=select  │
+                       └──────────────────────────────┘
 ```
 
 ## Analysis Flow
@@ -104,6 +117,24 @@ indexed in the current session:
 Repair is bounded by `MAX_REPAIR_ITERATIONS = 2` and centralized in
 `services/repair.py`.
 
+## Discovery Flow
+
+The discovery graph handles topic-level requests such as "find recent papers
+about retrieval augmented generation":
+
+1. `research_strategist` converts the topic into 2-3 short arXiv queries.
+2. `ArxivSearchProvider` calls the arXiv API with retry/backoff and rate-limit
+   spacing.
+3. `Searcher` deterministically deduplicates, scores, ranks, and persists
+   `SearchCandidate` rows.
+4. `selection_advisor` writes a shortlist and asks the user to choose by display
+   number.
+5. `ChatHandler` sets `session.phase = selection`; the next user selection is
+   parsed deterministically and stored as selected candidate IDs.
+
+Only `research_strategist` and `selection_advisor` are LLM agents. Search,
+ranking, and selection parsing are deterministic components.
+
 ## Data Layer
 
 Postgres stores durable product state:
@@ -113,6 +144,7 @@ Postgres stores durable product state:
 - `agent_runs`
 - `structured_errors`
 - `paper_chunks`
+- `search_candidates`
 
 Qdrant stores chunk vectors. Point IDs are deterministic UUID5 values derived
 from stable chunk IDs, so repeated indexing updates instead of duplicating.
@@ -133,14 +165,16 @@ Production-shaped agents record:
 
 This contract is implemented for `report`, `evidence_critic`, and the QA team:
 `intent_router`, `retrieval_planner`, `answer_agent`, and `citation_critic`.
-Other analysis processors are intentionally still simpler pipeline processors.
+It is also implemented for the discovery agents: `research_strategist` and
+`selection_advisor`. Other analysis processors are intentionally still simpler
+pipeline processors.
 
 See [AGENT_CONTRACT.md](AGENT_CONTRACT.md) for implementation details.
 
 ## Current Limitations
 
-- Discovery agents are not implemented yet.
-- Analysis is synchronous through REST and MCP.
+- Analysis and discovery are synchronous through REST and MCP.
+- Discovery currently searches arXiv only.
 - Artifact storage for PDFs, page images, formulas, and large outputs is not
   implemented yet.
 - Critic conflict resolution is deferred until structured claim provenance is
