@@ -146,6 +146,79 @@ class ChatHandler:
             error=graph_result.errors[0] if graph_result.errors else None,
         )
 
+    def analyze_selected_papers(self, session_id: str, urls: list[str]) -> HandlerResult:
+        session = self.store.require_session(session_id)
+        user_turn = self.store.append_turn(
+            session.id,
+            role="user",
+            content="Analyze selected papers",
+            intent="analyze_paper",
+        )
+
+        try:
+            graph_result = self._invoke_analysis_batch(session, urls)
+        except Exception as exc:
+            error = make_error(
+                ErrorCodes.FATAL_ERROR,
+                f"Selected paper analysis failed: {exc}",
+                node="chat_handler",
+                severity="error",
+                recoverable=True,
+                session_id=session.id,
+                exception_type=type(exc).__name__,
+            )
+            self.store.update_phase(session.id, "failed")
+            assistant_turn = self.store.append_turn(
+                session.id,
+                role="assistant",
+                content="I could not analyze the selected papers safely. Please try again.",
+                error=error,
+            )
+            return HandlerResult(
+                session_id=session.id,
+                response_text=assistant_turn.content,
+                phase="failed",
+                intent="analyze_paper",
+                errors=[error],
+                user_turn_id=user_turn.id,
+                assistant_turn_id=assistant_turn.id,
+                error=error,
+            )
+
+        if graph_result.next_phase is not None:
+            session = self.store.update_phase(session.id, graph_result.next_phase)
+        else:
+            session = self.store.require_session(session.id)
+
+        assistant_turn = self.store.append_turn(
+            session.id,
+            role="assistant",
+            content=graph_result.response_text,
+            intent=graph_result.intent,
+            referenced_paper_ids=graph_result.referenced_paper_ids,
+            artifact_refs=graph_result.artifact_refs,
+        )
+
+        return HandlerResult(
+            session_id=session.id,
+            response_text=graph_result.response_text,
+            phase=session.phase,
+            intent=graph_result.intent,
+            referenced_paper_ids=graph_result.referenced_paper_ids,
+            citations=graph_result.citations,
+            artifact_refs=graph_result.artifact_refs,
+            needs_analysis=graph_result.needs_analysis,
+            needs_discovery=graph_result.needs_discovery,
+            discovery_topic=graph_result.discovery_topic,
+            discovery_candidate_count=graph_result.discovery_candidate_count,
+            selected_candidate_ids=graph_result.selected_candidate_ids,
+            agent_runs=graph_result.agent_runs,
+            errors=graph_result.errors,
+            user_turn_id=user_turn.id,
+            assistant_turn_id=assistant_turn.id,
+            error=graph_result.errors[0] if graph_result.errors else None,
+        )
+
     def _route_message(
         self,
         session: Session,
@@ -247,6 +320,34 @@ class ChatHandler:
 
         raw = self.analysis_runner.invoke(
             _initial_analysis_state(url),
+            config=self._graph_config(session),
+        )
+        return _normalize_analysis_result(raw)
+
+    def _invoke_analysis_batch(
+        self,
+        session: Session,
+        urls: list[str],
+    ) -> GraphInvocationResult:
+        if not urls:
+            return GraphInvocationResult(
+                response_text="No selected paper URLs are available for analysis.",
+                intent="analyze_paper",
+                needs_analysis=True,
+                next_phase=session.phase,
+                raw={"needs_analysis": True, "empty_selected_urls": True},
+            )
+        if self.analysis_runner is None:
+            return GraphInvocationResult(
+                response_text="Please configure analysis before analyzing selected papers.",
+                intent="analyze_paper",
+                needs_analysis=True,
+                next_phase=session.phase,
+                raw={"needs_analysis": True, "analysis_runner_missing": True},
+            )
+
+        raw = self.analysis_runner.invoke(
+            _initial_analysis_state_for_urls(urls),
             config=self._graph_config(session),
         )
         return _normalize_analysis_result(raw)
@@ -436,10 +537,15 @@ def _looks_like_discovery_request(message: str) -> bool:
 
 
 def _initial_analysis_state(url: str) -> dict[str, Any]:
+    return _initial_analysis_state_for_urls([url])
+
+
+def _initial_analysis_state_for_urls(urls: list[str]) -> dict[str, Any]:
+    first_url = urls[0] if urls else ""
     return {
         "input_type": "url",
-        "input_value": url,
-        "batch_urls": None,
+        "input_value": first_url,
+        "batch_urls": list(urls) if len(urls) > 1 else None,
         "papers": [],
         "metadata": None,
         "raw_text": None,
@@ -454,7 +560,7 @@ def _initial_analysis_state(url: str) -> dict[str, Any]:
         "engineer_report": None,
         "full_markdown_report": None,
         "current_paper_index": 0,
-        "total_papers": 1,
+        "total_papers": len(urls),
         "processing_stage": "ingestion",
         "needs_human_review": False,
         "human_review_reason": None,

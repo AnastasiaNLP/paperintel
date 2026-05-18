@@ -1,9 +1,11 @@
 import pytest
 
 from api.in_memory_session_store import SessionNotFoundError
+from models.discovery import SearchCandidate
 from models.api import HealthStatus
 from models.session import HandlerResult, Session, Turn
 from services.paperintel_service import InvalidSessionPhaseError, PaperIntelService
+from services.selected_candidate_resolver import NoSelectedCandidatesError
 
 
 class FakeHandler:
@@ -11,6 +13,8 @@ class FakeHandler:
         self.store = FakeStore()
         self.created_sessions = []
         self.messages = []
+        self.selected_analysis_calls = []
+        self.selected_analysis_result = None
 
     def create_session(self, *, persona="engineer", original_query=None):
         session = self.store.create_session(
@@ -26,6 +30,17 @@ class FakeHandler:
             session_id=session_id,
             response_text=f"handled: {message}",
             phase="qa",
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
+    def analyze_selected_papers(self, session_id, urls):
+        self.selected_analysis_calls.append((session_id, list(urls)))
+        return self.selected_analysis_result or HandlerResult(
+            session_id=session_id,
+            response_text="selected analysis complete",
+            phase="qa",
+            intent="analyze_paper",
             user_turn_id="user-turn",
             assistant_turn_id="assistant-turn",
         )
@@ -64,6 +79,56 @@ class FakeHealthChecker:
     def check(self):
         self.calls += 1
         return self.status
+
+
+class FakeSelectedCandidateResolver:
+    def __init__(self, candidates):
+        self.candidates = list(candidates)
+        self.calls = []
+
+    def resolve(self, session_id):
+        self.calls.append(session_id)
+
+        class Selected:
+            def __init__(self, candidates):
+                self.candidates = candidates
+
+            @property
+            def urls(self):
+                return [candidate.url for candidate in self.candidates]
+
+            @property
+            def candidate_ids(self):
+                return [candidate.id for candidate in self.candidates]
+
+        return Selected(self.candidates)
+
+
+class FailingSelectedCandidateResolver:
+    def resolve(self, session_id):
+        raise NoSelectedCandidatesError(session_id)
+
+
+class FakeCandidateRepository:
+    def __init__(self):
+        self.updates = []
+
+    def update_status(self, candidate_id, status):
+        self.updates.append((candidate_id, status))
+        return None
+
+
+def _candidate(candidate_id: str) -> SearchCandidate:
+    return SearchCandidate(
+        id=candidate_id,
+        session_id="session-1",
+        discovery_turn_id="turn-1",
+        display_rank=1,
+        status="selected",
+        title=f"Paper {candidate_id}",
+        url=f"https://arxiv.org/abs/{candidate_id}",
+        arxiv_id=candidate_id,
+    )
 
 
 def test_service_create_session_delegates_to_handler_with_persona():
@@ -153,6 +218,77 @@ def test_service_select_papers_requires_selection_phase():
 
     with pytest.raises(InvalidSessionPhaseError):
         service.select_papers(session.id, "use 1")
+
+
+def test_service_analyze_selected_papers_resolves_and_updates_statuses():
+    handler = FakeHandler()
+    service = PaperIntelService(
+        handler=handler,
+        selected_candidate_resolver=FakeSelectedCandidateResolver(
+            [_candidate("2401.1"), _candidate("2401.2")]
+        ),
+        candidate_repository=FakeCandidateRepository(),
+    )
+    session = service.create_session()
+
+    result = service.analyze_selected_papers(session.id)
+
+    assert result.response_text == "selected analysis complete"
+    assert handler.selected_analysis_calls == [
+        (
+            session.id,
+            ["https://arxiv.org/abs/2401.1", "https://arxiv.org/abs/2401.2"],
+        )
+    ]
+    assert service.candidate_repository.updates == [
+        ("2401.1", "analyzed"),
+        ("2401.2", "analyzed"),
+    ]
+
+
+def test_service_analyze_selected_papers_does_not_update_status_when_analysis_missing():
+    handler = FakeHandler()
+    handler.selected_analysis_result = HandlerResult(
+        session_id="session-1",
+        response_text="analysis missing",
+        phase="selection",
+        intent="analyze_paper",
+        needs_analysis=True,
+        user_turn_id="user-turn",
+        assistant_turn_id="assistant-turn",
+    )
+    repository = FakeCandidateRepository()
+    service = PaperIntelService(
+        handler=handler,
+        selected_candidate_resolver=FakeSelectedCandidateResolver([_candidate("2401.1")]),
+        candidate_repository=repository,
+    )
+    session = service.create_session()
+
+    result = service.analyze_selected_papers(session.id)
+
+    assert result.needs_analysis is True
+    assert repository.updates == []
+
+
+def test_service_analyze_selected_papers_requires_resolver():
+    service = PaperIntelService(handler=FakeHandler())
+    session = service.create_session()
+
+    with pytest.raises(RuntimeError):
+        service.analyze_selected_papers(session.id)
+
+
+def test_service_analyze_selected_papers_propagates_resolver_error():
+    service = PaperIntelService(
+        handler=FakeHandler(),
+        selected_candidate_resolver=FailingSelectedCandidateResolver(),
+        candidate_repository=FakeCandidateRepository(),
+    )
+    session = service.create_session()
+
+    with pytest.raises(NoSelectedCandidatesError):
+        service.analyze_selected_papers(session.id)
 
 
 def test_service_get_session_returns_session_from_store():

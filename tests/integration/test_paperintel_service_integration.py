@@ -94,4 +94,6 @@ def test_app_factory_creates_paperintel_service_with_injected_dependencies():
     assert service.handler.conversation_runner is conversation_runner
     assert service.handler.analysis_runner is analysis_runner
     assert service.handler.retrieval_layer is retrieval_layer
+    assert service.selected_candidate_resolver is not None
+    assert service.candidate_repository is not None
     assert service.health().checks == {"basic": "ok"}

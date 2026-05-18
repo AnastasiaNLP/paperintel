@@ -1,6 +1,10 @@
+from typing import Protocol
+
 from api.chat_handler import ChatHandler
 from models.api import HealthStatus
+from models.discovery import CandidateStatus, SearchCandidate
 from models.session import HandlerResult, Persona, Session, Turn
+from services.selected_candidate_resolver import SelectedCandidateResolver
 
 
 class InvalidSessionPhaseError(ValueError):
@@ -12,6 +16,15 @@ class InvalidSessionPhaseError(ValueError):
         self.actual = actual
 
 
+class SearchCandidateRepository(Protocol):
+    def update_status(
+        self,
+        candidate_id: str,
+        status: CandidateStatus,
+    ) -> SearchCandidate | None:
+        ...
+
+
 class PaperIntelService:
     """
     Product-facing application facade for PaperIntel.
@@ -20,9 +33,18 @@ class PaperIntelService:
     ChatHandler, graphs, or storage directly.
     """
 
-    def __init__(self, *, handler: ChatHandler, health_checker=None) -> None:
+    def __init__(
+        self,
+        *,
+        handler: ChatHandler,
+        health_checker=None,
+        selected_candidate_resolver: SelectedCandidateResolver | None = None,
+        candidate_repository: SearchCandidateRepository | None = None,
+    ) -> None:
         self.handler = handler
         self.health_checker = health_checker
+        self.selected_candidate_resolver = selected_candidate_resolver
+        self.candidate_repository = candidate_repository
 
     def create_session(
         self,
@@ -55,6 +77,19 @@ class PaperIntelService:
         if session.phase != "selection":
             raise InvalidSessionPhaseError(expected="selection", actual=session.phase)
         return self.handler.handle_message(session_id, selection_message)
+
+    def analyze_selected_papers(self, session_id: str) -> HandlerResult:
+        if self.selected_candidate_resolver is None:
+            raise RuntimeError("Selected candidate analysis is not configured.")
+        if self.candidate_repository is None:
+            raise RuntimeError("Search candidate repository is not configured.")
+
+        selected = self.selected_candidate_resolver.resolve(session_id)
+        result = self.handler.analyze_selected_papers(session_id, selected.urls)
+        if result.intent == "analyze_paper" and not result.needs_analysis and not result.errors:
+            for candidate_id in selected.candidate_ids:
+                self.candidate_repository.update_status(candidate_id, "analyzed")
+        return result
 
     def get_session(self, session_id: str) -> Session:
         return self.handler.store.require_session(session_id)

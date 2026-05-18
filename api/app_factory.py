@@ -12,6 +12,7 @@ from services.qdrant_store import QdrantChunkStore
 from services.retrieval_layer import RetrievalLayer
 from services.retrieval_layer import PostgresQdrantRetrievalLayer
 from services.searcher import Searcher
+from services.selected_candidate_resolver import SelectedCandidateResolver
 from services.selection_parser import SelectionHandler
 from storage.db import make_engine, make_session_factory
 from storage.repositories import (
@@ -135,4 +136,13 @@ def create_paperintel_service(
             settings=settings,
         )
 
-    return PaperIntelService(handler=handler, health_checker=health_checker)
+    selected_candidate_resolver = SelectedCandidateResolver(
+        session_store=session_store,
+        candidate_repository=candidate_repository,
+    )
+    return PaperIntelService(
+        handler=handler,
+        health_checker=health_checker,
+        selected_candidate_resolver=selected_candidate_resolver,
+        candidate_repository=candidate_repository,
+    )

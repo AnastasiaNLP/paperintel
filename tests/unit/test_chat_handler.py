@@ -252,6 +252,82 @@ def test_analyze_paper_without_analysis_runner_returns_controlled_response():
     ]
 
 
+def test_analyze_selected_papers_invokes_analysis_batch():
+    analysis_runner = FakeRunner(
+        result={
+            "full_markdown_report": "# Selected analysis complete",
+            "next_phase": "qa",
+        }
+    )
+    handler, store, _, _ = _handler(analysis_runner=analysis_runner)
+    session = handler.create_session()
+
+    result = handler.analyze_selected_papers(
+        session.id,
+        [
+            "https://arxiv.org/abs/2401.00001",
+            "https://arxiv.org/abs/2401.00002",
+        ],
+    )
+
+    assert len(analysis_runner.calls) == 1
+    state = analysis_runner.calls[0]["input"]
+    assert state["input_type"] == "url"
+    assert state["input_value"] == "https://arxiv.org/abs/2401.00001"
+    assert state["batch_urls"] == [
+        "https://arxiv.org/abs/2401.00001",
+        "https://arxiv.org/abs/2401.00002",
+    ]
+    assert state["total_papers"] == 2
+    assert state["current_paper_index"] == 0
+    assert result.intent == "analyze_paper"
+    assert result.phase == "qa"
+    assert result.response_text == "# Selected analysis complete"
+    turns = store.list_recent_turns(session.id)
+    assert [turn.role for turn in turns] == ["user", "assistant"]
+    assert turns[0].content == "Analyze selected papers"
+    assert turns[0].intent == "analyze_paper"
+
+
+def test_analyze_selected_papers_without_analysis_runner_returns_controlled_response():
+    handler, store, _, _ = _handler()
+    session = handler.create_session()
+    store.update_phase(session.id, "selection")
+
+    result = handler.analyze_selected_papers(
+        session.id,
+        ["https://arxiv.org/abs/2401.00001"],
+    )
+
+    assert result.intent == "analyze_paper"
+    assert result.needs_analysis is True
+    assert result.phase == "selection"
+    assert "configure analysis" in result.response_text
+    assert [turn.role for turn in store.list_recent_turns(session.id)] == [
+        "user",
+        "assistant",
+    ]
+
+
+def test_analyze_selected_papers_graph_failure_preserves_turns():
+    analysis_runner = FakeRunner(error=RuntimeError("analysis crash"))
+    handler, store, _, _ = _handler(analysis_runner=analysis_runner)
+    session = handler.create_session()
+
+    result = handler.analyze_selected_papers(
+        session.id,
+        ["https://arxiv.org/abs/2401.00001"],
+    )
+
+    turns = store.list_recent_turns(session.id)
+    assert [turn.role for turn in turns] == ["user", "assistant"]
+    assert turns[0].content == "Analyze selected papers"
+    assert turns[1].error is not None
+    assert result.phase == "failed"
+    assert result.intent == "analyze_paper"
+    assert result.errors
+
+
 def test_conversation_discovery_signal_becomes_controlled_response():
     runner = FakeRunner(
         result={
