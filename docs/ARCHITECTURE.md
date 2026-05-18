@@ -21,6 +21,7 @@ discover recent candidate papers for a research topic.
 │  - create_session                                                │
 │  - analyze_paper                                                 │
 │  - ask_question                                                  │
+│  - synthesize_papers                                             │
 │  - discover_papers / select_papers                               │
 │  - analyze_selected_papers                                       │
 │  - get_session / list_turns                                      │
@@ -91,6 +92,11 @@ Indexing failures are non-fatal: analysis can complete even if retrieval setup i
 unavailable. In that case the paper is not added to `active_paper_ids` and QA
 will not treat it as retrievable.
 
+When a batch contains multiple successfully completed papers, the analysis graph
+runs the existing batch comparator and may return `comparison_markdown` plus a
+structured comparison report. This is a post-analysis artifact built from the
+structured outputs of the analyzed papers.
+
 ## Conversation QA Flow
 
 The conversation graph handles questions about papers that were successfully
@@ -107,6 +113,20 @@ indexed in the current session:
 
 Repair is bounded by `MAX_REPAIR_ITERATIONS = 2` and centralized in
 `services/repair.py`.
+
+`PaperIntelService.synthesize_papers` is a product-facing wrapper over this same
+conversation QA flow. It uses a default synthesis prompt, or a caller-provided
+prompt, to compare and synthesize active papers through retrieval-backed QA with
+citations. It does not replace the batch comparator; it is an on-demand
+conversational synthesis path over indexed paper chunks.
+
+PaperIntel therefore has two comparison paths:
+
+- Batch comparison: produced automatically when multiple papers are analyzed
+  together. It compares structured analysis outputs and returns a comparison
+  artifact.
+- Conversational synthesis: produced on demand through QA over active paper
+  chunks, with citations.
 
 ## Discovery Flow
 
@@ -126,7 +146,7 @@ about retrieval augmented generation":
    to URLs, invokes the existing analysis graph in batch mode, and marks
    candidates `analyzed` only after successful analysis.
 7. Successfully analyzed selected papers are indexed and become available for
-   retrieval-backed QA through the conversation graph.
+   retrieval-backed QA and synthesis through the conversation graph.
 
 Only `research_strategist` and `selection_advisor` are LLM agents. Search,
 ranking, and selection parsing are deterministic components.

@@ -18,6 +18,10 @@ and implementation implications" without losing grounding in the source text.
   select papers by display number.
 - Analyzes selected discovery candidates, indexes them, and makes them
   available for citation-backed QA.
+- Produces a batch comparison report when multiple selected papers are analyzed
+  together.
+- Synthesizes active papers on demand through retrieval-backed QA with
+  citations.
 - Uses an adversarial Citation Critic with bounded repair to reduce unsupported
   confident claims.
 - Supports persona-aware answers: `engineer`, `researcher`, and `techlead`.
@@ -85,6 +89,10 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze-selected"
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/ask" \
   -H 'content-type: application/json' \
   -d '{"question":"What is the main contribution of the selected paper?"}'
+
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/synthesize" \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"Compare the selected papers for implementation trade-offs."}'
 ```
 
 For a runnable script, see [examples/rest_smoke.py](examples/rest_smoke.py).

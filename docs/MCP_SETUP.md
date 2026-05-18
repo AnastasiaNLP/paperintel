@@ -18,7 +18,7 @@ docker compose up -d postgres qdrant
 
 ## Tools
 
-The MCP server exposes seven tools:
+The MCP server exposes eight tools:
 
 - `create_session(persona)` creates a PaperIntel session and returns a session ID.
 - `analyze_paper(session_id, paper_url)` analyzes an arXiv or PDF URL. This is synchronous and can take about one minute.
@@ -26,6 +26,7 @@ The MCP server exposes seven tools:
 - `discover_papers(session_id, topic)` searches for candidate papers on arXiv and returns a shortlist.
 - `select_papers(session_id, selection)` selects papers from the current discovery shortlist by display number.
 - `analyze_selected_papers(session_id)` analyzes papers selected from the discovery shortlist.
+- `synthesize_papers(session_id, prompt)` synthesizes active papers through retrieval-backed QA. The prompt is optional.
 - `get_session(session_id)` returns persona, phase, and active paper IDs.
 
 The server does not keep an implicit current session. Pass the `session_id` returned by `create_session` to later tool calls.
@@ -100,13 +101,21 @@ To analyze the selected papers:
 Analyze the selected papers.
 ```
 
-Claude should call `analyze_selected_papers`. After analysis finishes, ask
-questions with `ask_paper`.
+Claude should call `analyze_selected_papers`. If multiple selected papers are
+analyzed together, the result may include a batch comparison report.
+
+After analysis finishes, ask questions with `ask_paper`, or ask for synthesis:
+
+```text
+Synthesize the active papers and compare their implementation trade-offs.
+```
+
+Claude should call `synthesize_papers`.
 
 The full discovery workflow is:
 
 ```text
-create_session -> discover_papers -> select_papers -> analyze_selected_papers -> ask_paper
+create_session -> discover_papers -> select_papers -> analyze_selected_papers -> ask_paper / synthesize_papers
 ```
 
 ## Troubleshooting

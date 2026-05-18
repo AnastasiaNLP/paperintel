@@ -108,6 +108,16 @@ Analyze the selected papers, then ask questions as usual:
 curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/analyze-selected
 ```
 
+If you selected multiple papers, the analysis response may include a batch
+comparison report. You can also ask for a retrieval-backed synthesis over active
+papers:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/synthesize \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"Compare implementation trade-offs across these papers."}'
+```
+
 Discovery depends on the public arXiv API and may be rate-limited. If that
 happens, wait a few minutes and retry.
 

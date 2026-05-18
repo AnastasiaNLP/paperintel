@@ -79,6 +79,24 @@ curl http://127.0.0.1:8000/sessions/<SESSION_ID>
 `active_paper_ids` should include the paper ID. If it is empty, indexing did not
 complete successfully and the paper is not available for retrieval-backed QA.
 
+## Synthesis returns `no_active_papers`
+
+`/synthesize` and the MCP `synthesize_papers` tool require at least one active
+paper in the session. Analyze a paper URL or analyze selected discovery
+candidates first, then retry synthesis.
+
+## No comparison report appears after analyzing selected papers
+
+Batch comparison is generated only when multiple selected papers are analyzed
+together and the analysis graph completes successfully for at least two papers.
+If you selected only one paper, or one of the selected papers failed during
+metadata/PDF retrieval, the session can still support QA but may not include a
+batch comparison artifact.
+
+For on-demand comparison after papers are active, use `/synthesize` or the MCP
+`synthesize_papers` tool. That path uses retrieval-backed QA with citations
+rather than the batch comparator.
+
 ## LangSmith traces appear during local tests
 
 Disable tracing for local test runs:

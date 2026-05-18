@@ -32,6 +32,7 @@ Discovery-to-QA:
 3. Select papers from the numbered shortlist.
 4. Analyze selected papers.
 5. Ask questions about the analyzed selected papers.
+6. Optionally synthesize the active papers with a custom comparison prompt.
 
 ## Endpoints
 
@@ -46,6 +47,7 @@ Discovery-to-QA:
 | `POST` | `/sessions/{session_id}/discover` | Find candidate papers for a research topic and enter selection phase. |
 | `POST` | `/sessions/{session_id}/select` | Select papers from the latest discovery shortlist by display number. |
 | `POST` | `/sessions/{session_id}/analyze-selected` | Analyze the currently selected discovery candidates. No request body required. |
+| `POST` | `/sessions/{session_id}/synthesize` | Synthesize active papers through retrieval-backed QA. Optional `prompt` body. |
 
 ## Example
 
@@ -78,6 +80,10 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/select" \
   -d '{"selection":"use 1 and 3"}'
 
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze-selected"
+
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/synthesize" \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"Compare implementation trade-offs across these papers."}'
 ```
 
 Discovery is synchronous and uses live arXiv search. If arXiv rate-limits a
@@ -87,6 +93,21 @@ HTTP status for diagnosis.
 After `/analyze-selected` succeeds, selected candidates are marked `analyzed`,
 the papers are indexed into Qdrant, and the session's `active_paper_ids` can be
 used by `/ask`.
+
+If multiple selected papers are analyzed together, `/analyze-selected` may
+return `comparison_markdown`. This is a batch comparison artifact produced by
+the analysis graph from structured paper outputs.
+
+`/synthesize` is different: it asks the conversation QA flow to synthesize the
+currently active papers using retrieved chunks and citations. It accepts an
+optional body:
+
+```json
+{"prompt": "Compare implementation trade-offs across these papers."}
+```
+
+If the body is omitted or `prompt` is blank, PaperIntel uses a default synthesis
+prompt.
 
 ## Notes
 
@@ -99,6 +120,8 @@ used by `/ask`.
 - `/analyze-selected` runs the existing analysis graph on selected candidate
   URLs. With multiple selected papers, the analysis graph uses batch mode and
   may also produce a comparison report.
+- `/synthesize` requires at least one active paper and returns `409` if the
+  session has no active papers.
 - `/analyze-selected` returns `400` if no candidates were selected and `409`
   if selected candidates are not in the correct state for analysis.
 - API responses intentionally exclude internal `AgentRun` payloads and raw

@@ -60,13 +60,23 @@ Expected tool:
 Then:
 
 ```text
-Analyze the selected papers, then tell me which one is more useful for an engineer.
+Analyze the selected papers.
 ```
 
 Expected tool flow:
 
 1. `analyze_selected_papers`
-2. `ask_paper`
+
+If multiple papers were analyzed, PaperIntel may return a batch comparison
+report. For a cited synthesis over the active papers, ask:
+
+```text
+Synthesize the active papers and compare implementation trade-offs for an engineer.
+```
+
+Expected tool:
+
+1. `synthesize_papers`
 
 ## Persona Examples
 
