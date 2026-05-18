@@ -314,6 +314,9 @@ def test_postgres_search_candidate_repository_round_trip(session_factory):
     latest = repository.list_latest_for_session(session.id)
     assert [candidate.id for candidate in latest] == [first.id, second.id]
 
+    by_ids = repository.get_many_by_ids([second.id, "missing", first.id])
+    assert [candidate.id for candidate in by_ids] == [second.id, first.id]
+
 
 def test_postgres_search_candidate_repository_repeated_upsert_preserves_display_ranks(
     session_factory,

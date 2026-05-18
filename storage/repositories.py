@@ -309,6 +309,24 @@ class PostgresSearchCandidateRepository:
             )
             return [orm_to_search_candidate(row) for row in rows]
 
+    def get_many_by_ids(self, candidate_ids: Sequence[str]) -> list[SearchCandidate]:
+        if not candidate_ids:
+            return []
+
+        requested_ids = list(dict.fromkeys(candidate_ids))
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(SearchCandidateORM).where(
+                        SearchCandidateORM.id.in_(requested_ids)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            by_id = {row.id: orm_to_search_candidate(row) for row in rows}
+            return [by_id[candidate_id] for candidate_id in requested_ids if candidate_id in by_id]
+
     def update_status(
         self,
         candidate_id: str,
