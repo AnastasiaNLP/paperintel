@@ -5,8 +5,13 @@ import httpx
 from api.in_memory_session_store import SessionNotFoundError
 from api.rest.app import create_rest_app
 from models.api import HealthStatus
+from models.discovery import SearchCandidate
 from models.session import HandlerResult, Session, Turn
 from services.paperintel_service import InvalidSessionPhaseError
+from services.selected_candidate_resolver import (
+    NoSelectedCandidatesError,
+    SelectedCandidateNotReadyError,
+)
 
 
 class FakeService:
@@ -34,6 +39,7 @@ class FakeService:
         self.ask_calls = []
         self.discover_calls = []
         self.select_calls = []
+        self.analyze_selected_calls = []
         self.health_status = HealthStatus(healthy=True, checks={"basic": "ok"})
 
     def create_session(self, *, persona="engineer", original_query=None):
@@ -97,6 +103,17 @@ class FakeService:
             selected_candidate_ids=["candidate-1", "candidate-3"],
         )
 
+    def analyze_selected_papers(self, session_id):
+        self.get_session(session_id)
+        self.analyze_selected_calls.append(session_id)
+        return _handler_result(
+            session_id=session_id,
+            response_text="Selected papers analyzed.",
+            phase="qa",
+            intent="analyze_paper",
+            referenced_paper_ids=["2605.1", "2605.3"],
+        )
+
     def health(self):
         return self.health_status
 
@@ -109,6 +126,26 @@ class ExplodingService(FakeService):
 class WrongPhaseService(FakeService):
     def select_papers(self, session_id, selection):
         raise InvalidSessionPhaseError(expected="selection", actual="idle")
+
+
+class NoSelectionService(FakeService):
+    def analyze_selected_papers(self, session_id):
+        raise NoSelectedCandidatesError(session_id)
+
+
+class CandidateNotReadyService(FakeService):
+    def analyze_selected_papers(self, session_id):
+        raise SelectedCandidateNotReadyError(
+            SearchCandidate(
+                id="candidate-1",
+                session_id=session_id,
+                discovery_turn_id="turn-1",
+                display_rank=1,
+                status="proposed",
+                title="Paper",
+                url="https://arxiv.org/abs/2605.1",
+            )
+        )
 
 
 def _handler_result(
@@ -347,6 +384,45 @@ def test_select_returns_409_when_session_not_in_selection_phase():
 
     assert response.status_code == 409
     assert response.json()["error"] == "invalid_session_phase"
+
+
+def test_analyze_selected_calls_service_without_body():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/analyze-selected",
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["intent"] == "analyze_paper"
+    assert payload["phase"] == "qa"
+    assert payload["referenced_paper_ids"] == ["2605.1", "2605.3"]
+    assert service.analyze_selected_calls == ["session-1"]
+
+
+def test_analyze_selected_returns_400_when_no_candidates_selected():
+    response = _request(
+        NoSelectionService(),
+        "POST",
+        "/sessions/session-1/analyze-selected",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "no_selected_candidates"
+
+
+def test_analyze_selected_returns_409_when_candidate_not_ready():
+    response = _request(
+        CandidateNotReadyService(),
+        "POST",
+        "/sessions/session-1/analyze-selected",
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "selected_candidate_not_ready"
 
 
 def test_message_response_shape_excludes_internal_fields():

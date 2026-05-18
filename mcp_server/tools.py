@@ -82,6 +82,19 @@ async def select_papers_tool(
     return format_selection_result(result)
 
 
+async def analyze_selected_papers_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    try:
+        result = await _run_sync(service.analyze_selected_papers, session_id)
+    except Exception:
+        return _safe_error("analyze the selected papers")
+    return format_analysis_result(result)
+
+
 async def get_session_tool(
     service: PaperIntelService,
     *,

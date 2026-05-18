@@ -60,6 +60,13 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
         )
 
     @mcp.tool()
+    async def analyze_selected_papers(session_id: str) -> str:
+        """Analyze papers previously selected from a discovery shortlist."""
+        from mcp_server.tools import analyze_selected_papers_tool
+
+        return await analyze_selected_papers_tool(service, session_id=session_id)
+
+    @mcp.tool()
     async def get_session(session_id: str) -> str:
         """Get persona, phase, and active papers for a PaperIntel session."""
         from mcp_server.tools import get_session_tool

@@ -5,6 +5,7 @@ import pytest
 import mcp_server.tools as tool_module
 from mcp_server.tools import (
     analyze_paper_tool,
+    analyze_selected_papers_tool,
     ask_paper_tool,
     create_session_tool,
     discover_papers_tool,
@@ -32,6 +33,7 @@ class FakeService:
         self.ask_calls = []
         self.discover_calls = []
         self.select_calls = []
+        self.analyze_selected_calls = []
 
     def create_session(self, *, persona="engineer", original_query=None):
         self.create_calls.append({"persona": persona, "original_query": original_query})
@@ -92,12 +94,27 @@ class FakeService:
             assistant_turn_id="assistant-turn",
         )
 
+    def analyze_selected_papers(self, session_id):
+        self.analyze_selected_calls.append(session_id)
+        return HandlerResult(
+            session_id=session_id,
+            response_text="Selected analysis complete.",
+            phase="qa",
+            intent="analyze_paper",
+            referenced_paper_ids=["2605.1", "2605.3"],
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
     def get_session(self, session_id):
         return self.sessions[session_id]
 
 
 class ExplodingService(FakeService):
     def ask_question(self, session_id, question):
+        raise RuntimeError("internal details should not leak")
+
+    def analyze_selected_papers(self, session_id):
         raise RuntimeError("internal details should not leak")
 
 
@@ -235,6 +252,33 @@ def test_select_papers_rejects_empty_selection():
         asyncio.run(
             select_papers_tool(FakeService(), session_id="session-1", selection="")
         )
+
+
+def test_analyze_selected_papers_tool_calls_service():
+    service = FakeService()
+
+    text = asyncio.run(
+        analyze_selected_papers_tool(service, session_id="session-1")
+    )
+
+    assert "Paper analysis completed." in text
+    assert "Selected analysis complete." in text
+    assert "- 2605.1" in text
+    assert service.analyze_selected_calls == ["session-1"]
+
+
+def test_analyze_selected_papers_rejects_empty_session_id():
+    with pytest.raises(ValueError):
+        asyncio.run(analyze_selected_papers_tool(FakeService(), session_id=""))
+
+
+def test_analyze_selected_papers_handles_service_exception_safely():
+    text = asyncio.run(
+        analyze_selected_papers_tool(ExplodingService(), session_id="session-1")
+    )
+
+    assert "could not analyze the selected papers safely" in text
+    assert "internal details" not in text
 
 
 def test_get_session_tool_returns_state():

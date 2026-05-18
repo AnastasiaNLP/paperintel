@@ -77,6 +77,8 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/discover" \
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/select" \
   -H 'content-type: application/json' \
   -d '{"selection":"use 1 and 3"}'
+
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze-selected"
 ```
 
 For a runnable script, see [examples/rest_smoke.py](examples/rest_smoke.py).

@@ -25,6 +25,7 @@ The MCP server exposes six tools:
 - `ask_paper(session_id, question)` asks a question about papers analyzed in that session.
 - `discover_papers(session_id, topic)` searches for candidate papers on arXiv and returns a shortlist.
 - `select_papers(session_id, selection)` selects papers from the current discovery shortlist by display number.
+- `analyze_selected_papers(session_id)` analyzes papers selected from the discovery shortlist.
 - `get_session(session_id)` returns persona, phase, and active paper IDs.
 
 The server does not keep an implicit current session. Pass the `session_id` returned by `create_session` to later tool calls.
@@ -92,6 +93,15 @@ Select papers 1 and 3.
 ```
 
 Claude should call `select_papers`.
+
+To analyze the selected papers:
+
+```text
+Analyze the selected papers.
+```
+
+Claude should call `analyze_selected_papers`. After analysis finishes, ask
+questions with `ask_paper`.
 
 ## Troubleshooting
 

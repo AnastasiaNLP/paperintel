@@ -57,6 +57,17 @@ Expected tool:
 
 1. `select_papers`
 
+Then:
+
+```text
+Analyze the selected papers, then tell me which one is more useful for an engineer.
+```
+
+Expected tool flow:
+
+1. `analyze_selected_papers`
+2. `ask_paper`
+
 ## Persona Examples
 
 Engineer:

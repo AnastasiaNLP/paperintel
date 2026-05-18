@@ -35,6 +35,7 @@ OpenAPI schema is the source of truth for request and response shapes.
 | `POST` | `/sessions/{session_id}/ask` | Ask a question about active papers in the session. |
 | `POST` | `/sessions/{session_id}/discover` | Find candidate papers for a research topic and enter selection phase. |
 | `POST` | `/sessions/{session_id}/select` | Select papers from the latest discovery shortlist by display number. |
+| `POST` | `/sessions/{session_id}/analyze-selected` | Analyze the currently selected discovery candidates. No request body required. |
 
 ## Example
 
@@ -65,6 +66,8 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/discover" \
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/select" \
   -H 'content-type: application/json' \
   -d '{"selection":"use 1 and 3"}'
+
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze-selected"
 ```
 
 Discovery is synchronous and uses live arXiv search. If arXiv rate-limits a
@@ -79,6 +82,9 @@ HTTP status for diagnosis.
   the same session.
 - `/select` expects the session to be in `selection` phase after a discovery
   response. Selection uses the display numbers shown to the user.
+- `/analyze-selected` runs the existing analysis graph on selected candidate
+  URLs. With multiple selected papers, the analysis graph uses batch mode and
+  may also produce a comparison report.
 - API responses intentionally exclude internal `AgentRun` payloads and raw
   structured errors. Those are stored for observability, not returned as public
   transport data.
