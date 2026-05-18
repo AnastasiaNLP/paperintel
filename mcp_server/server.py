@@ -84,6 +84,31 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
 
         return await get_session_tool(service, session_id=session_id)
 
+    @mcp.tool()
+    async def list_paper_workspaces(session_id: str) -> str:
+        """List persisted artifact workspaces for analyzed papers in a session."""
+        from mcp_server.tools import list_paper_workspaces_tool
+
+        return await list_paper_workspaces_tool(service, session_id=session_id)
+
+    @mcp.tool()
+    async def get_paper_workspace(session_id: str, paper_id: str) -> str:
+        """Get a readable summary of one persisted paper workspace."""
+        from mcp_server.tools import get_paper_workspace_tool
+
+        return await get_paper_workspace_tool(
+            service,
+            session_id=session_id,
+            paper_id=paper_id,
+        )
+
+    @mcp.tool()
+    async def get_latest_comparison(session_id: str) -> str:
+        """Get the latest persisted comparison artifact for a session."""
+        from mcp_server.tools import get_latest_comparison_tool
+
+        return await get_latest_comparison_tool(service, session_id=session_id)
+
     return mcp
 
 

@@ -9,12 +9,18 @@ from mcp_server.tools import (
     ask_paper_tool,
     create_session_tool,
     discover_papers_tool,
+    format_comparison_artifact,
     format_answer_result,
     format_discovery_result,
+    format_paper_workspace,
     get_session_tool,
+    get_latest_comparison_tool,
+    get_paper_workspace_tool,
+    list_paper_workspaces_tool,
     select_papers_tool,
     synthesize_papers_tool,
 )
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.retrieval import CitationRef
 from models.session import HandlerResult, Session
 
@@ -36,6 +42,35 @@ class FakeService:
         self.select_calls = []
         self.analyze_selected_calls = []
         self.synthesize_calls = []
+        self.list_workspace_calls = []
+        self.get_workspace_calls = []
+        self.comparison_calls = []
+        self.workspaces = [
+            PaperWorkspace(
+                session_id="session-1",
+                paper_id="1706.03762",
+                title="Attention Is All You Need",
+                source_url="https://arxiv.org/abs/1706.03762",
+                pipeline_stage="completed",
+                method_extraction_json={
+                    "method_name": "Transformer",
+                    "novelty_claim": "Attention-only sequence model.",
+                },
+                benchmarks_json=[
+                    {"task": "translation", "metric": "BLEU", "value": 28.4}
+                ],
+                readiness_json={
+                    "maturity_level": "production",
+                    "has_open_code": True,
+                },
+                full_markdown_report="# Report",
+            )
+        ]
+        self.comparison = ComparisonArtifact(
+            session_id="session-1",
+            paper_ids=["1706.03762", "2401.00001"],
+            comparison_markdown="# Comparison\n\nA vs B",
+        )
 
     def create_session(self, *, persona="engineer", original_query=None):
         self.create_calls.append({"persona": persona, "original_query": original_query})
@@ -131,6 +166,18 @@ class FakeService:
     def get_session(self, session_id):
         return self.sessions[session_id]
 
+    def list_paper_workspaces(self, session_id):
+        self.list_workspace_calls.append(session_id)
+        return self.workspaces
+
+    def get_paper_workspace(self, session_id, paper_id):
+        self.get_workspace_calls.append((session_id, paper_id))
+        return self.workspaces[0]
+
+    def get_latest_comparison(self, session_id):
+        self.comparison_calls.append(session_id)
+        return self.comparison
+
 
 class ExplodingService(FakeService):
     def ask_question(self, session_id, question):
@@ -140,6 +187,12 @@ class ExplodingService(FakeService):
         raise RuntimeError("internal details should not leak")
 
     def synthesize_papers(self, session_id, prompt=None):
+        raise RuntimeError("internal details should not leak")
+
+    def get_paper_workspace(self, session_id, paper_id):
+        raise RuntimeError("internal details should not leak")
+
+    def get_latest_comparison(self, session_id):
         raise RuntimeError("internal details should not leak")
 
 
@@ -379,6 +432,81 @@ def test_get_session_tool_returns_state():
     assert "- 1706.03762" in text
 
 
+def test_list_paper_workspaces_tool_returns_readable_summary():
+    service = FakeService()
+
+    text = asyncio.run(list_paper_workspaces_tool(service, session_id="session-1"))
+
+    assert "Persisted paper workspaces" in text
+    assert "1706.03762" in text
+    assert "Artifacts: report, method, 1 benchmark(s), readiness" in text
+    assert service.list_workspace_calls == ["session-1"]
+
+
+def test_get_paper_workspace_tool_returns_readable_summary_not_raw_json():
+    service = FakeService()
+
+    text = asyncio.run(
+        get_paper_workspace_tool(
+            service,
+            session_id="session-1",
+            paper_id="1706.03762",
+        )
+    )
+
+    assert "Paper workspace: 1706.03762" in text
+    assert "Method:" in text
+    assert "Transformer" in text
+    assert "Benchmarks:" in text
+    assert "# Report" in text
+    assert "{'method_name'" not in text
+    assert service.get_workspace_calls == [("session-1", "1706.03762")]
+
+
+def test_get_latest_comparison_tool_returns_markdown():
+    service = FakeService()
+
+    text = asyncio.run(get_latest_comparison_tool(service, session_id="session-1"))
+
+    assert "Latest persisted comparison" in text
+    assert "- 1706.03762" in text
+    assert "# Comparison" in text
+    assert service.comparison_calls == ["session-1"]
+
+
+def test_get_paper_workspace_rejects_empty_paper_id():
+    with pytest.raises(ValueError):
+        asyncio.run(
+            get_paper_workspace_tool(
+                FakeService(),
+                session_id="session-1",
+                paper_id="",
+            )
+        )
+
+
+def test_get_paper_workspace_handles_service_exception_safely():
+    text = asyncio.run(
+        get_paper_workspace_tool(
+            ExplodingService(),
+            session_id="session-1",
+            paper_id="1706.03762",
+        )
+    )
+
+    assert "could not load the paper workspace safely" in text
+    assert "internal details" not in text
+
+
+def test_get_latest_comparison_handles_service_exception_safely():
+    text = asyncio.run(
+        get_latest_comparison_tool(ExplodingService(), session_id="session-1")
+    )
+
+    assert "could not load the latest comparison safely" in text
+    assert "internal details" not in text
+
+
 def test_format_answer_result_includes_citations():
     result = HandlerResult(
         session_id="session-1",
@@ -418,6 +546,20 @@ def test_format_discovery_result_includes_topic_and_count():
     assert "Topic: agent memory" in text
     assert "Candidates found: 5" in text
     assert "select_papers" in text
+
+
+def test_format_paper_workspace_includes_sections():
+    text = format_paper_workspace(FakeService().workspaces[0])
+
+    assert "Production readiness:" in text
+    assert "Maturity: production" in text
+
+
+def test_format_comparison_artifact_includes_paper_ids():
+    text = format_comparison_artifact(FakeService().comparison)
+
+    assert "Papers:" in text
+    assert "- 2401.00001" in text
 
 
 def test_tool_handles_service_exception_safely():

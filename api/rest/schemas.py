@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, HttpUrl
 
 from models.api import HealthStatus
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.session import HandlerResult, Persona, Session, Turn
 
 
@@ -113,6 +114,86 @@ class TurnResponse(BaseModel):
 
 class TurnsResponse(BaseModel):
     turns: list[TurnResponse]
+
+
+class PaperWorkspaceSummaryResponse(BaseModel):
+    id: str
+    session_id: str
+    paper_id: str
+    title: str | None = None
+    source_url: str
+    pipeline_stage: str
+    has_finalized_report: bool
+    has_method_extraction: bool
+    benchmark_count: int
+    has_readiness: bool
+    has_markdown_report: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_workspace(cls, workspace: PaperWorkspace) -> "PaperWorkspaceSummaryResponse":
+        return cls(
+            id=workspace.id,
+            session_id=workspace.session_id,
+            paper_id=workspace.paper_id,
+            title=workspace.title,
+            source_url=workspace.source_url,
+            pipeline_stage=workspace.pipeline_stage,
+            has_finalized_report=workspace.finalized_report_json is not None,
+            has_method_extraction=workspace.method_extraction_json is not None,
+            benchmark_count=len(workspace.benchmarks_json),
+            has_readiness=workspace.readiness_json is not None,
+            has_markdown_report=workspace.full_markdown_report is not None,
+            created_at=workspace.created_at,
+            updated_at=workspace.updated_at,
+        )
+
+
+class PaperWorkspacesResponse(BaseModel):
+    workspaces: list[PaperWorkspaceSummaryResponse]
+
+
+class PaperWorkspaceResponse(PaperWorkspaceSummaryResponse):
+    finalized_report_json: dict | None = None
+    method_extraction_json: dict | None = None
+    benchmarks_json: list[dict] = Field(default_factory=list)
+    readiness_json: dict | None = None
+    full_markdown_report: str | None = None
+
+    @classmethod
+    def from_workspace(cls, workspace: PaperWorkspace) -> "PaperWorkspaceResponse":
+        summary = PaperWorkspaceSummaryResponse.from_workspace(workspace)
+        return cls(
+            **summary.model_dump(mode="json"),
+            finalized_report_json=workspace.finalized_report_json,
+            method_extraction_json=workspace.method_extraction_json,
+            benchmarks_json=workspace.benchmarks_json,
+            readiness_json=workspace.readiness_json,
+            full_markdown_report=workspace.full_markdown_report,
+        )
+
+
+class ComparisonArtifactResponse(BaseModel):
+    id: str
+    session_id: str
+    paper_ids: list[str]
+    comparison_report_json: dict | None = None
+    comparison_markdown: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_artifact(cls, artifact: ComparisonArtifact) -> "ComparisonArtifactResponse":
+        return cls(
+            id=artifact.id,
+            session_id=artifact.session_id,
+            paper_ids=artifact.paper_ids,
+            comparison_report_json=artifact.comparison_report_json,
+            comparison_markdown=artifact.comparison_markdown,
+            created_at=artifact.created_at,
+            updated_at=artifact.updated_at,
+        )
 
 
 class HealthResponse(BaseModel):

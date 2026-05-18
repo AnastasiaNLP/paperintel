@@ -1,6 +1,7 @@
 import asyncio
 from urllib.parse import urlparse
 
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.session import HandlerResult, Persona, Session
 from services.paperintel_service import PaperIntelService
 
@@ -126,6 +127,47 @@ async def get_session_tool(
     return format_session_state(session)
 
 
+async def list_paper_workspaces_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    try:
+        workspaces = await _run_sync(service.list_paper_workspaces, session_id)
+    except Exception:
+        return _safe_error("load paper workspaces")
+    return format_workspace_list(workspaces)
+
+
+async def get_paper_workspace_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    paper_id: str,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    paper_id = _validate_non_empty("paper_id", paper_id)
+    try:
+        workspace = await _run_sync(service.get_paper_workspace, session_id, paper_id)
+    except Exception:
+        return _safe_error("load the paper workspace")
+    return format_paper_workspace(workspace)
+
+
+async def get_latest_comparison_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    try:
+        comparison = await _run_sync(service.get_latest_comparison, session_id)
+    except Exception:
+        return _safe_error("load the latest comparison")
+    return format_comparison_artifact(comparison)
+
+
 def format_session_created(session: Session) -> str:
     return (
         "Created PaperIntel session.\n\n"
@@ -191,6 +233,85 @@ def format_selection_result(result: HandlerResult) -> str:
         )
         return f"{text}\n\nSelected candidate IDs:\n{selected}"
     return text
+
+
+def format_workspace_list(workspaces: list[PaperWorkspace]) -> str:
+    if not workspaces:
+        return "No persisted paper workspaces are available for this session yet."
+    lines = ["Persisted paper workspaces:"]
+    for workspace in workspaces:
+        title = f" - {workspace.title}" if workspace.title else ""
+        artifacts = _format_workspace_artifact_flags(workspace)
+        lines.append(
+            f"- {workspace.paper_id}{title}\n"
+            f"  Stage: {workspace.pipeline_stage}\n"
+            f"  Artifacts: {artifacts}"
+        )
+    return "\n".join(lines)
+
+
+def format_paper_workspace(workspace: PaperWorkspace) -> str:
+    lines = [
+        f"Paper workspace: {workspace.paper_id}",
+        f"Title: {workspace.title or 'unknown'}",
+        f"Source: {workspace.source_url}",
+        f"Pipeline stage: {workspace.pipeline_stage}",
+        f"Artifacts: {_format_workspace_artifact_flags(workspace)}",
+    ]
+    method = workspace.method_extraction_json or {}
+    if method:
+        lines.extend(
+            [
+                "",
+                "Method:",
+                f"- Name: {method.get('method_name') or 'unknown'}",
+                f"- Novelty: {method.get('novelty_claim') or 'not captured'}",
+            ]
+        )
+    readiness = workspace.readiness_json or {}
+    if readiness:
+        lines.extend(
+            [
+                "",
+                "Production readiness:",
+                f"- Maturity: {readiness.get('maturity_level') or 'unknown'}",
+                f"- Open code: {readiness.get('has_open_code')}",
+            ]
+        )
+    if workspace.benchmarks_json:
+        lines.append("")
+        lines.append("Benchmarks:")
+        for benchmark in workspace.benchmarks_json[:5]:
+            task = benchmark.get("task") or "unknown task"
+            metric = benchmark.get("metric") or "metric"
+            value = benchmark.get("value")
+            lines.append(f"- {task}: {metric}={value}")
+    if workspace.full_markdown_report:
+        lines.extend(["", "Report:", workspace.full_markdown_report.strip()])
+    return "\n".join(lines)
+
+
+def format_comparison_artifact(artifact: ComparisonArtifact) -> str:
+    papers = _format_active_papers(artifact.paper_ids)
+    return (
+        "Latest persisted comparison\n\n"
+        f"Session ID: {artifact.session_id}\n"
+        f"Papers:\n{papers}\n\n"
+        f"{artifact.comparison_markdown.strip()}"
+    )
+
+
+def _format_workspace_artifact_flags(workspace: PaperWorkspace) -> str:
+    flags = []
+    if workspace.finalized_report_json is not None or workspace.full_markdown_report:
+        flags.append("report")
+    if workspace.method_extraction_json is not None:
+        flags.append("method")
+    if workspace.benchmarks_json:
+        flags.append(f"{len(workspace.benchmarks_json)} benchmark(s)")
+    if workspace.readiness_json is not None:
+        flags.append("readiness")
+    return ", ".join(flags) if flags else "none"
 
 
 def _format_active_papers(paper_ids: list[str]) -> str:

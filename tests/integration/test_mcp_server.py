@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.session import HandlerResult, Session
 
 
@@ -71,6 +72,31 @@ class FakeService:
     def get_session(self, session_id):
         return Session(id=session_id, phase="qa", active_paper_ids=["1706.03762"])
 
+    def list_paper_workspaces(self, session_id):
+        return [
+            PaperWorkspace(
+                session_id=session_id,
+                paper_id="1706.03762",
+                source_url="https://arxiv.org/abs/1706.03762",
+                pipeline_stage="completed",
+            )
+        ]
+
+    def get_paper_workspace(self, session_id, paper_id):
+        return PaperWorkspace(
+            session_id=session_id,
+            paper_id=paper_id,
+            source_url=f"https://arxiv.org/abs/{paper_id}",
+            pipeline_stage="completed",
+        )
+
+    def get_latest_comparison(self, session_id):
+        return ComparisonArtifact(
+            session_id=session_id,
+            paper_ids=["1706.03762", "2401.00001"],
+            comparison_markdown="# Comparison",
+        )
+
 
 def test_mcp_server_builds_with_four_tools():
     pytest.importorskip("mcp")
@@ -90,6 +116,9 @@ def test_mcp_server_builds_with_four_tools():
         "analyze_selected_papers",
         "synthesize_papers",
         "get_session",
+        "list_paper_workspaces",
+        "get_paper_workspace",
+        "get_latest_comparison",
     }.issubset(names)
 
 

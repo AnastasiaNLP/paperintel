@@ -5,9 +5,15 @@ import httpx
 from api.in_memory_session_store import SessionNotFoundError
 from api.rest.app import create_rest_app
 from models.api import HealthStatus
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.session import HandlerResult, Session, Turn
-from services.paperintel_service import InvalidSessionPhaseError, NoActivePapersError
+from services.paperintel_service import (
+    ComparisonNotFoundError,
+    InvalidSessionPhaseError,
+    NoActivePapersError,
+    PaperWorkspaceNotFoundError,
+)
 from services.selected_candidate_resolver import (
     NoSelectedCandidatesError,
     SelectedCandidateNotReadyError,
@@ -41,6 +47,25 @@ class FakeService:
         self.select_calls = []
         self.analyze_selected_calls = []
         self.synthesize_calls = []
+        self.workspaces = [
+            PaperWorkspace(
+                session_id="session-1",
+                paper_id="1706.03762",
+                title="Attention Is All You Need",
+                source_url="https://arxiv.org/abs/1706.03762",
+                pipeline_stage="completed",
+                method_extraction_json={"method_name": "Transformer"},
+                benchmarks_json=[{"task": "translation", "metric": "BLEU", "value": 28.4}],
+                readiness_json={"maturity_level": "production"},
+                full_markdown_report="# Report",
+            )
+        ]
+        self.comparison = ComparisonArtifact(
+            session_id="session-1",
+            paper_ids=["1706.03762", "2401.00001"],
+            comparison_report_json={"winner_basis": "quality"},
+            comparison_markdown="# Comparison\n\nA vs B",
+        )
         self.health_status = HealthStatus(healthy=True, checks={"basic": "ok"})
 
     def create_session(self, *, persona="engineer", original_query=None):
@@ -127,6 +152,27 @@ class FakeService:
             referenced_paper_ids=["1706.03762"],
         )
 
+    def list_paper_workspaces(self, session_id):
+        self.get_session(session_id)
+        return [
+            workspace
+            for workspace in self.workspaces
+            if workspace.session_id == session_id
+        ]
+
+    def get_paper_workspace(self, session_id, paper_id):
+        self.get_session(session_id)
+        for workspace in self.workspaces:
+            if workspace.session_id == session_id and workspace.paper_id == paper_id:
+                return workspace
+        raise PaperWorkspaceNotFoundError(session_id=session_id, paper_id=paper_id)
+
+    def get_latest_comparison(self, session_id):
+        self.get_session(session_id)
+        if self.comparison.session_id == session_id:
+            return self.comparison
+        raise ComparisonNotFoundError(session_id)
+
     def health(self):
         return self.health_status
 
@@ -164,6 +210,12 @@ class CandidateNotReadyService(FakeService):
 class NoActivePapersService(FakeService):
     def synthesize_papers(self, session_id, prompt=None):
         raise NoActivePapersError(session_id)
+
+
+class MissingComparisonService(FakeService):
+    def get_latest_comparison(self, session_id):
+        self.get_session(session_id)
+        raise ComparisonNotFoundError(session_id)
 
 
 def _handler_result(
@@ -252,6 +304,52 @@ def test_list_turns_returns_turns():
     assert response.status_code == 200
     assert response.json()["turns"][0]["content"] == "What is the contribution?"
     assert response.json()["turns"][0]["referenced_paper_ids"] == ["1706.03762"]
+
+
+def test_list_paper_workspaces_returns_summaries():
+    response = _request(None, "GET", "/sessions/session-1/workspaces")
+
+    assert response.status_code == 200
+    workspace = response.json()["workspaces"][0]
+    assert workspace["paper_id"] == "1706.03762"
+    assert workspace["title"] == "Attention Is All You Need"
+    assert workspace["has_method_extraction"] is True
+    assert workspace["benchmark_count"] == 1
+    assert "full_markdown_report" not in workspace
+
+
+def test_get_paper_workspace_returns_full_artifact_snapshot():
+    response = _request(None, "GET", "/sessions/session-1/workspaces/1706.03762")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["paper_id"] == "1706.03762"
+    assert payload["method_extraction_json"]["method_name"] == "Transformer"
+    assert payload["benchmarks_json"][0]["metric"] == "BLEU"
+    assert payload["full_markdown_report"] == "# Report"
+
+
+def test_get_paper_workspace_returns_404_when_missing():
+    response = _request(None, "GET", "/sessions/session-1/workspaces/missing")
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "paper_workspace_not_found"
+
+
+def test_get_latest_comparison_returns_artifact():
+    response = _request(None, "GET", "/sessions/session-1/comparison")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["paper_ids"] == ["1706.03762", "2401.00001"]
+    assert payload["comparison_markdown"] == "# Comparison\n\nA vs B"
+
+
+def test_get_latest_comparison_returns_404_when_missing():
+    response = _request(MissingComparisonService(), "GET", "/sessions/session-1/comparison")
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "comparison_not_found"
 
 
 def test_health_returns_service_health():

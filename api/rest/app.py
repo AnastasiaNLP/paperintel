@@ -6,11 +6,15 @@ from api.in_memory_session_store import SessionNotFoundError
 from api.rest.schemas import (
     AnalyzeRequest,
     AskRequest,
+    ComparisonArtifactResponse,
     CreateSessionRequest,
     DiscoverRequest,
     ErrorResponse,
     HealthResponse,
     MessageResponse,
+    PaperWorkspaceResponse,
+    PaperWorkspacesResponse,
+    PaperWorkspaceSummaryResponse,
     SelectPapersRequest,
     SessionResponse,
     SynthesizeRequest,
@@ -18,9 +22,11 @@ from api.rest.schemas import (
     TurnResponse,
 )
 from services.paperintel_service import (
+    ComparisonNotFoundError,
     InvalidSessionPhaseError,
     NoActivePapersError,
     PaperIntelService,
+    PaperWorkspaceNotFoundError,
 )
 from services.selected_candidate_resolver import (
     NoSelectedCandidatesError,
@@ -63,6 +69,16 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
         error = ErrorResponse(error="no_active_papers", detail=str(exc))
         return JSONResponse(status_code=409, content=error.model_dump(mode="json"))
 
+    @app.exception_handler(PaperWorkspaceNotFoundError)
+    async def paper_workspace_not_found_handler(request, exc):  # noqa: ANN001
+        error = ErrorResponse(error="paper_workspace_not_found", detail=str(exc))
+        return JSONResponse(status_code=404, content=error.model_dump(mode="json"))
+
+    @app.exception_handler(ComparisonNotFoundError)
+    async def comparison_not_found_handler(request, exc):  # noqa: ANN001
+        error = ErrorResponse(error="comparison_not_found", detail=str(exc))
+        return JSONResponse(status_code=404, content=error.model_dump(mode="json"))
+
     @app.exception_handler(Exception)
     async def internal_error_handler(request, exc):  # noqa: ANN001
         error = ErrorResponse(
@@ -99,6 +115,35 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
         return TurnsResponse(
             turns=[TurnResponse.from_turn(turn) for turn in turns],
         )
+
+    @app.get(
+        "/sessions/{session_id}/workspaces",
+        response_model=PaperWorkspacesResponse,
+    )
+    async def list_paper_workspaces(session_id: str):
+        workspaces = service.list_paper_workspaces(session_id)
+        return PaperWorkspacesResponse(
+            workspaces=[
+                PaperWorkspaceSummaryResponse.from_workspace(workspace)
+                for workspace in workspaces
+            ],
+        )
+
+    @app.get(
+        "/sessions/{session_id}/workspaces/{paper_id}",
+        response_model=PaperWorkspaceResponse,
+    )
+    async def get_paper_workspace(session_id: str, paper_id: str):
+        workspace = service.get_paper_workspace(session_id, paper_id)
+        return PaperWorkspaceResponse.from_workspace(workspace)
+
+    @app.get(
+        "/sessions/{session_id}/comparison",
+        response_model=ComparisonArtifactResponse,
+    )
+    async def get_latest_comparison(session_id: str):
+        comparison = service.get_latest_comparison(session_id)
+        return ComparisonArtifactResponse.from_artifact(comparison)
 
     @app.post("/sessions/{session_id}/analyze", response_model=MessageResponse)
     async def analyze_paper(session_id: str, payload: AnalyzeRequest):

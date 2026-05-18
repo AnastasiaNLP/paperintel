@@ -2,6 +2,7 @@ from typing import Protocol
 
 from api.chat_handler import ChatHandler
 from models.api import HealthStatus
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import CandidateStatus, SearchCandidate
 from models.session import HandlerResult, Persona, Session, Turn
 from services.selected_candidate_resolver import SelectedCandidateResolver
@@ -24,12 +25,42 @@ class NoActivePapersError(ValueError):
         self.session_id = session_id
 
 
+class PaperWorkspaceNotFoundError(ValueError):
+    def __init__(self, *, session_id: str, paper_id: str) -> None:
+        super().__init__(
+            f"Paper workspace {paper_id} was not found in session {session_id}."
+        )
+        self.session_id = session_id
+        self.paper_id = paper_id
+
+
+class ComparisonNotFoundError(ValueError):
+    def __init__(self, session_id: str) -> None:
+        super().__init__(f"No comparison artifact was found for session {session_id}.")
+        self.session_id = session_id
+
+
 class SearchCandidateRepository(Protocol):
     def update_status(
         self,
         candidate_id: str,
         status: CandidateStatus,
     ) -> SearchCandidate | None:
+        ...
+
+
+class PaperWorkspaceRepository(Protocol):
+    def list_workspaces(self, session_id: str) -> list[PaperWorkspace]:
+        ...
+
+    def get_workspace(
+        self,
+        session_id: str,
+        paper_id: str,
+    ) -> PaperWorkspace | None:
+        ...
+
+    def latest_comparison(self, session_id: str) -> ComparisonArtifact | None:
         ...
 
 
@@ -48,11 +79,13 @@ class PaperIntelService:
         health_checker=None,
         selected_candidate_resolver: SelectedCandidateResolver | None = None,
         candidate_repository: SearchCandidateRepository | None = None,
+        artifact_repository: PaperWorkspaceRepository | None = None,
     ) -> None:
         self.handler = handler
         self.health_checker = health_checker
         self.selected_candidate_resolver = selected_candidate_resolver
         self.candidate_repository = candidate_repository
+        self.artifact_repository = artifact_repository
 
     def create_session(
         self,
@@ -118,6 +151,33 @@ class PaperIntelService:
     def list_turns(self, session_id: str, *, limit: int = 50) -> list[Turn]:
         self.handler.store.require_session(session_id)
         return self.handler.store.list_recent_turns(session_id, limit=limit)
+
+    def list_paper_workspaces(self, session_id: str) -> list[PaperWorkspace]:
+        self.handler.store.require_session(session_id)
+        if self.artifact_repository is None:
+            raise RuntimeError("Paper workspace repository is not configured.")
+        return self.artifact_repository.list_workspaces(session_id)
+
+    def get_paper_workspace(self, session_id: str, paper_id: str) -> PaperWorkspace:
+        self.handler.store.require_session(session_id)
+        if self.artifact_repository is None:
+            raise RuntimeError("Paper workspace repository is not configured.")
+        workspace = self.artifact_repository.get_workspace(session_id, paper_id)
+        if workspace is None:
+            raise PaperWorkspaceNotFoundError(
+                session_id=session_id,
+                paper_id=paper_id,
+            )
+        return workspace
+
+    def get_latest_comparison(self, session_id: str) -> ComparisonArtifact:
+        self.handler.store.require_session(session_id)
+        if self.artifact_repository is None:
+            raise RuntimeError("Paper workspace repository is not configured.")
+        comparison = self.artifact_repository.latest_comparison(session_id)
+        if comparison is None:
+            raise ComparisonNotFoundError(session_id)
+        return comparison
 
     def health(self) -> HealthStatus:
         if self.health_checker is None:

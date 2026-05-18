@@ -150,4 +150,5 @@ def create_paperintel_service(
         health_checker=health_checker,
         selected_candidate_resolver=selected_candidate_resolver,
         candidate_repository=candidate_repository,
+        artifact_repository=artifact_repository,
     )

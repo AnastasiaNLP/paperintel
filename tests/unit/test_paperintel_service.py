@@ -1,13 +1,16 @@
 import pytest
 
 from api.in_memory_session_store import SessionNotFoundError
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.api import HealthStatus
 from models.session import HandlerResult, Session, Turn
 from services.paperintel_service import (
+    ComparisonNotFoundError,
     InvalidSessionPhaseError,
     NoActivePapersError,
     PaperIntelService,
+    PaperWorkspaceNotFoundError,
 )
 from services.selected_candidate_resolver import NoSelectedCandidatesError
 
@@ -119,6 +122,43 @@ class FakeCandidateRepository:
 
     def update_status(self, candidate_id, status):
         self.updates.append((candidate_id, status))
+        return None
+
+
+class FakeArtifactRepository:
+    def __init__(self, *, session_id: str = "session-1") -> None:
+        self.workspaces = [
+            PaperWorkspace(
+                session_id=session_id,
+                paper_id="1706.03762",
+                title="Attention Is All You Need",
+                source_url="https://arxiv.org/abs/1706.03762",
+                pipeline_stage="completed",
+                full_markdown_report="# Report",
+            )
+        ]
+        self.comparison = ComparisonArtifact(
+            session_id=session_id,
+            paper_ids=["1706.03762", "2401.00001"],
+            comparison_markdown="# Comparison",
+        )
+
+    def list_workspaces(self, session_id):
+        return [
+            workspace
+            for workspace in self.workspaces
+            if workspace.session_id == session_id
+        ]
+
+    def get_workspace(self, session_id, paper_id):
+        for workspace in self.workspaces:
+            if workspace.session_id == session_id and workspace.paper_id == paper_id:
+                return workspace
+        return None
+
+    def latest_comparison(self, session_id):
+        if self.comparison.session_id == session_id:
+            return self.comparison
         return None
 
 
@@ -371,6 +411,69 @@ def test_service_list_turns_requires_session_before_listing():
 
     with pytest.raises(SessionNotFoundError):
         service.list_turns("missing")
+
+
+def test_service_list_paper_workspaces_returns_repository_results():
+    handler = FakeHandler()
+    session = handler.create_session()
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=FakeArtifactRepository(session_id=session.id),
+    )
+
+    workspaces = service.list_paper_workspaces(session.id)
+
+    assert [workspace.paper_id for workspace in workspaces] == ["1706.03762"]
+
+
+def test_service_get_paper_workspace_returns_workspace():
+    handler = FakeHandler()
+    session = handler.create_session()
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=FakeArtifactRepository(session_id=session.id),
+    )
+
+    workspace = service.get_paper_workspace(session.id, "1706.03762")
+
+    assert workspace.title == "Attention Is All You Need"
+
+
+def test_service_get_paper_workspace_raises_404_domain_error():
+    handler = FakeHandler()
+    session = handler.create_session()
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=FakeArtifactRepository(session_id=session.id),
+    )
+
+    with pytest.raises(PaperWorkspaceNotFoundError):
+        service.get_paper_workspace(session.id, "missing")
+
+
+def test_service_get_latest_comparison_returns_artifact():
+    handler = FakeHandler()
+    session = handler.create_session()
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=FakeArtifactRepository(session_id=session.id),
+    )
+
+    comparison = service.get_latest_comparison(session.id)
+
+    assert comparison.paper_ids == ["1706.03762", "2401.00001"]
+
+
+def test_service_get_latest_comparison_raises_when_missing():
+    handler = FakeHandler()
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=FakeArtifactRepository(),
+    )
+    session = service.create_session()
+
+    with pytest.raises(ComparisonNotFoundError):
+        service.get_latest_comparison(session.id)
 
 
 def test_service_health_without_checker_returns_basic_ok():
