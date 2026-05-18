@@ -69,6 +69,23 @@ def test_handler_routes_url_to_analysis_runner():
     ]
 
 
+def test_handler_preserves_comparison_markdown_from_analysis_result():
+    handler, _, _, _, _ = _handler(
+        analysis_result={
+            "full_markdown_report": "# Analysis complete",
+            "comparison_markdown": "# Paper Comparison\n\nA beats B on throughput.",
+            "next_phase": "qa",
+        }
+    )
+    session = handler.create_session()
+
+    result = handler.handle_message(session.id, "https://arxiv.org/abs/2310.06825")
+
+    assert result.intent == "analyze_paper"
+    assert result.response_text == "# Analysis complete"
+    assert result.comparison_markdown == "# Paper Comparison\n\nA beats B on throughput."
+
+
 def test_handler_failed_analysis_result_sets_failed_phase():
     error = make_error(
         ErrorCodes.PAPER_ERROR,

@@ -112,6 +112,7 @@ class FakeService:
             phase="qa",
             intent="analyze_paper",
             referenced_paper_ids=["2605.1", "2605.3"],
+            comparison_markdown="# Paper Comparison\n\n2605.1 vs 2605.3",
         )
 
     def health(self):
@@ -158,6 +159,7 @@ def _handler_result(
     discovery_topic: str | None = None,
     discovery_candidate_count: int | None = None,
     selected_candidate_ids: list[str] | None = None,
+    comparison_markdown: str | None = None,
 ) -> HandlerResult:
     return HandlerResult(
         session_id=session_id,
@@ -168,6 +170,7 @@ def _handler_result(
         discovery_topic=discovery_topic,
         discovery_candidate_count=discovery_candidate_count,
         selected_candidate_ids=selected_candidate_ids or [],
+        comparison_markdown=comparison_markdown,
         user_turn_id="turn-user",
         assistant_turn_id="turn-assistant",
     )
@@ -400,6 +403,7 @@ def test_analyze_selected_calls_service_without_body():
     assert payload["intent"] == "analyze_paper"
     assert payload["phase"] == "qa"
     assert payload["referenced_paper_ids"] == ["2605.1", "2605.3"]
+    assert payload["comparison_markdown"] == "# Paper Comparison\n\n2605.1 vs 2605.3"
     assert service.analyze_selected_calls == ["session-1"]
 
 

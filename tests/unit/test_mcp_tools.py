@@ -102,6 +102,7 @@ class FakeService:
             phase="qa",
             intent="analyze_paper",
             referenced_paper_ids=["2605.1", "2605.3"],
+            comparison_markdown="# Paper Comparison\n\n2605.1 vs 2605.3",
             user_turn_id="user-turn",
             assistant_turn_id="assistant-turn",
         )
@@ -264,6 +265,8 @@ def test_analyze_selected_papers_tool_calls_service():
     assert "Paper analysis completed." in text
     assert "Selected analysis complete." in text
     assert "- 2605.1" in text
+    assert "Batch comparison report:" in text
+    assert "# Paper Comparison" in text
     assert service.analyze_selected_calls == ["session-1"]
 
 

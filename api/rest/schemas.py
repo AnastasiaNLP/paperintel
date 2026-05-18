@@ -57,6 +57,7 @@ class MessageResponse(BaseModel):
     referenced_paper_ids: list[str] = Field(default_factory=list)
     citations: list[dict] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
+    comparison_markdown: str | None = None
     needs_analysis: bool = False
     needs_discovery: bool = False
     discovery_topic: str | None = None
@@ -73,6 +74,7 @@ class MessageResponse(BaseModel):
             referenced_paper_ids=result.referenced_paper_ids,
             citations=[citation.model_dump(mode="json") for citation in result.citations],
             artifact_refs=result.artifact_refs,
+            comparison_markdown=result.comparison_markdown,
             needs_analysis=result.needs_analysis,
             needs_discovery=result.needs_discovery,
             discovery_topic=result.discovery_topic,

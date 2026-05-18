@@ -129,7 +129,7 @@ def format_session_state(session: Session) -> str:
 
 def format_analysis_result(result: HandlerResult) -> str:
     papers = _format_active_papers(result.referenced_paper_ids)
-    return (
+    text = (
         "Paper analysis completed.\n\n"
         f"Session ID: {result.session_id}\n"
         f"Phase: {result.phase}\n"
@@ -137,6 +137,13 @@ def format_analysis_result(result: HandlerResult) -> str:
         f"{result.response_text}\n\n"
         "You can now ask questions with ask_paper."
     )
+    if result.comparison_markdown and result.comparison_markdown not in result.response_text:
+        text = (
+            f"{text}\n\n"
+            "Batch comparison report:\n\n"
+            f"{result.comparison_markdown}"
+        )
+    return text
 
 
 def format_answer_result(result: HandlerResult) -> str:

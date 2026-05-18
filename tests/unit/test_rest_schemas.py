@@ -79,3 +79,19 @@ def test_message_response_includes_discovery_metadata():
     assert payload["discovery_topic"] == "agent memory"
     assert payload["discovery_candidate_count"] == 4
     assert payload["selected_candidate_ids"] == ["candidate-1"]
+
+
+def test_message_response_includes_comparison_markdown():
+    result = HandlerResult(
+        session_id="session-1",
+        response_text="Analysis complete.",
+        phase="qa",
+        intent="analyze_paper",
+        comparison_markdown="# Paper Comparison\n\nA vs B.",
+        user_turn_id="turn-user",
+        assistant_turn_id="turn-assistant",
+    )
+
+    payload = MessageResponse.from_handler_result(result).model_dump(mode="json")
+
+    assert payload["comparison_markdown"] == "# Paper Comparison\n\nA vs B."

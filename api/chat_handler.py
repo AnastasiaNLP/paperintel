@@ -134,6 +134,7 @@ class ChatHandler:
             referenced_paper_ids=graph_result.referenced_paper_ids,
             citations=graph_result.citations,
             artifact_refs=graph_result.artifact_refs,
+            comparison_markdown=graph_result.comparison_markdown,
             needs_analysis=graph_result.needs_analysis,
             needs_discovery=graph_result.needs_discovery,
             discovery_topic=graph_result.discovery_topic,
@@ -208,6 +209,7 @@ class ChatHandler:
             referenced_paper_ids=graph_result.referenced_paper_ids,
             citations=graph_result.citations,
             artifact_refs=graph_result.artifact_refs,
+            comparison_markdown=graph_result.comparison_markdown,
             needs_analysis=graph_result.needs_analysis,
             needs_discovery=graph_result.needs_discovery,
             discovery_topic=graph_result.discovery_topic,
@@ -460,10 +462,14 @@ def _normalize_analysis_result(raw: dict[str, Any]) -> GraphInvocationResult:
         or ("Paper analysis failed." if analysis_failed else "Paper analysis completed.")
     )
     referenced_paper_ids = _analysis_referenced_paper_ids(raw)
+    comparison_markdown = raw.get("comparison_markdown")
     return GraphInvocationResult(
         response_text=response_text,
         intent="analyze_paper",
         referenced_paper_ids=referenced_paper_ids,
+        comparison_markdown=(
+            str(comparison_markdown).strip() if comparison_markdown else None
+        ),
         agent_runs=list(raw.get("agent_runs") or []),
         errors=_structured_errors(raw.get("errors") or []),
         next_phase=raw.get("next_phase") or ("failed" if analysis_failed else "qa"),

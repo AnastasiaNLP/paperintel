@@ -57,6 +57,7 @@ class GraphInvocationResult(BaseModel):
     referenced_paper_ids: list[str] = Field(default_factory=list)
     citations: list[CitationRef] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
+    comparison_markdown: str | None = None
     needs_analysis: bool = False
     needs_discovery: bool = False
     discovery_topic: str | None = None
@@ -77,6 +78,7 @@ class HandlerResult(BaseModel):
     referenced_paper_ids: list[str] = Field(default_factory=list)
     citations: list[CitationRef] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
+    comparison_markdown: str | None = None
     needs_analysis: bool = False
     needs_discovery: bool = False
     discovery_topic: str | None = None
