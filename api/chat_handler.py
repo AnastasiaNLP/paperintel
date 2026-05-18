@@ -139,6 +139,7 @@ class ChatHandler:
             discovery_topic=graph_result.discovery_topic,
             discovery_candidate_count=graph_result.discovery_candidate_count,
             selected_candidate_ids=graph_result.selected_candidate_ids,
+            search_warnings=graph_result.search_warnings,
             agent_runs=graph_result.agent_runs,
             errors=graph_result.errors,
             user_turn_id=user_turn.id,
@@ -441,6 +442,7 @@ def _normalize_conversation_result(raw: dict[str, Any]) -> GraphInvocationResult
         discovery_topic=raw.get("discovery_topic"),
         discovery_candidate_count=None,
         selected_candidate_ids=[],
+        search_warnings=[],
         agent_runs=list(raw.get("agent_runs") or []),
         errors=_structured_errors(raw.get("errors") or []),
         next_phase=raw.get("next_phase"),
@@ -449,11 +451,13 @@ def _normalize_conversation_result(raw: dict[str, Any]) -> GraphInvocationResult
 
 
 def _normalize_analysis_result(raw: dict[str, Any]) -> GraphInvocationResult:
+    analysis_failed = bool(raw.get("paper_failed")) or raw.get("processing_stage") == "failed"
     response_text = str(
         raw.get("full_markdown_report")
         or raw.get("comparison_markdown")
         or raw.get("response_text")
-        or "Paper analysis completed."
+        or raw.get("paper_failure_reason")
+        or ("Paper analysis failed." if analysis_failed else "Paper analysis completed.")
     )
     referenced_paper_ids = _analysis_referenced_paper_ids(raw)
     return GraphInvocationResult(
@@ -462,7 +466,7 @@ def _normalize_analysis_result(raw: dict[str, Any]) -> GraphInvocationResult:
         referenced_paper_ids=referenced_paper_ids,
         agent_runs=list(raw.get("agent_runs") or []),
         errors=_structured_errors(raw.get("errors") or []),
-        next_phase=raw.get("next_phase") or "qa",
+        next_phase=raw.get("next_phase") or ("failed" if analysis_failed else "qa"),
         raw=raw,
     )
 
@@ -499,6 +503,7 @@ def _normalize_discovery_result(raw: dict[str, Any]) -> GraphInvocationResult:
         discovery_topic=raw.get("discovery_topic"),
         discovery_candidate_count=_discovery_candidate_count(raw),
         selected_candidate_ids=[],
+        search_warnings=list(raw.get("search_warnings") or []),
         agent_runs=list(raw.get("agent_runs") or []),
         errors=_structured_errors(raw.get("errors") or []),
         next_phase=raw.get("next_phase") or "selection",

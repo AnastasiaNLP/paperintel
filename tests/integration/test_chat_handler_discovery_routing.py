@@ -38,6 +38,7 @@ def _discovery_result():
         "discovery_topic": "agent memory",
         "selection_advice": advice,
         "response_text": advice.response_text,
+        "search_warnings": ["Search query failed (HTTP 429): agent memory"],
         "next_phase": "selection",
     }
 
@@ -74,6 +75,7 @@ def test_handler_routes_discovery_request_to_discovery_runner():
     assert discovery.calls[0]["input"]["discovery_turn_id"] == result.user_turn_id
     assert result.intent == "discover"
     assert result.response_text == "Choose papers 1 or 2."
+    assert result.search_warnings == ["Search query failed (HTTP 429): agent memory"]
 
 
 def test_handler_sets_phase_selection_after_discovery():

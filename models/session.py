@@ -62,6 +62,7 @@ class GraphInvocationResult(BaseModel):
     discovery_topic: str | None = None
     discovery_candidate_count: int | None = None
     selected_candidate_ids: list[str] = Field(default_factory=list)
+    search_warnings: list[str] = Field(default_factory=list)
     agent_runs: list[AgentRun] = Field(default_factory=list)
     errors: list[StructuredError] = Field(default_factory=list)
     next_phase: SessionPhase | None = None
@@ -81,6 +82,7 @@ class HandlerResult(BaseModel):
     discovery_topic: str | None = None
     discovery_candidate_count: int | None = None
     selected_candidate_ids: list[str] = Field(default_factory=list)
+    search_warnings: list[str] = Field(default_factory=list)
     agent_runs: list[AgentRun] = Field(default_factory=list)
     errors: list[StructuredError] = Field(default_factory=list)
     user_turn_id: str

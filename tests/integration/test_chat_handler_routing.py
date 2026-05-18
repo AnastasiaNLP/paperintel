@@ -69,6 +69,34 @@ def test_handler_routes_url_to_analysis_runner():
     ]
 
 
+def test_handler_failed_analysis_result_sets_failed_phase():
+    error = make_error(
+        ErrorCodes.PAPER_ERROR,
+        "arXiv metadata failed for 2605.13898",
+        node="ingestion",
+        severity="error",
+        recoverable=False,
+    )
+    handler, store, _, analysis_runner, _ = _handler(
+        analysis_result={
+            "processing_stage": "failed",
+            "paper_failed": True,
+            "paper_failure_reason": "arXiv metadata failed for 2605.13898",
+            "errors": [error],
+        }
+    )
+    session = handler.create_session()
+
+    result = handler.handle_message(session.id, "https://arxiv.org/abs/2605.13898")
+
+    assert len(analysis_runner.calls) == 1
+    assert result.intent == "analyze_paper"
+    assert result.phase == "failed"
+    assert result.response_text == "arXiv metadata failed for 2605.13898"
+    assert result.errors == [error]
+    assert store.require_session(session.id).phase == "failed"
+
+
 def test_handler_routes_question_to_conversation_runner():
     answer = AnswerDraft(
         question="What is the method?",
