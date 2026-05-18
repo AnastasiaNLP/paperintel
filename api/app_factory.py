@@ -1,14 +1,23 @@
-from api.chat_handler import AnalysisRunner, ChatHandler, ConversationRunner
+from api.chat_handler import (
+    AnalysisRunner,
+    ChatHandler,
+    ConversationRunner,
+    DiscoveryRunner,
+)
+from services.arxiv_search_provider import ArxivSearchProvider
 from services.embeddings import OpenAIEmbeddingProvider
 from services.health import HealthChecker
 from services.paperintel_service import PaperIntelService
 from services.qdrant_store import QdrantChunkStore
 from services.retrieval_layer import RetrievalLayer
 from services.retrieval_layer import PostgresQdrantRetrievalLayer
+from services.searcher import Searcher
+from services.selection_parser import SelectionHandler
 from storage.db import make_engine, make_session_factory
 from storage.repositories import (
     PostgresAgentRunPersistence,
     PostgresPaperChunkRepository,
+    PostgresSearchCandidateRepository,
     PostgresSessionStore,
 )
 
@@ -18,16 +27,33 @@ def create_chat_handler(
     database_url: str,
     conversation_runner: ConversationRunner,
     analysis_runner: AnalysisRunner | None = None,
+    discovery_runner: DiscoveryRunner | None = None,
     retrieval_layer: RetrievalLayer | None = None,
 ) -> ChatHandler:
     engine = make_engine(database_url)
     session_factory = make_session_factory(engine)
+    session_store = PostgresSessionStore(session_factory)
+    candidate_repository = PostgresSearchCandidateRepository(session_factory)
+    searcher = (
+        Searcher(
+            provider=ArxivSearchProvider(),
+            candidate_repository=candidate_repository,
+        )
+        if discovery_runner is not None
+        else None
+    )
     return ChatHandler(
-        store=PostgresSessionStore(session_factory),
+        store=session_store,
         conversation_runner=conversation_runner,
         analysis_runner=analysis_runner,
+        discovery_runner=discovery_runner,
         agent_run_persistence=PostgresAgentRunPersistence(session_factory),
         retrieval_layer=retrieval_layer,
+        searcher=searcher,
+        selection_handler=SelectionHandler(
+            session_store=session_store,
+            candidate_repository=candidate_repository,
+        ),
     )
 
 
@@ -36,6 +62,7 @@ def create_paperintel_service(
     database_url: str | None = None,
     conversation_runner: ConversationRunner | None = None,
     analysis_runner: AnalysisRunner | None = None,
+    discovery_runner: DiscoveryRunner | None = None,
     retrieval_layer: RetrievalLayer | None = None,
     qdrant_url: str | None = None,
     qdrant_collection: str | None = None,
@@ -74,13 +101,30 @@ def create_paperintel_service(
         from graph import build_graph
 
         analysis_runner = build_graph().compile()
+    candidate_repository = PostgresSearchCandidateRepository(session_factory)
+    if discovery_runner is None:
+        from graph_discovery import build_discovery_graph
+
+        discovery_runner = build_discovery_graph()
+
+    searcher = Searcher(
+        provider=ArxivSearchProvider(),
+        candidate_repository=candidate_repository,
+    )
+    session_store = PostgresSessionStore(session_factory)
 
     handler = ChatHandler(
-        store=PostgresSessionStore(session_factory),
+        store=session_store,
         conversation_runner=conversation_runner,
         analysis_runner=analysis_runner,
+        discovery_runner=discovery_runner,
         agent_run_persistence=PostgresAgentRunPersistence(session_factory),
         retrieval_layer=retrieval_layer,
+        searcher=searcher,
+        selection_handler=SelectionHandler(
+            session_store=session_store,
+            candidate_repository=candidate_repository,
+        ),
     )
 
     health_checker = None

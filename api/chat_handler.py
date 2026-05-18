@@ -4,9 +4,11 @@ from typing import Any, Protocol
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
 from api.session_store import SessionStore
 from models.errors import ErrorCodes, StructuredError, make_error
+from models.discovery import SelectionAdvice
 from models.qa import AnswerDraft
 from models.session import GraphInvocationResult, HandlerResult, Persona, Session
 from services.retrieval_layer import RetrievalLayer
+from services.searcher import Searcher
 from services.selection_parser import SelectionHandler
 
 
@@ -20,8 +22,18 @@ class AnalysisRunner(Protocol):
         ...
 
 
+class DiscoveryRunner(Protocol):
+    def invoke(self, input: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+
 _ARXIV_URL_RE = re.compile(r"https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/[^\s]+")
 _GENERIC_PDF_RE = re.compile(r"https?://[^\s]+\.pdf(?:\?[^\s]*)?")
+_DISCOVERY_RE = re.compile(
+    r"\b(find|search|discover|recommend)\b.*\b(papers?|literature|research)\b"
+    r"|\b(recent|new|latest)\b.*\b(papers?|literature|research)\b",
+    re.IGNORECASE,
+)
 
 
 class ChatHandler:
@@ -31,17 +43,21 @@ class ChatHandler:
         store: SessionStore,
         conversation_runner: ConversationRunner,
         analysis_runner: AnalysisRunner | None = None,
+        discovery_runner: DiscoveryRunner | None = None,
         agent_run_persistence: AgentRunPersistence | None = None,
         retrieval_layer: RetrievalLayer | None = None,
+        searcher: Searcher | None = None,
         selection_handler: SelectionHandler | None = None,
     ) -> None:
         self.store = store
         self.conversation_runner = conversation_runner
         self.analysis_runner = analysis_runner
+        self.discovery_runner = discovery_runner
         self.agent_run_persistence = (
             agent_run_persistence or NoopAgentRunPersistence()
         )
         self.retrieval_layer = retrieval_layer
+        self.searcher = searcher
         self.selection_handler = selection_handler
 
     def create_session(
@@ -64,7 +80,11 @@ class ChatHandler:
         )
 
         try:
-            graph_result = self._route_message(session, message)
+            graph_result = self._route_message(
+                session,
+                message,
+                user_turn_id=user_turn.id,
+            )
         except Exception as exc:
             error = make_error(
                 ErrorCodes.FATAL_ERROR,
@@ -124,15 +144,35 @@ class ChatHandler:
             error=graph_result.errors[0] if graph_result.errors else None,
         )
 
-    def _route_message(self, session: Session, message: str) -> GraphInvocationResult:
+    def _route_message(
+        self,
+        session: Session,
+        message: str,
+        *,
+        user_turn_id: str,
+    ) -> GraphInvocationResult:
         if session.phase == "selection":
             return self._handle_selection(session, message)
 
         url = _extract_paper_url(message)
         if url is not None:
             return self._invoke_analysis(session, url)
+        if _looks_like_discovery_request(message):
+            return self._invoke_discovery(
+                session,
+                message,
+                discovery_turn_id=user_turn_id,
+            )
 
-        return self._invoke_conversation(session, message)
+        result = self._invoke_conversation(session, message)
+        if result.needs_discovery:
+            return self._invoke_discovery(
+                session,
+                message,
+                discovery_topic=result.discovery_topic,
+                discovery_turn_id=user_turn_id,
+            )
+        return result
 
     def _handle_selection(self, session: Session, message: str) -> GraphInvocationResult:
         if self.selection_handler is None:
@@ -208,6 +248,41 @@ class ChatHandler:
         )
         return _normalize_analysis_result(raw)
 
+    def _invoke_discovery(
+        self,
+        session: Session,
+        message: str,
+        *,
+        discovery_topic: str | None = None,
+        discovery_turn_id: str,
+    ) -> GraphInvocationResult:
+        if self.discovery_runner is None:
+            return GraphInvocationResult(
+                response_text=(
+                    "Discovery is not configured yet. Send a paper URL directly, "
+                    "or try again after discovery is enabled."
+                ),
+                intent="discover",
+                needs_discovery=True,
+                discovery_topic=discovery_topic or message,
+                next_phase=session.phase,
+                raw={"needs_discovery": True, "discovery_runner_missing": True},
+            )
+
+        raw = self.discovery_runner.invoke(
+            {
+                "session_id": session.id,
+                "user_message": message,
+                "persona": session.persona,
+                "discovery_topic": discovery_topic or message,
+                "discovery_turn_id": discovery_turn_id,
+                "agent_runs": [],
+                "errors": [],
+            },
+            config=self._graph_config(session),
+        )
+        return _normalize_discovery_result(raw)
+
     def _graph_config(self, session: Session) -> dict[str, Any]:
         configurable: dict[str, Any] = {
             "session_id": session.id,
@@ -216,6 +291,8 @@ class ChatHandler:
         }
         if self.retrieval_layer is not None:
             configurable["retrieval_layer"] = self.retrieval_layer
+        if self.searcher is not None:
+            configurable["searcher"] = self.searcher
         return {"configurable": configurable}
 
 
@@ -299,6 +376,28 @@ def _analysis_referenced_paper_ids(raw: dict[str, Any]) -> list[str]:
     return ids
 
 
+def _normalize_discovery_result(raw: dict[str, Any]) -> GraphInvocationResult:
+    advice = raw.get("selection_advice")
+    if isinstance(advice, SelectionAdvice):
+        response_text = advice.response_text
+    else:
+        response_text = str(
+            raw.get("response_text")
+            or "I could not prepare a paper shortlist. Please try a more specific topic."
+        )
+
+    return GraphInvocationResult(
+        response_text=response_text,
+        intent="discover",
+        needs_discovery=False,
+        discovery_topic=raw.get("discovery_topic"),
+        agent_runs=list(raw.get("agent_runs") or []),
+        errors=_structured_errors(raw.get("errors") or []),
+        next_phase=raw.get("next_phase") or "selection",
+        raw=raw,
+    )
+
+
 def _structured_errors(errors: list[Any]) -> list[StructuredError]:
     return [error for error in errors if isinstance(error, StructuredError)]
 
@@ -313,6 +412,10 @@ def _extract_paper_url(message: str) -> str | None:
         return match.group(0).rstrip(".,)")
 
     return None
+
+
+def _looks_like_discovery_request(message: str) -> bool:
+    return _DISCOVERY_RE.search(message) is not None
 
 
 def _initial_analysis_state(url: str) -> dict[str, Any]:

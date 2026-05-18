@@ -263,12 +263,12 @@ def test_conversation_discovery_signal_becomes_controlled_response():
     handler, _, _, _ = _handler(runner=runner)
     session = handler.create_session()
 
-    result = handler.handle_message(session.id, "Find papers about agent memory")
+    result = handler.handle_message(session.id, "Can you help with this topic?")
 
     assert result.intent == "discover"
     assert result.needs_discovery is True
     assert result.discovery_topic == "long context memory for agents"
-    assert "discovery is configured" in result.response_text
+    assert "Discovery is not configured" in result.response_text
 
 
 def test_handler_routes_selection_phase_to_selection_handler():
