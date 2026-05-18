@@ -7,6 +7,7 @@ from alembic.config import Config
 
 from api.in_memory_session_store import SessionNotFoundError
 from models.agent_runs import AgentRun
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.errors import ErrorCodes, make_error
 from models.retrieval import ChunkSource, PaperChunk
@@ -14,6 +15,7 @@ from storage.db import make_engine, make_session_factory
 from storage.repositories import (
     PostgresAgentRunPersistence,
     PostgresPaperChunkRepository,
+    PostgresPaperWorkspaceRepository,
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
     PostgresStructuredErrorRepository,
@@ -359,3 +361,125 @@ def test_postgres_search_candidate_repository_rejects_invalid_status(session_fac
 
     with pytest.raises(ValueError):
         repository.update_status("missing", "invalid")  # type: ignore[arg-type]
+
+
+def test_postgres_paper_workspace_repository_upserts_and_gets_workspace(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+    workspace = PaperWorkspace(
+        session_id=session.id,
+        paper_id="1706.03762",
+        title="Attention Is All You Need",
+        source_url="https://arxiv.org/abs/1706.03762",
+        pipeline_stage="chunk_and_index",
+        finalized_report_json={"recommended_action": "prototype"},
+        method_extraction_json={"method_name": "Transformer"},
+        benchmarks_json=[{"task": "translation", "metric": "BLEU"}],
+        readiness_json={"maturity_level": "experimental"},
+        full_markdown_report="# Report",
+    )
+
+    saved = repository.upsert_workspace(workspace)
+    updated = repository.upsert_workspace(
+        workspace.model_copy(
+            update={
+                "title": "Transformer",
+                "pipeline_stage": "comparison_completed",
+                "finalized_report_json": {"recommended_action": "implement_now"},
+                "benchmarks_json": [{"task": "translation", "metric": "accuracy"}],
+            }
+        )
+    )
+
+    loaded = repository.get_workspace(session.id, "1706.03762")
+    listed = repository.list_workspaces(session.id)
+
+    assert saved.id == workspace.id
+    assert updated.id == workspace.id
+    assert loaded is not None
+    assert loaded.id == workspace.id
+    assert loaded.title == "Transformer"
+    assert loaded.pipeline_stage == "comparison_completed"
+    assert loaded.finalized_report_json == {"recommended_action": "implement_now"}
+    assert loaded.benchmarks_json == [{"task": "translation", "metric": "accuracy"}]
+    assert [item.paper_id for item in listed] == ["1706.03762"]
+
+
+def test_postgres_paper_workspace_repository_scopes_workspaces_by_session(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    first_session = store.create_session()
+    second_session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+
+    repository.upsert_workspace(
+        PaperWorkspace(
+            session_id=first_session.id,
+            paper_id="1706.03762",
+            title="First",
+            source_url="https://arxiv.org/abs/1706.03762",
+            pipeline_stage="chunk_and_index",
+        )
+    )
+    repository.upsert_workspace(
+        PaperWorkspace(
+            session_id=second_session.id,
+            paper_id="1706.03762",
+            title="Second",
+            source_url="https://arxiv.org/abs/1706.03762",
+            pipeline_stage="chunk_and_index",
+        )
+    )
+
+    first = repository.get_workspace(first_session.id, "1706.03762")
+    second = repository.get_workspace(second_session.id, "1706.03762")
+
+    assert first is not None
+    assert second is not None
+    assert first.title == "First"
+    assert second.title == "Second"
+
+
+def test_postgres_paper_workspace_repository_returns_latest_comparison(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+    first = ComparisonArtifact(
+        session_id=session.id,
+        paper_ids=["1706.03762", "1810.04805"],
+        comparison_report_json={"winner_basis": "benchmarks"},
+        comparison_markdown="# First Comparison",
+    )
+    second = ComparisonArtifact(
+        session_id=session.id,
+        paper_ids=["1706.03762", "2605.16113"],
+        comparison_report_json={"winner_basis": "readiness"},
+        comparison_markdown="# Second Comparison",
+    )
+
+    repository.save_comparison(first)
+    repository.save_comparison(second)
+
+    latest = repository.latest_comparison(session.id)
+
+    assert latest is not None
+    assert latest.id == second.id
+    assert latest.paper_ids == ["1706.03762", "2605.16113"]
+    assert latest.comparison_markdown == "# Second Comparison"
+
+
+def test_postgres_paper_workspace_repository_returns_none_for_missing_artifacts(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+
+    assert repository.get_workspace(session.id, "missing") is None
+    assert repository.latest_comparison(session.id) is None

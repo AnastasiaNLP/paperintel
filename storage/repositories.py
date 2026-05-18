@@ -8,19 +8,24 @@ from agents.agent_run_recorder import AgentRunPersistence
 from api.in_memory_session_store import SessionNotFoundError
 from api.session_store import SessionStore
 from models.agent_runs import AgentRun
+from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import CandidateStatus, SearchCandidate
 from models.errors import StructuredError
 from models.retrieval import PaperChunk, UpsertChunksResult
 from models.session import Persona, Session, SessionPhase, Turn, TurnRole
 from storage.mappers import (
     agent_run_to_orm,
+    comparison_artifact_to_orm,
     orm_to_agent_run,
+    orm_to_comparison_artifact,
     orm_to_paper_chunk,
+    orm_to_paper_workspace,
     orm_to_session,
     orm_to_search_candidate,
     orm_to_structured_error,
     orm_to_turn,
     paper_chunk_to_orm,
+    paper_workspace_to_orm,
     search_candidate_to_orm,
     session_to_orm,
     structured_error_to_orm,
@@ -345,6 +350,92 @@ class PostgresSearchCandidateRepository:
             db.commit()
             db.refresh(orm)
             return orm_to_search_candidate(orm)
+
+
+class PostgresPaperWorkspaceRepository:
+    def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
+        self.session_factory = session_factory
+
+    def upsert_workspace(self, workspace: PaperWorkspace) -> PaperWorkspace:
+        with self.session_factory() as db:
+            existing = (
+                db.execute(
+                    select(PaperWorkspaceORM)
+                    .where(PaperWorkspaceORM.session_id == workspace.session_id)
+                    .where(PaperWorkspaceORM.paper_id == workspace.paper_id)
+                )
+                .scalars()
+                .first()
+            )
+            if existing is None:
+                db.add(paper_workspace_to_orm(workspace))
+                db.commit()
+                return workspace
+
+            existing.title = workspace.title
+            existing.source_url = workspace.source_url
+            existing.pipeline_stage = workspace.pipeline_stage
+            existing.finalized_report_json = workspace.finalized_report_json
+            existing.method_extraction_json = workspace.method_extraction_json
+            existing.benchmarks_json = workspace.benchmarks_json
+            existing.readiness_json = workspace.readiness_json
+            existing.full_markdown_report = workspace.full_markdown_report
+            db.commit()
+            db.refresh(existing)
+            return orm_to_paper_workspace(existing)
+
+    def list_workspaces(self, session_id: str) -> list[PaperWorkspace]:
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(PaperWorkspaceORM)
+                    .where(PaperWorkspaceORM.session_id == session_id)
+                    .order_by(PaperWorkspaceORM.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [orm_to_paper_workspace(row) for row in rows]
+
+    def get_workspace(
+        self,
+        session_id: str,
+        paper_id: str,
+    ) -> PaperWorkspace | None:
+        with self.session_factory() as db:
+            orm = (
+                db.execute(
+                    select(PaperWorkspaceORM)
+                    .where(PaperWorkspaceORM.session_id == session_id)
+                    .where(PaperWorkspaceORM.paper_id == paper_id)
+                )
+                .scalars()
+                .first()
+            )
+            return orm_to_paper_workspace(orm) if orm is not None else None
+
+    def save_comparison(
+        self,
+        artifact: ComparisonArtifact,
+    ) -> ComparisonArtifact:
+        with self.session_factory() as db:
+            db.merge(comparison_artifact_to_orm(artifact))
+            db.commit()
+        return artifact
+
+    def latest_comparison(self, session_id: str) -> ComparisonArtifact | None:
+        with self.session_factory() as db:
+            orm = (
+                db.execute(
+                    select(ComparisonArtifactORM)
+                    .where(ComparisonArtifactORM.session_id == session_id)
+                    .order_by(ComparisonArtifactORM.created_at.desc())
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            return orm_to_comparison_artifact(orm) if orm is not None else None
 
 
 def clear_foundation_tables(db: DbSession) -> None:
