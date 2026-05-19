@@ -27,6 +27,21 @@ Expected output:
 OK records=5 paper_ids=1706.03762,2005.11401,2106.09685,2210.03629,2205.14135
 ```
 
+## Try Without Postgres
+
+The repository includes a small workspace fixture for CLI contract checks:
+
+```bash
+.venv/bin/python -m evaluation.run_deterministic_eval \
+  --golden golden_dataset/seed_5.jsonl \
+  --workspaces tests/fixtures/evaluation/workspaces_seed_sample.jsonl
+```
+
+This fixture intentionally covers only two of the five golden records, and one
+workspace is partial. The command should run successfully but return exit code
+`2`, indicating that deterministic evaluation completed with missing or failed
+checks.
+
 ## Export Workspaces
 
 After analyzing papers in a session, export persisted artifacts from Postgres:
@@ -86,4 +101,3 @@ Current deterministic checks cover:
 Subjective report fields such as `recommended_action`,
 `implementation_difficulty`, and `action_reasoning` are not scored here. They
 are reserved for later G-Eval/DeepEval rubric checks.
-
