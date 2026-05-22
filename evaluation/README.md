@@ -135,3 +135,16 @@ The planned judge layer should:
 - avoid external knowledge unless the rubric explicitly permits it;
 - keep deterministic eval and judge eval as separate runners with separate
   pass/fail semantics.
+
+Build judge tasks without making model calls:
+
+```bash
+.venv/bin/python -m evaluation.run_judge_eval \
+  --golden golden_dataset/seed_5.jsonl \
+  --workspaces tests/fixtures/evaluation/workspaces_seed_sample.jsonl \
+  --dry-run
+```
+
+The dry-run output is JSON. It includes rubric IDs, rubric hashes, paper IDs,
+input refs, and `not_scored` results. This verifies judge data plumbing while
+keeping the evaluation deterministic.
