@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from evaluation.golden_dataset import GoldenDatasetRecord
 from evaluation.judge_models import JudgeResult, JudgeRunReport, JudgeTask
+from evaluation.judge_provider import (
+    DryRunJudgeProvider,
+    JudgeProvider,
+    build_report_judge_payload,
+)
 from evaluation.judge_rubrics import JudgeRubric
 from models.artifacts import PaperWorkspace
 
@@ -18,6 +23,23 @@ def build_dry_run_judge_report(
     workspaces: list[PaperWorkspace],
     rubrics: dict[str, JudgeRubric],
 ) -> JudgeRunReport:
+    return build_judge_report(
+        records=records,
+        workspaces=workspaces,
+        rubrics=rubrics,
+        provider=DryRunJudgeProvider(),
+        mode="dry_run",
+    )
+
+
+def build_judge_report(
+    *,
+    records: list[GoldenDatasetRecord],
+    workspaces: list[PaperWorkspace],
+    rubrics: dict[str, JudgeRubric],
+    provider: JudgeProvider,
+    mode: str,
+) -> JudgeRunReport:
     workspace_by_paper_id = {workspace.paper_id: workspace for workspace in workspaces}
     results: list[JudgeResult] = []
 
@@ -32,20 +54,31 @@ def build_dry_run_judge_report(
                 paper_id=record.paper_id,
                 input_refs=_report_input_refs(record.paper_id),
                 rubric_hash=rubric.sha256,
-                mode="dry_run",
+                mode=mode,
             )
-            results.append(
-                JudgeResult(
-                    task=task,
-                    status="not_scored",
-                    rationale="Dry run only; no LLM judge was called.",
+            if workspace.finalized_report_json is None:
+                results.append(
+                    JudgeResult(
+                        task=task,
+                        status="skipped",
+                        rationale=(
+                            "No finalized_report_json is available for report "
+                            "rubric evaluation."
+                        ),
+                    )
                 )
+                continue
+            payload = build_report_judge_payload(
+                record=record,
+                workspace=workspace,
+                rubric=rubric,
             )
+            results.append(provider.score(task=task, rubric=rubric, payload=payload))
 
     return JudgeRunReport(
-        mode="dry_run",
+        mode=mode,
         total_tasks=len(results),
-        scored_tasks=0,
+        scored_tasks=sum(1 for result in results if result.status == "scored"),
         results=results,
     )
 
@@ -57,4 +90,3 @@ def _report_input_refs(paper_id: str) -> list[str]:
         f"paper_workspace:{paper_id}:benchmarks_json",
         f"paper_workspace:{paper_id}:readiness_json",
     ]
-

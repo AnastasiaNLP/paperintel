@@ -148,3 +148,17 @@ Build judge tasks without making model calls:
 The dry-run output is JSON. It includes rubric IDs, rubric hashes, paper IDs,
 input refs, and `not_scored` results. This verifies judge data plumbing while
 keeping the evaluation deterministic.
+
+Run live judge scoring explicitly:
+
+```bash
+.venv/bin/python -m evaluation.run_judge_eval \
+  --golden golden_dataset/seed_5.jsonl \
+  --workspaces tests/fixtures/evaluation/workspaces_seed_sample.jsonl \
+  --live
+```
+
+Live judge mode calls the configured LLM provider and returns JSON results with
+`scored` or `error` statuses. It still exits `0` when scoring completes, even if
+scores are low, because judge evaluation is a gauge rather than a CI gate. Input
+loading failures and provider setup failures still return exit code `1`.

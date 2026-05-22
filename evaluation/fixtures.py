@@ -19,6 +19,22 @@ def build_perfect_workspace(record: GoldenDatasetRecord) -> PaperWorkspace:
         title=record.title,
         source_url=record.source_url,
         pipeline_stage="chunk_and_index",
+        finalized_report_json={
+            "executive_summary": (
+                f"{record.title} is relevant to {record.domain} and has enough "
+                "artifact evidence for evaluation."
+            ),
+            "key_innovation": " ".join(method.novelty_keywords),
+            "practical_implications": " ".join(
+                record.expected_report_coverage.must_mention
+            ),
+            "implementation_difficulty": "significant",
+            "recommended_action": "prototype",
+            "action_reasoning": (
+                "Recommendation is based on the extracted method, benchmark "
+                "coverage, readiness artifacts, and stated limitations."
+            ),
+        },
         method_extraction_json={
             "method_name": method.method_name,
             "description": " ".join(method.description_keywords),
