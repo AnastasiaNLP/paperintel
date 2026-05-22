@@ -22,6 +22,8 @@ and implementation implications" without losing grounding in the source text.
   together.
 - Persists analysis workspaces and batch comparison artifacts so they can be
   reloaded without re-running analysis.
+- Includes an evaluation MVP with deterministic artifact checks, a local
+  5-paper golden seed, workspace export, and manual LLM-judge scoring.
 - Synthesizes active papers on demand through retrieval-backed QA with
   citations.
 - Uses an adversarial Citation Critic with bounded repair to reduce unsupported
@@ -114,6 +116,17 @@ clients:
 
 See [docs/MCP_SETUP.md](docs/MCP_SETUP.md) for Claude Desktop configuration and
 example prompts.
+
+## Evaluation
+
+PaperIntel includes an evaluation MVP for persisted artifacts. The deterministic
+runner checks benchmark rows, readiness fields, and keyword coverage over
+exported `PaperWorkspace` JSONL files. A separate judge runner can score
+engineer-report rubrics manually through the configured LLM provider.
+
+See [evaluation/README.md](evaluation/README.md) for commands, scope, and known
+limitations. Deterministic checks are suitable for CI-style gating; LLM-judge
+scores are non-deterministic and treated as manual/scheduled quality signals.
 
 ## Architecture
 

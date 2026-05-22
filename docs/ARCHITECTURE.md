@@ -153,6 +153,23 @@ analysis comparator used after multi-paper analysis, and future work should
 migrate that behavior into a `comparison_analyst` path once durable artifacts
 can be loaded directly.
 
+## Evaluation Layer
+
+The evaluation MVP is built on persisted `PaperWorkspace` artifacts rather than
+transient graph state. It has two separate paths:
+
+- Deterministic evaluation: validates golden JSONL labels, exports
+  `PaperWorkspace` rows, and checks benchmark rows, readiness fields, and
+  keyword coverage. This path is stable enough for CI-style gating.
+- Judge evaluation: loads versioned rubrics from `evaluation/rubrics/` and can
+  score engineer-report fields through the configured LLM provider. This path is
+  a manual or scheduled quality gauge, not a normal CI gate, because judge scores
+  are non-deterministic.
+
+The local seed dataset currently covers 5 papers. The larger 30-paper dataset is
+planned to live on Hugging Face, while the local seed remains the fast
+development and CI fixture.
+
 ## Discovery Flow
 
 The discovery graph handles topic-level requests such as "find recent papers

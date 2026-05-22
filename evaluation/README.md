@@ -10,6 +10,25 @@ Future LLM-judge evaluation is a gauge: it reports quality signals and trends,
 but should not be part of normal CI pass/fail because judge scores are
 non-deterministic.
 
+## Evaluation MVP Status
+
+The current Evaluation MVP is complete for artifact-level deterministic checks
+and manual judge scoring:
+
+- golden seed dataset: ready, with 5 manually verified papers
+- golden loader and schema validation: ready
+- deterministic artifact metrics: ready
+- workspace export from Postgres: ready
+- file-based deterministic runner: ready
+- reproducible workspace fixture and CLI contract tests: ready
+- rubric files: ready and versioned
+- judge dry-run task generation: ready
+- live judge provider: ready for explicit manual use
+
+Normal CI should use deterministic validation and deterministic runner tests.
+Live judge scoring should remain manual or scheduled until score variance is
+measured on the larger dataset.
+
 ## Inputs
 
 Evaluation uses two JSONL files:
@@ -162,3 +181,29 @@ Live judge mode calls the configured LLM provider and returns JSON results with
 `scored` or `error` statuses. It still exits `0` when scoring completes, even if
 scores are low, because judge evaluation is a gauge rather than a CI gate. Input
 loading failures and provider setup failures still return exit code `1`.
+
+## Known Limitations
+
+- The local golden dataset has only 5 seed papers. It is enough for loader,
+  runner, and CLI contract tests, but not enough for project-level quality
+  claims.
+- The target 30-paper dataset is not in the repository yet. It is expected to
+  live on Hugging Face, with the local seed kept for CI/development.
+- Method and report keyword checks are coverage proxies, not semantic
+  correctness checks.
+- Judge scores are non-deterministic and should not be used as normal CI gates.
+- Live judge scoring currently covers report rubrics:
+  `recommended_action`, `implementation_difficulty`, and `action_reasoning`.
+- The `qa_faithfulness` rubric exists, but QA judge task generation is not wired
+  yet.
+- The deterministic runner evaluates exported `PaperWorkspace` JSONL files. It
+  does not run paper analysis itself.
+
+## Next Steps
+
+1. Expand the dataset from 5 local seed papers to a 30-paper Hugging Face
+   dataset.
+2. Add QA judge task generation for `qa_faithfulness`.
+3. Add a judge report artifact format for trend tracking across runs.
+4. Add optional scheduled judge evaluation once score variance is understood.
+5. Add a deterministic CI job after the repository CI shape is finalized.
