@@ -5,6 +5,11 @@ PaperIntel artifacts. It intentionally avoids live model calls and DeepEval for
 now; LLM-judge metrics will be layered on top of this once the deterministic
 artifact checks are stable.
 
+The deterministic runner is a CI-suitable gate for stable, repeatable checks.
+Future LLM-judge evaluation is a gauge: it reports quality signals and trends,
+but should not be part of normal CI pass/fail because judge scores are
+non-deterministic.
+
 ## Inputs
 
 Evaluation uses two JSONL files:
@@ -98,6 +103,35 @@ Current deterministic checks cover:
   GPU requirement, maturity level
 - report coverage: required engineer-report concepts
 
+Interpret these checks narrowly:
+
+- Benchmark matching is a strong deterministic metric for discrete reported
+  facts.
+- Readiness matching is a strong structural metric for explicit artifact fields.
+- Method extraction and report keyword checks are coverage proxies only. They
+  verify that expected concepts appear in free text, but they do not prove that
+  the surrounding statement is semantically correct.
+
+For example, a report could mention `self-attention` and still make an incorrect
+claim about it. Deterministic keyword recall would see coverage, not semantic
+correctness. Free-text correctness belongs to the LLM-judge layer.
+
 Subjective report fields such as `recommended_action`,
 `implementation_difficulty`, and `action_reasoning` are not scored here. They
 are reserved for later G-Eval/DeepEval rubric checks.
+
+## Judge Rubrics
+
+Rubrics for the future G-Eval/DeepEval layer live in
+`evaluation/rubrics/`. These files are versioned source-of-truth artifacts, not
+just documentation. Changing a rubric changes judge behavior and must be treated
+like changing a prompt or schema.
+
+The planned judge layer should:
+
+- read rubric files from the repository;
+- report scores as observations/trends;
+- run manually or on a scheduled workflow, not in normal CI;
+- avoid external knowledge unless the rubric explicitly permits it;
+- keep deterministic eval and judge eval as separate runners with separate
+  pass/fail semantics.
