@@ -1,12 +1,19 @@
 # PaperIntel Golden Dataset
 
-This directory contains the local seed subset for PaperIntel evaluation. The
-full target dataset is intended to live on Hugging Face; this local subset keeps
-CI and development independent from network access.
+This directory contains manually verified golden labels for PaperIntel
+evaluation.
+
+- `seed_5.jsonl`: small local seed used for fast development and CI-style
+  contract checks.
+- `paperintel_30_v0_1.jsonl`: full 30-paper evaluation dataset intended for
+  portfolio and Hugging Face publication.
+- `SCHEMA.md`: schema contract and labeling rules.
+- `HF_DATASET_CARD.md`: Hugging Face dataset card template.
+- `HF_PUBLISH.md`: Hugging Face publication checklist.
 
 ## Format
 
-`seed_5.jsonl` uses one JSON object per line. Each row represents one paper and
+The JSONL files use one JSON object per line. Each row represents one paper and
 mirrors the persisted `PaperWorkspace` artifact contract:
 
 - `expected_method_extraction` maps to `MethodExtraction`
@@ -39,8 +46,9 @@ later framework adoption, later Hugging Face implementations, or later
 production usage as ground truth.
 
 For benchmarks, use values from the main result tables. If the abstract and a
-result table disagree, the result table wins. Include all primary method variant
-rows from the main result table, not only the best headline number.
+result table disagree, the result table wins. The 30-paper dataset keeps a
+representative set of 4-8 benchmark rows per paper, prioritizing headline
+results and important ablations without transcribing every table row.
 
 `ProductionReadiness` is evaluated structurally. Do not put text
 `must_mention` checks inside readiness. Text coverage belongs in
@@ -52,3 +60,12 @@ dataset; evaluate them later with `expected_report_judgment`.
 
 QA cases may check a narrower subset than the artifact benchmark list, but the
 question wording should make that scope explicit.
+
+## Validation
+
+```bash
+.venv/bin/python -m evaluation.validate_golden_dataset golden_dataset/seed_5.jsonl
+.venv/bin/python -m evaluation.validate_golden_dataset golden_dataset/paperintel_30_v0_1.jsonl
+```
+
+The 30-paper dataset should report `OK records=30`.

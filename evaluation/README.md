@@ -16,6 +16,8 @@ The current Evaluation MVP is complete for artifact-level deterministic checks
 and manual judge scoring:
 
 - golden seed dataset: ready, with 5 manually verified papers
+- 30-paper golden dataset: ready, schema-clean, and intended for Hugging Face
+  publication
 - golden loader and schema validation: ready
 - deterministic artifact metrics: ready
 - workspace export from Postgres: ready
@@ -33,22 +35,28 @@ measured on the larger dataset.
 
 Evaluation uses two JSONL files:
 
-- `golden_dataset/seed_5.jsonl`: manually verified golden labels.
+- `golden_dataset/seed_5.jsonl`: 5-paper manually verified local seed for fast
+  development and CI-style contract checks.
+- `golden_dataset/paperintel_30_v0_1.jsonl`: 30-paper manually verified dataset
+  for portfolio/Hugging Face publication and project-level evaluation.
 - `workspaces.jsonl`: exported `PaperWorkspace` rows from Postgres.
 
-The golden dataset is local seed data for CI and development. The larger target
-dataset is intended to live on Hugging Face.
+The local seed keeps CI and development independent from network access. The
+30-paper dataset is small enough to keep versioned in the repository and can be
+published to Hugging Face as the external portfolio dataset.
 
 ## Validate Golden Labels
 
 ```bash
 .venv/bin/python -m evaluation.validate_golden_dataset golden_dataset/seed_5.jsonl
+.venv/bin/python -m evaluation.validate_golden_dataset golden_dataset/paperintel_30_v0_1.jsonl
 ```
 
 Expected output:
 
 ```text
 OK records=5 paper_ids=1706.03762,2005.11401,2106.09685,2210.03629,2205.14135
+OK records=30 ...
 ```
 
 ## Try Without Postgres
@@ -184,11 +192,11 @@ loading failures and provider setup failures still return exit code `1`.
 
 ## Known Limitations
 
-- The local golden dataset has only 5 seed papers. It is enough for loader,
-  runner, and CLI contract tests, but not enough for project-level quality
-  claims.
-- The target 30-paper dataset is not in the repository yet. It is expected to
-  live on Hugging Face, with the local seed kept for CI/development.
+- The 5-paper seed is enough for loader, runner, and CLI contract tests, but not
+  enough for project-level quality claims.
+- The 30-paper dataset is manually verified and schema-clean, but still small
+  and curated. Treat it as a focused evaluation corpus, not a broad benchmark of
+  general LLM paper understanding.
 - Method and report keyword checks are coverage proxies, not semantic
   correctness checks.
 - Judge scores are non-deterministic and should not be used as normal CI gates.
@@ -201,8 +209,8 @@ loading failures and provider setup failures still return exit code `1`.
 
 ## Next Steps
 
-1. Expand the dataset from 5 local seed papers to a 30-paper Hugging Face
-   dataset.
+1. Publish the 30-paper dataset to Hugging Face using
+   `golden_dataset/HF_DATASET_CARD.md`.
 2. Add QA judge task generation for `qa_faithfulness`.
 3. Add a judge report artifact format for trend tracking across runs.
 4. Add optional scheduled judge evaluation once score variance is understood.

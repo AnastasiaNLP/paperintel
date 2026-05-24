@@ -166,9 +166,9 @@ transient graph state. It has two separate paths:
   a manual or scheduled quality gauge, not a normal CI gate, because judge scores
   are non-deterministic.
 
-The local seed dataset currently covers 5 papers. The larger 30-paper dataset is
-planned to live on Hugging Face, while the local seed remains the fast
-development and CI fixture.
+The local seed dataset covers 5 papers for fast development and CI fixtures. The
+repository also includes a schema-clean 30-paper golden dataset intended for
+Hugging Face publication and project-level evaluation.
 
 ## Discovery Flow
 

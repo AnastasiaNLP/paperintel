@@ -1,0 +1,76 @@
+# Hugging Face Publish Checklist
+
+This checklist prepares the 30-paper golden dataset for a Hugging Face Dataset
+repository.
+
+## Files To Upload
+
+Upload these files to the Hugging Face dataset repo:
+
+- `paperintel_30_v0_1.jsonl`
+- `README.md` copied from `HF_DATASET_CARD.md`
+
+Optional supporting files:
+
+- `SCHEMA.md`
+- `seed_5.jsonl`
+
+The source repository keeps the card as `HF_DATASET_CARD.md` to avoid confusing
+it with the local `golden_dataset/README.md`. In the Hugging Face dataset repo,
+the card should be named `README.md`.
+
+## Pre-Publish Validation
+
+From the PaperIntel repository:
+
+```bash
+.venv/bin/python -m evaluation.validate_golden_dataset golden_dataset/paperintel_30_v0_1.jsonl
+```
+
+Expected:
+
+```text
+OK records=30
+```
+
+## Suggested Dataset Repository Name
+
+Suggested Hugging Face dataset repo:
+
+```text
+paperintel-30-golden-eval
+```
+
+## License Decision
+
+`HF_DATASET_CARD.md` currently uses:
+
+```yaml
+license: other
+```
+
+This is conservative because source papers retain their original licenses and
+the dataset only contains manually created labels plus paper metadata. Before
+publication, decide whether the annotation layer should use a more specific
+license, for example `cc-by-4.0`.
+
+## Publish Steps
+
+1. Create a new Hugging Face dataset repository.
+2. Copy `golden_dataset/HF_DATASET_CARD.md` to the dataset repo as `README.md`.
+3. Copy `golden_dataset/paperintel_30_v0_1.jsonl` to the dataset repo root.
+4. Optionally copy `golden_dataset/SCHEMA.md`.
+5. Run the Hugging Face preview/load check in the web UI.
+6. Add the final Hugging Face URL back to the PaperIntel README.
+
+## Post-Publish Repository Update
+
+After publishing, update:
+
+- `README.md`
+- `evaluation/README.md`
+- `golden_dataset/README.md`
+
+Add the final dataset URL and keep `seed_5.jsonl` documented as the local fast
+test subset.
+
