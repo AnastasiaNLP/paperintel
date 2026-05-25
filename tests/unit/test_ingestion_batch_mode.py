@@ -217,3 +217,51 @@ def test_pdf_ingestion_can_skip_arxiv_metadata_with_injected_fallback(monkeypatc
     assert result["processing_stage"] == "extraction"
     assert result["metadata"].title == "Golden title"
     assert result["ingestion_provenance"]["metadata_source"] == "injected_fallback"
+
+
+def test_pdf_ingestion_uses_expected_paper_id_when_parser_has_no_arxiv_id(
+    monkeypatch,
+):
+    ingestion = _load_ingestion_with_stubs()
+
+    def parse_pdf_without_arxiv_id(path):
+        return {
+            "raw_text": "paper text without arxiv marker",
+            "text_by_page": {1: "page one"},
+            "metadata": {"title": "PDF title"},
+            "arxiv_id": None,
+        }
+
+    def fail_if_called(arxiv_id):
+        raise AssertionError("arXiv metadata should not be fetched")
+
+    monkeypatch.setattr(ingestion, "parse_pdf", parse_pdf_without_arxiv_id)
+    monkeypatch.setattr(ingestion, "get_metadata", fail_if_called)
+
+    result = ingestion.ingestion_agent(
+        {
+            "input_type": "pdf",
+            "input_value": "/tmp/local.pdf",
+            "batch_urls": None,
+            "expected_paper_id": "2501.12948",
+            "current_paper_index": 0,
+            "total_papers": 1,
+            "skip_arxiv_metadata_fetch": True,
+            "metadata_fallback_by_arxiv_id": {
+                "2501.12948": {
+                    "title": "Golden title",
+                    "authors": [],
+                    "arxiv_id": "2501.12948",
+                    "published_date": "",
+                    "abstract": "",
+                    "categories": [],
+                }
+            },
+        }
+    )
+
+    assert result["processing_stage"] == "extraction"
+    assert result["metadata"].title == "Golden title"
+    assert result["metadata"].arxiv_id == "2501.12948"
+    assert result["ingestion_provenance"]["metadata_source"] == "injected_fallback"
+    assert result["ingestion_provenance"]["arxiv_id_found"] is False

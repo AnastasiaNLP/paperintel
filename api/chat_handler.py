@@ -249,6 +249,7 @@ class ChatHandler:
         input_type: str,
         input_value: str,
         user_content: str | None = None,
+        expected_paper_id: str | None = None,
         skip_arxiv_metadata_fetch: bool = False,
     ) -> HandlerResult:
         session = self.store.require_session(session_id)
@@ -264,6 +265,7 @@ class ChatHandler:
                 session,
                 input_type=input_type,
                 input_value=input_value,
+                expected_paper_id=expected_paper_id,
                 skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
             )
         except Exception as exc:
@@ -484,6 +486,7 @@ class ChatHandler:
         *,
         input_type: str,
         input_value: str,
+        expected_paper_id: str | None = None,
         skip_arxiv_metadata_fetch: bool = False,
     ) -> GraphInvocationResult:
         if self.analysis_runner is None:
@@ -499,6 +502,7 @@ class ChatHandler:
             _initial_analysis_state_for_input(
                 input_type=input_type,
                 input_value=input_value,
+                expected_paper_id=expected_paper_id,
                 metadata_fallback_by_arxiv_id=self.analysis_metadata_fallback_by_arxiv_id,
                 skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
             ),
@@ -827,6 +831,7 @@ def _initial_analysis_state_for_input(
     *,
     input_type: str,
     input_value: str,
+    expected_paper_id: str | None = None,
     metadata_fallback_by_arxiv_id: dict[str, dict[str, Any]] | None = None,
     skip_arxiv_metadata_fetch: bool = False,
 ) -> dict[str, Any]:
@@ -838,6 +843,7 @@ def _initial_analysis_state_for_input(
     state["input_value"] = input_value
     state["batch_urls"] = None
     state["total_papers"] = 1
+    state["expected_paper_id"] = expected_paper_id
     state["skip_arxiv_metadata_fetch"] = skip_arxiv_metadata_fetch
     return state
 
@@ -852,6 +858,7 @@ def _initial_analysis_state_for_urls(
         "input_type": "url",
         "input_value": first_url,
         "batch_urls": list(urls) if len(urls) > 1 else None,
+        "expected_paper_id": None,
         "papers": [],
         "metadata": None,
         "raw_text": None,

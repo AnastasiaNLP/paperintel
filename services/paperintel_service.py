@@ -118,6 +118,7 @@ class PaperIntelService:
             input_type="pdf",
             input_value=pdf_path,
             user_content=content,
+            expected_paper_id=paper_id,
             skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
         )
 

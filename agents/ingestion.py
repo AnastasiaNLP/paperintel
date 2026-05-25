@@ -301,10 +301,18 @@ def _route_pdf(state: PaperIntelState) -> dict:
     if not raw_text or not raw_text.strip():
         return _failure(state, "PDF parsed but raw_text is empty")
 
-    arxiv_id = parsed.get("arxiv_id")
+    parsed_arxiv_id = parsed.get("arxiv_id")
+    expected_arxiv_id = state.get("expected_paper_id")
+    if parsed_arxiv_id and expected_arxiv_id and parsed_arxiv_id != expected_arxiv_id:
+        logger.warning(
+            "PDF arXiv ID mismatch: parsed=%s expected=%s; using expected",
+            parsed_arxiv_id,
+            expected_arxiv_id,
+        )
+    arxiv_id = expected_arxiv_id or parsed_arxiv_id
 
     if arxiv_id:
-        logger.info("Found arXiv ID in PDF: %s", arxiv_id)
+        logger.info("Using arXiv ID for PDF ingestion: %s", arxiv_id)
         s2_data = _enrich_s2(arxiv_id)
         enrichment = "s2_ok" if s2_data else "s2_failed"
         fallback_metadata = _fallback_metadata_for_arxiv_id(state, arxiv_id)
@@ -326,7 +334,7 @@ def _route_pdf(state: PaperIntelState) -> dict:
                     text_source="pdf",
                     metadata_source=metadata_source,
                     enrichment_status=enrichment,
-                    arxiv_id_found=True,
+                    arxiv_id_found=bool(parsed_arxiv_id),
                 ),
             )
 
@@ -354,7 +362,7 @@ def _route_pdf(state: PaperIntelState) -> dict:
                 text_source="pdf",
                 metadata_source="pdf_fallback",
                 enrichment_status=enrichment,
-                arxiv_id_found=True,
+                arxiv_id_found=bool(parsed_arxiv_id),
             ),
         )
 

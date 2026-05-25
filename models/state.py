@@ -51,6 +51,7 @@ class PaperIntelState(TypedDict):
     input_type: str        # "url" | "pdf" | "topic_query"
     input_value: str       # URL, file path, or search query
     batch_urls: Optional[List[str]]
+    expected_paper_id: Optional[str]
     metadata_fallback_by_arxiv_id: dict
     skip_arxiv_metadata_fetch: bool
 

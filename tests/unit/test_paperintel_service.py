@@ -21,6 +21,7 @@ class FakeHandler:
         self.store = FakeStore()
         self.created_sessions = []
         self.messages = []
+        self.analysis_input_calls = []
         self.selected_analysis_calls = []
         self.selected_analysis_result = None
 
@@ -47,6 +48,35 @@ class FakeHandler:
         return self.selected_analysis_result or HandlerResult(
             session_id=session_id,
             response_text="selected analysis complete",
+            phase="qa",
+            intent="analyze_paper",
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
+    def analyze_paper_input(
+        self,
+        session_id,
+        *,
+        input_type,
+        input_value,
+        user_content=None,
+        expected_paper_id=None,
+        skip_arxiv_metadata_fetch=False,
+    ):
+        self.analysis_input_calls.append(
+            {
+                "session_id": session_id,
+                "input_type": input_type,
+                "input_value": input_value,
+                "user_content": user_content,
+                "expected_paper_id": expected_paper_id,
+                "skip_arxiv_metadata_fetch": skip_arxiv_metadata_fetch,
+            }
+        )
+        return HandlerResult(
+            session_id=session_id,
+            response_text="pdf analysis complete",
             phase="qa",
             intent="analyze_paper",
             user_turn_id="user-turn",
@@ -210,6 +240,31 @@ def test_service_analyze_paper_delegates_to_handler():
 
     assert result.response_text == "handled: https://arxiv.org/abs/1706.03762"
     assert handler.messages == [(session.id, "https://arxiv.org/abs/1706.03762")]
+
+
+def test_service_analyze_pdf_passes_expected_paper_id_to_handler():
+    handler = FakeHandler()
+    service = PaperIntelService(handler=handler)
+    session = service.create_session()
+
+    result = service.analyze_pdf(
+        session.id,
+        "/tmp/2501.12948.pdf",
+        paper_id="2501.12948",
+        skip_arxiv_metadata_fetch=True,
+    )
+
+    assert result.response_text == "pdf analysis complete"
+    assert handler.analysis_input_calls == [
+        {
+            "session_id": session.id,
+            "input_type": "pdf",
+            "input_value": "/tmp/2501.12948.pdf",
+            "user_content": "Analyze local PDF 2501.12948",
+            "expected_paper_id": "2501.12948",
+            "skip_arxiv_metadata_fetch": True,
+        }
+    ]
 
 
 def test_service_ask_question_delegates_to_handler():
