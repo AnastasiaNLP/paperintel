@@ -28,6 +28,7 @@ class BaselinePaper:
     paper_id: str
     source_url: str
     title: str
+    metadata_fallback: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -111,7 +112,7 @@ def main() -> int:
     parser.add_argument(
         "--sleep-seconds",
         type=float,
-        default=5.0,
+        default=10.0,
         help="Delay between paper analyses to reduce external rate-limit pressure.",
     )
     parser.add_argument(
@@ -207,6 +208,14 @@ def load_baseline_papers(
             paper_id=record.paper_id,
             source_url=record.source_url,
             title=record.title,
+            metadata_fallback={
+                "title": record.title,
+                "authors": [],
+                "arxiv_id": record.paper_id,
+                "published_date": "",
+                "abstract": "",
+                "categories": [],
+            },
         )
         for record in records
     ]
@@ -225,6 +234,9 @@ def run_baseline(
 ) -> BaselineRunResult:
     if service.artifact_repository is None:
         raise RuntimeError("Paper workspace repository is not configured.")
+    service.handler.analysis_metadata_fallback_by_arxiv_id = {
+        paper.paper_id: paper.metadata_fallback for paper in papers
+    }
 
     session_id = resume_session_id
     if session_id is None:

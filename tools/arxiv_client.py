@@ -3,6 +3,7 @@ import time
 import httpx
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from threading import Lock
 from typing import List, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential
 from models.schemas import PaperMetadata
@@ -12,14 +13,34 @@ ARXIV_API_URL = "https://export.arxiv.org/api/query"
 ARXIV_PDF_URL = "https://arxiv.org/pdf"
 NS = "{http://www.w3.org/2005/Atom}"
 MAX_PDF_SIZE_MB = 50
-RATE_LIMIT_DELAY = 0.4  # seconds between requests
+# arXiv API ToU asks legacy API clients to make no more than one request every
+# three seconds and use one connection at a time.
+RATE_LIMIT_DELAY = 3.2  # seconds between arXiv requests
 
 #  one client for the entire module that maintains a keep-alive connection
 _client = httpx.Client(timeout=30, follow_redirects=True)
+_rate_limit_lock = Lock()
+_last_request_at = 0.0
 
 
 def _rate_limit():
-    time.sleep(RATE_LIMIT_DELAY)
+    global _last_request_at
+    with _rate_limit_lock:
+        now = time.monotonic()
+        elapsed = now - _last_request_at
+        if elapsed < RATE_LIMIT_DELAY:
+            time.sleep(RATE_LIMIT_DELAY - elapsed)
+        _last_request_at = time.monotonic()
+
+
+def _get(url: str, *, params: dict | None = None) -> httpx.Response:
+    _rate_limit()
+    return _client.get(url, params=params)
+
+
+def _stream(method: str, url: str, **kwargs):
+    _rate_limit()
+    return _client.stream(method, url, **kwargs)
 
 
 def _safe_text(element, path: str) -> Optional[str]:
@@ -58,7 +79,7 @@ def _parse_entry(entry) -> dict:
     }
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=3, min=10, max=60))
 def search_papers(query: str, max_results: int = 10) -> List[dict]:
     logger.info(f"arXiv search: '{query}' max={max_results}")
     params = {
@@ -69,7 +90,7 @@ def search_papers(query: str, max_results: int = 10) -> List[dict]:
     }
 
     t0 = time.perf_counter()
-    response = _client.get(ARXIV_API_URL, params=params)
+    response = _get(ARXIV_API_URL, params=params)
     response.raise_for_status()
     latency = time.perf_counter() - t0
     logger.info(f"arXiv search latency: {latency:.2f}s")
@@ -78,17 +99,16 @@ def search_papers(query: str, max_results: int = 10) -> List[dict]:
     papers = [_parse_entry(e) for e in root.findall(f"{NS}entry")]
     logger.info(f"Found {len(papers)} papers")
 
-    _rate_limit()
     return papers
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=3, min=10, max=60))
 def get_metadata(arxiv_id: str) -> PaperMetadata:
     logger.info(f"arXiv metadata: {arxiv_id}")
     params = {"id_list": arxiv_id}
 
     t0 = time.perf_counter()
-    response = _client.get(ARXIV_API_URL, params=params)
+    response = _get(ARXIV_API_URL, params=params)
     response.raise_for_status()
     latency = time.perf_counter() - t0
     logger.info(f"arXiv metadata latency: {latency:.2f}s")
@@ -99,8 +119,6 @@ def get_metadata(arxiv_id: str) -> PaperMetadata:
         raise ValueError(f"Paper not found: {arxiv_id}")
 
     data = _parse_entry(entry)
-    _rate_limit()
-
     return PaperMetadata(
         title=data["title"],
         authors=data["authors"],
@@ -111,7 +129,7 @@ def get_metadata(arxiv_id: str) -> PaperMetadata:
     )
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=3, min=10, max=60))
 def download_pdf(arxiv_id: str, save_dir: str = "tmp") -> str:
     Path(save_dir).mkdir(exist_ok=True)
     pdf_path = Path(save_dir) / f"{arxiv_id.replace('/', '_')}.pdf"
@@ -124,7 +142,7 @@ def download_pdf(arxiv_id: str, save_dir: str = "tmp") -> str:
     logger.info(f"Downloading PDF: {url}")
 
     t0 = time.perf_counter()
-    with _client.stream("GET", url, follow_redirects=True) as response:
+    with _stream("GET", url, follow_redirects=True) as response:
         response.raise_for_status()
 
         content_length = response.headers.get("content-length")
@@ -145,5 +163,4 @@ def download_pdf(arxiv_id: str, save_dir: str = "tmp") -> str:
     latency = time.perf_counter() - t0
     logger.info(f"Downloaded {downloaded / 1024 / 1024:.1f}MB in {latency:.2f}s → {pdf_path}")
 
-    _rate_limit()
     return str(pdf_path)

@@ -59,6 +59,7 @@ class ChatHandler:
         searcher: Searcher | None = None,
         selection_handler: SelectionHandler | None = None,
         artifact_repository: ArtifactRepository | None = None,
+        analysis_metadata_fallback_by_arxiv_id: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.store = store
         self.conversation_runner = conversation_runner
@@ -71,6 +72,9 @@ class ChatHandler:
         self.searcher = searcher
         self.selection_handler = selection_handler
         self.artifact_repository = artifact_repository
+        self.analysis_metadata_fallback_by_arxiv_id = (
+            analysis_metadata_fallback_by_arxiv_id or {}
+        )
 
     def create_session(
         self,
@@ -376,7 +380,10 @@ class ChatHandler:
             )
 
         raw = self.analysis_runner.invoke(
-            _initial_analysis_state(url),
+            _initial_analysis_state(
+                url,
+                metadata_fallback_by_arxiv_id=self.analysis_metadata_fallback_by_arxiv_id,
+            ),
             config=self._graph_config(session),
         )
         return _normalize_analysis_result(raw)
@@ -404,7 +411,10 @@ class ChatHandler:
             )
 
         raw = self.analysis_runner.invoke(
-            _initial_analysis_state_for_urls(urls),
+            _initial_analysis_state_for_urls(
+                urls,
+                metadata_fallback_by_arxiv_id=self.analysis_metadata_fallback_by_arxiv_id,
+            ),
             config=self._graph_config(session),
         )
         return _normalize_analysis_result(raw)
@@ -684,11 +694,22 @@ def _looks_like_discovery_request(message: str) -> bool:
     return _DISCOVERY_RE.search(message) is not None
 
 
-def _initial_analysis_state(url: str) -> dict[str, Any]:
-    return _initial_analysis_state_for_urls([url])
+def _initial_analysis_state(
+    url: str,
+    *,
+    metadata_fallback_by_arxiv_id: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return _initial_analysis_state_for_urls(
+        [url],
+        metadata_fallback_by_arxiv_id=metadata_fallback_by_arxiv_id,
+    )
 
 
-def _initial_analysis_state_for_urls(urls: list[str]) -> dict[str, Any]:
+def _initial_analysis_state_for_urls(
+    urls: list[str],
+    *,
+    metadata_fallback_by_arxiv_id: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     first_url = urls[0] if urls else ""
     return {
         "input_type": "url",
@@ -723,4 +744,5 @@ def _initial_analysis_state_for_urls(urls: list[str]) -> dict[str, Any]:
         "errors": [],
         "agent_runs": [],
         "cost_tracking": {},
+        "metadata_fallback_by_arxiv_id": metadata_fallback_by_arxiv_id or {},
     }

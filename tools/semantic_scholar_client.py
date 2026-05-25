@@ -1,14 +1,16 @@
 import logging
+import os
 import time
 import httpx
 from typing import List, Optional
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
 S2_API_URL = "https://api.semanticscholar.org/graph/v1/paper"
 S2_RECOMMENDATIONS_URL = "https://api.semanticscholar.org/recommendations/v1/papers/forpaper"
-RATE_LIMIT_DELAY = 1.0
+RATE_LIMIT_DELAY = 1.2
+RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 
 _timeout = httpx.Timeout(30.0, connect=5.0)
 _client = httpx.Client(timeout=_timeout, follow_redirects=True)
@@ -16,6 +18,31 @@ _client = httpx.Client(timeout=_timeout, follow_redirects=True)
 
 def _rate_limit():
     time.sleep(RATE_LIMIT_DELAY)
+
+
+def _headers() -> dict[str, str]:
+    api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or os.getenv("S2_API_KEY")
+    return {"x-api-key": api_key} if api_key else {}
+
+
+def _should_retry(exc: BaseException) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return True
+    return exc.response.status_code in RETRYABLE_STATUS_CODES
+
+
+def _handle_non_retryable_status(response: httpx.Response, arxiv_id: str) -> bool:
+    if response.status_code == 404:
+        logger.info("S2 paper not found for %s", arxiv_id)
+        return True
+    if response.status_code == 403:
+        logger.warning("S2 access forbidden for %s; continuing without enrichment", arxiv_id)
+        return True
+    if response.status_code == 429:
+        logger.warning("S2 rate-limited for %s; continuing without enrichment", arxiv_id)
+        _rate_limit()
+        return True
+    return False
 
 
 def _check_for_error(data: dict, arxiv_id: str):
@@ -53,7 +80,11 @@ def _parse_related(p: dict) -> dict:
     }
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(
+    retry=retry_if_exception(_should_retry),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+)
 def get_paper(arxiv_id: str) -> dict:
     logger.info(f"S2 get_paper: {arxiv_id}")
     url = f"{S2_API_URL}/arXiv:{arxiv_id}"
@@ -62,7 +93,9 @@ def get_paper(arxiv_id: str) -> dict:
     }
 
     t0 = time.perf_counter()
-    response = _client.get(url, params=params)
+    response = _client.get(url, params=params, headers=_headers())
+    if _handle_non_retryable_status(response, arxiv_id):
+        return {}
     response.raise_for_status()
     latency = time.perf_counter() - t0
     logger.info(f"S2 get_paper latency: {latency:.2f}s")
@@ -74,7 +107,11 @@ def get_paper(arxiv_id: str) -> dict:
     return _parse_paper(data)
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(
+    retry=retry_if_exception(_should_retry),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+)
 def get_related_papers(arxiv_id: str, limit: int = 5) -> List[dict]:
     logger.info(f"S2 related papers: {arxiv_id}")
     params = {
@@ -84,12 +121,11 @@ def get_related_papers(arxiv_id: str, limit: int = 5) -> List[dict]:
     }
 
     t0 = time.perf_counter()
-    response = _client.get(S2_RECOMMENDATIONS_URL, params=params)
+    response = _client.get(S2_RECOMMENDATIONS_URL, params=params, headers=_headers())
     latency = time.perf_counter() - t0
     logger.info(f"S2 related latency: {latency:.2f}s")
 
-    if response.status_code == 404:
-        logger.warning(f"S2 related not found for {arxiv_id}")
+    if _handle_non_retryable_status(response, arxiv_id):
         return []
 
     response.raise_for_status()

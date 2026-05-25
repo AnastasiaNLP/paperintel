@@ -137,6 +137,7 @@ Run a small smoke batch first:
     --upgrade-db \
     --limit 2 \
     --output /tmp/paperintel_2_workspaces.jsonl \
+    --sleep-seconds 10 \
     --continue-on-error
 ```
 
@@ -147,6 +148,7 @@ Run the full 30-paper baseline:
   .venv/bin/python evaluation/run_baseline_workspaces.py \
     --upgrade-db \
     --output /tmp/paperintel_30_workspaces.jsonl \
+    --sleep-seconds 10 \
     --continue-on-error
 ```
 
@@ -159,6 +161,7 @@ To resume a partially completed run:
     --resume-session-id "$SESSION_ID" \
     --skip-existing \
     --output /tmp/paperintel_30_workspaces.jsonl \
+    --sleep-seconds 10 \
     --continue-on-error
 ```
 

@@ -66,7 +66,8 @@ def _enrich_s2(arxiv_id: str) -> Optional[dict]:
 def _resolve_metadata(
     arxiv_id: str,
     s2_data: Optional[dict],
-) -> tuple[Optional[PaperMetadata], Optional[str]]:
+    fallback_metadata: Optional[PaperMetadata] = None,
+) -> tuple[Optional[PaperMetadata], Optional[str], str]:
     """
     Return (metadata, error_reason).
     error_reason is populated only when metadata resolution fails.
@@ -74,9 +75,19 @@ def _resolve_metadata(
     try:
         arxiv_meta = get_metadata(arxiv_id)
     except Exception as exc:
+        if fallback_metadata is not None:
+            logger.warning(
+                "arXiv metadata unavailable for %s, using injected fallback metadata: %s",
+                arxiv_id,
+                exc,
+            )
+            citation_count = s2_data.get("citation_count") if s2_data else None
+            return fallback_metadata.model_copy(
+                update={"citation_count": citation_count}
+            ), None, "injected_fallback"
         reason = f"arXiv metadata failed for {arxiv_id}: {exc}"
         logger.exception("arXiv metadata error for %s", arxiv_id)
-        return None, reason
+        return None, reason, "arxiv"
 
     citation_count = s2_data.get("citation_count") if s2_data else None
 
@@ -89,7 +100,7 @@ def _resolve_metadata(
         categories=arxiv_meta.categories,
         citation_count=citation_count,
     )
-    return metadata, None
+    return metadata, None, "arxiv"
 
 
 def _make_provenance(
@@ -186,6 +197,29 @@ def _resolve_current_url(state: PaperIntelState) -> str:
     return str(state["input_value"])
 
 
+def _fallback_metadata_for_arxiv_id(
+    state: PaperIntelState,
+    arxiv_id: str,
+) -> PaperMetadata | None:
+    fallback_by_id = state.get("metadata_fallback_by_arxiv_id") or {}
+    if not isinstance(fallback_by_id, dict):
+        return None
+
+    payload = fallback_by_id.get(arxiv_id)
+    if payload is None:
+        return None
+    if isinstance(payload, PaperMetadata):
+        return payload
+    if not isinstance(payload, dict):
+        logger.warning("Ignoring invalid metadata fallback for %s", arxiv_id)
+        return None
+    try:
+        return PaperMetadata.model_validate(payload)
+    except Exception as exc:
+        logger.warning("Invalid metadata fallback for %s: %s", arxiv_id, exc)
+        return None
+
+
 def _route_url(state: PaperIntelState, url: str) -> dict:
     arxiv_id = _extract_arxiv_id(url)
 
@@ -197,7 +231,12 @@ def _route_url(state: PaperIntelState, url: str) -> dict:
     s2_data = _enrich_s2(arxiv_id)
     enrichment = "s2_ok" if s2_data else "s2_failed"
 
-    metadata, meta_error = _resolve_metadata(arxiv_id, s2_data)
+    fallback_metadata = _fallback_metadata_for_arxiv_id(state, arxiv_id)
+    metadata, meta_error, metadata_source = _resolve_metadata(
+        arxiv_id,
+        s2_data,
+        fallback_metadata,
+    )
     if metadata is None:
         return _failure(state, meta_error or f"Metadata unavailable for {arxiv_id}")
 
@@ -217,7 +256,7 @@ def _route_url(state: PaperIntelState, url: str) -> dict:
             text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
             ingestion_provenance=_make_provenance(
                 text_source="pdf",
-                metadata_source="arxiv",
+                metadata_source=metadata_source,
                 enrichment_status=enrichment,
                 arxiv_id_found=True,
             ),
@@ -233,7 +272,7 @@ def _route_url(state: PaperIntelState, url: str) -> dict:
             errors=[_warning_error(f"PDF unavailable, abstract used: {exc}")],
             ingestion_provenance=_make_provenance(
                 text_source="abstract_fallback",
-                metadata_source="arxiv",
+                metadata_source=metadata_source,
                 enrichment_status=enrichment,
                 arxiv_id_found=True,
             ),
@@ -259,7 +298,7 @@ def _route_pdf(state: PaperIntelState) -> dict:
         logger.info("Found arXiv ID in PDF: %s", arxiv_id)
         s2_data = _enrich_s2(arxiv_id)
         enrichment = "s2_ok" if s2_data else "s2_failed"
-        metadata, meta_error = _resolve_metadata(arxiv_id, s2_data)
+        metadata, meta_error, metadata_source = _resolve_metadata(arxiv_id, s2_data)
 
         if metadata:
             return _success_extraction(
@@ -270,7 +309,7 @@ def _route_pdf(state: PaperIntelState) -> dict:
                 text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
                 ingestion_provenance=_make_provenance(
                     text_source="pdf",
-                    metadata_source="arxiv",
+                    metadata_source=metadata_source,
                     enrichment_status=enrichment,
                     arxiv_id_found=True,
                 ),

@@ -151,3 +151,35 @@ def test_ingestion_agent_returns_fatal_error_for_invalid_batch_setup():
     assert result["paper_failed"] is False
     assert result["failed_node"] == "ingestion"
 
+
+def test_ingestion_uses_injected_metadata_fallback_when_arxiv_metadata_fails(monkeypatch):
+    ingestion = _load_ingestion_with_stubs()
+
+    def fail_metadata(arxiv_id):
+        raise RuntimeError("rate limited")
+
+    monkeypatch.setattr(ingestion, "get_metadata", fail_metadata)
+
+    result = ingestion.ingestion_agent(
+        {
+            "input_type": "url",
+            "input_value": "https://arxiv.org/abs/2501.12948",
+            "batch_urls": None,
+            "current_paper_index": 0,
+            "total_papers": 1,
+            "metadata_fallback_by_arxiv_id": {
+                "2501.12948": {
+                    "title": "Fallback title",
+                    "authors": [],
+                    "arxiv_id": "2501.12948",
+                    "published_date": "",
+                    "abstract": "",
+                    "categories": [],
+                }
+            },
+        }
+    )
+
+    assert result["processing_stage"] == "extraction"
+    assert result["metadata"].title == "Fallback title"
+    assert result["ingestion_provenance"]["metadata_source"] == "injected_fallback"
