@@ -104,6 +104,23 @@ class PaperIntelService:
     def analyze_paper(self, session_id: str, paper_url: str) -> HandlerResult:
         return self.handler.handle_message(session_id, paper_url)
 
+    def analyze_pdf(
+        self,
+        session_id: str,
+        pdf_path: str,
+        *,
+        paper_id: str | None = None,
+        skip_arxiv_metadata_fetch: bool = False,
+    ) -> HandlerResult:
+        content = f"Analyze local PDF {paper_id or pdf_path}"
+        return self.handler.analyze_paper_input(
+            session_id,
+            input_type="pdf",
+            input_value=pdf_path,
+            user_content=content,
+            skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+        )
+
     def ask_question(self, session_id: str, question: str) -> HandlerResult:
         return self.handler.handle_message(session_id, question)
 

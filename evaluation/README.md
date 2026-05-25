@@ -152,6 +152,26 @@ Run the full 30-paper baseline:
     --continue-on-error
 ```
 
+For a reproducible baseline, prefer local PDFs and golden metadata fallbacks:
+
+```bash
+.venv/bin/python -m dotenv run -- \
+  .venv/bin/python evaluation/run_baseline_workspaces.py \
+    --upgrade-db \
+    --pdf-dir ~/Desktop/pdfs \
+    --require-local-pdfs \
+    --metadata-source golden \
+    --output /tmp/paperintel_30_workspaces.jsonl \
+    --sleep-seconds 10 \
+    --continue-on-error
+```
+
+Local PDFs must be named `<paper_id>.pdf`, for example `2103.00020.pdf`.
+`--metadata-source golden` uses the golden dataset metadata fallback and skips
+arXiv metadata fetches during ingestion. This keeps the eval input stable and
+reduces dependence on arXiv API availability. Semantic Scholar enrichment may
+still run as best-effort non-blocking enrichment.
+
 To resume a partially completed run:
 
 ```bash
@@ -160,6 +180,8 @@ To resume a partially completed run:
     --upgrade-db \
     --resume-session-id "$SESSION_ID" \
     --skip-existing \
+    --pdf-dir ~/Desktop/pdfs \
+    --metadata-source golden \
     --output /tmp/paperintel_30_workspaces.jsonl \
     --sleep-seconds 10 \
     --continue-on-error

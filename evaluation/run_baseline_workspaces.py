@@ -29,6 +29,7 @@ class BaselinePaper:
     source_url: str
     title: str
     metadata_fallback: dict[str, object]
+    local_pdf_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,29 @@ def main() -> int:
         help="Continue analyzing later papers after one paper fails.",
     )
     parser.add_argument(
+        "--pdf-dir",
+        default=None,
+        help=(
+            "Optional directory containing local PDFs named <paper_id>.pdf. "
+            "When present for a paper, the baseline analyzes the local PDF "
+            "instead of downloading from arXiv."
+        ),
+    )
+    parser.add_argument(
+        "--require-local-pdfs",
+        action="store_true",
+        help="Fail input validation if --pdf-dir is missing any selected paper PDF.",
+    )
+    parser.add_argument(
+        "--metadata-source",
+        choices=["arxiv", "golden"],
+        default="arxiv",
+        help=(
+            "Use arXiv metadata normally, or use golden metadata fallbacks and "
+            "skip arXiv metadata fetches during ingestion."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate inputs and print planned papers without DB, Qdrant, or LLM calls.",
@@ -132,6 +156,8 @@ def main() -> int:
             args.golden,
             selected_paper_ids=args.paper_id,
             limit=args.limit,
+            pdf_dir=args.pdf_dir,
+            require_local_pdfs=args.require_local_pdfs,
         )
     except GoldenDatasetError as exc:
         print(f"ERROR {exc}")
@@ -143,7 +169,8 @@ def main() -> int:
     print(f"BASELINE_GOLDEN={args.golden}")
     print(f"BASELINE_PAPER_COUNT={len(papers)}")
     for index, paper in enumerate(papers, start=1):
-        print(f"BASELINE_PAPER_{index}={paper.paper_id} {paper.source_url}")
+        pdf_suffix = f" pdf={paper.local_pdf_path}" if paper.local_pdf_path else ""
+        print(f"BASELINE_PAPER_{index}={paper.paper_id} {paper.source_url}{pdf_suffix}")
 
     if args.dry_run:
         print("BASELINE_DRY_RUN=1")
@@ -169,6 +196,7 @@ def main() -> int:
             skip_existing=args.skip_existing,
             sleep_seconds=args.sleep_seconds,
             continue_on_error=args.continue_on_error,
+            metadata_source=args.metadata_source,
         )
     except WorkspaceExportError as exc:
         print(f"ERROR export failed: {exc}")
@@ -187,6 +215,8 @@ def load_baseline_papers(
     *,
     selected_paper_ids: list[str] | None = None,
     limit: int | None = None,
+    pdf_dir: str | Path | None = None,
+    require_local_pdfs: bool = False,
 ) -> list[BaselinePaper]:
     records = load_golden_records(golden_path)
     selected = list(dict.fromkeys(selected_paper_ids or []))
@@ -203,22 +233,40 @@ def load_baseline_papers(
         if limit < 1:
             raise ValueError("--limit must be >= 1")
         records = records[:limit]
-    return [
-        BaselinePaper(
-            paper_id=record.paper_id,
-            source_url=record.source_url,
-            title=record.title,
-            metadata_fallback={
-                "title": record.title,
-                "authors": [],
-                "arxiv_id": record.paper_id,
-                "published_date": "",
-                "abstract": "",
-                "categories": [],
-            },
+    resolved_pdf_dir = Path(pdf_dir).expanduser() if pdf_dir else None
+    papers: list[BaselinePaper] = []
+    missing_pdfs: list[str] = []
+    for record in records:
+        local_pdf_path = None
+        if resolved_pdf_dir is not None:
+            candidate = resolved_pdf_dir / f"{record.paper_id}.pdf"
+            if candidate.exists():
+                local_pdf_path = candidate
+            else:
+                missing_pdfs.append(record.paper_id)
+
+        papers.append(
+            BaselinePaper(
+                paper_id=record.paper_id,
+                source_url=record.source_url,
+                title=record.title,
+                metadata_fallback={
+                    "title": record.title,
+                    "authors": [],
+                    "arxiv_id": record.paper_id,
+                    "published_date": "",
+                    "abstract": "",
+                    "categories": [],
+                },
+                local_pdf_path=local_pdf_path,
+            )
         )
-        for record in records
-    ]
+
+    if require_local_pdfs and missing_pdfs:
+        raise ValueError(
+            "Missing local PDFs for selected paper_id values: " + ",".join(missing_pdfs)
+        )
+    return papers
 
 
 def run_baseline(
@@ -231,6 +279,7 @@ def run_baseline(
     skip_existing: bool,
     sleep_seconds: float,
     continue_on_error: bool,
+    metadata_source: str = "arxiv",
 ) -> BaselineRunResult:
     if service.artifact_repository is None:
         raise RuntimeError("Paper workspace repository is not configured.")
@@ -268,11 +317,20 @@ def run_baseline(
         started = time.monotonic()
         print(
             f"BASELINE_ANALYZE_START index={index}/{len(papers)} "
-            f"paper_id={paper.paper_id} url={paper.source_url}",
+            f"paper_id={paper.paper_id} "
+            f"input={paper.local_pdf_path if paper.local_pdf_path else paper.source_url}",
             flush=True,
         )
         try:
-            result = service.analyze_paper(session_id, paper.source_url)
+            if paper.local_pdf_path is not None:
+                result = service.analyze_pdf(
+                    session_id,
+                    str(paper.local_pdf_path),
+                    paper_id=paper.paper_id,
+                    skip_arxiv_metadata_fetch=metadata_source == "golden",
+                )
+            else:
+                result = service.analyze_paper(session_id, paper.source_url)
             elapsed = time.monotonic() - started
             print(
                 f"BASELINE_ANALYZE_DONE paper_id={paper.paper_id} "
@@ -280,7 +338,7 @@ def run_baseline(
                 f"errors={len(result.errors)}",
                 flush=True,
             )
-            if result.phase == "failed" or result.error is not None:
+            if result.phase == "failed":
                 failed.append(
                     {
                         "paper_id": paper.paper_id,

@@ -67,11 +67,19 @@ def _resolve_metadata(
     arxiv_id: str,
     s2_data: Optional[dict],
     fallback_metadata: Optional[PaperMetadata] = None,
+    *,
+    skip_arxiv_fetch: bool = False,
 ) -> tuple[Optional[PaperMetadata], Optional[str], str]:
     """
     Return (metadata, error_reason).
     error_reason is populated only when metadata resolution fails.
     """
+    if skip_arxiv_fetch and fallback_metadata is not None:
+        citation_count = s2_data.get("citation_count") if s2_data else None
+        return fallback_metadata.model_copy(
+            update={"citation_count": citation_count}
+        ), None, "injected_fallback"
+
     try:
         arxiv_meta = get_metadata(arxiv_id)
     except Exception as exc:
@@ -236,6 +244,7 @@ def _route_url(state: PaperIntelState, url: str) -> dict:
         arxiv_id,
         s2_data,
         fallback_metadata,
+        skip_arxiv_fetch=bool(state.get("skip_arxiv_metadata_fetch")),
     )
     if metadata is None:
         return _failure(state, meta_error or f"Metadata unavailable for {arxiv_id}")
@@ -298,7 +307,13 @@ def _route_pdf(state: PaperIntelState) -> dict:
         logger.info("Found arXiv ID in PDF: %s", arxiv_id)
         s2_data = _enrich_s2(arxiv_id)
         enrichment = "s2_ok" if s2_data else "s2_failed"
-        metadata, meta_error, metadata_source = _resolve_metadata(arxiv_id, s2_data)
+        fallback_metadata = _fallback_metadata_for_arxiv_id(state, arxiv_id)
+        metadata, meta_error, metadata_source = _resolve_metadata(
+            arxiv_id,
+            s2_data,
+            fallback_metadata,
+            skip_arxiv_fetch=bool(state.get("skip_arxiv_metadata_fetch")),
+        )
 
         if metadata:
             return _success_extraction(

@@ -71,6 +71,13 @@ def _as_string_list(value: object) -> list[str]:
     return []
 
 
+def _optional_string(value: object) -> Optional[str]:
+    if value is None or value is False:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _extract_text_block(
     response: object,
     context: str,
@@ -642,10 +649,12 @@ def _normalize(
             "Upgraded to experimental: verified open code or HF model confirmed after candidate verification.",
         )
 
-    gpu_req = claims.get("min_gpu_requirement") or None
+    gpu_req = _optional_string(claims.get("min_gpu_requirement"))
     if gpu_req and not _is_inference_gpu_requirement(gpu_req):
         logger.info("Dropping min_gpu_requirement because it is training-only: %r", gpu_req)
         gpu_req = None
+
+    estimated_inference_cost = _optional_string(claims.get("estimated_inference_cost"))
 
     try:
         return (
@@ -655,7 +664,7 @@ def _normalize(
                 huggingface_model=verified_hf_model,
                 framework_integrations=all_frameworks,
                 min_gpu_requirement=gpu_req,
-                estimated_inference_cost=claims.get("estimated_inference_cost") or None,
+                estimated_inference_cost=estimated_inference_cost,
                 dependencies=dependencies,
                 maturity_level=maturity_level,
                 maturity_reasoning=maturity_reasoning,

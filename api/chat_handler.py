@@ -242,6 +242,96 @@ class ChatHandler:
             error=graph_result.errors[0] if graph_result.errors else None,
         )
 
+    def analyze_paper_input(
+        self,
+        session_id: str,
+        *,
+        input_type: str,
+        input_value: str,
+        user_content: str | None = None,
+        skip_arxiv_metadata_fetch: bool = False,
+    ) -> HandlerResult:
+        session = self.store.require_session(session_id)
+        user_turn = self.store.append_turn(
+            session.id,
+            role="user",
+            content=user_content or input_value,
+            intent="analyze_paper",
+        )
+
+        try:
+            graph_result = self._invoke_analysis_input(
+                session,
+                input_type=input_type,
+                input_value=input_value,
+                skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+            )
+        except Exception as exc:
+            error = make_error(
+                ErrorCodes.FATAL_ERROR,
+                f"Paper analysis failed: {exc}",
+                node="chat_handler",
+                severity="error",
+                recoverable=True,
+                session_id=session.id,
+                exception_type=type(exc).__name__,
+            )
+            self.store.update_phase(session.id, "failed")
+            assistant_turn = self.store.append_turn(
+                session.id,
+                role="assistant",
+                content="I could not analyze the paper safely. Please try again.",
+                error=error,
+            )
+            return HandlerResult(
+                session_id=session.id,
+                response_text=assistant_turn.content,
+                phase="failed",
+                intent="analyze_paper",
+                errors=[error],
+                user_turn_id=user_turn.id,
+                assistant_turn_id=assistant_turn.id,
+                error=error,
+            )
+
+        self._persist_analysis_artifacts(session, graph_result)
+
+        if graph_result.next_phase is not None:
+            session = self.store.update_phase(session.id, graph_result.next_phase)
+        else:
+            session = self.store.require_session(session.id)
+
+        assistant_turn = self.store.append_turn(
+            session.id,
+            role="assistant",
+            content=graph_result.response_text,
+            intent=graph_result.intent,
+            referenced_paper_ids=graph_result.referenced_paper_ids,
+            artifact_refs=graph_result.artifact_refs,
+        )
+
+        return HandlerResult(
+            session_id=session.id,
+            response_text=graph_result.response_text,
+            phase=session.phase,
+            intent=graph_result.intent,
+            referenced_paper_ids=graph_result.referenced_paper_ids,
+            citations=graph_result.citations,
+            artifact_refs=graph_result.artifact_refs,
+            comparison_markdown=graph_result.comparison_markdown,
+            needs_analysis=graph_result.needs_analysis,
+            needs_discovery=graph_result.needs_discovery,
+            discovery_topic=graph_result.discovery_topic,
+            discovery_candidate_count=graph_result.discovery_candidate_count,
+            selected_candidate_ids=graph_result.selected_candidate_ids,
+            search_warnings=graph_result.search_warnings,
+            agent_runs=graph_result.agent_runs,
+            errors=graph_result.errors,
+            user_turn_id=user_turn.id,
+            assistant_turn_id=assistant_turn.id,
+            error=graph_result.errors[0] if graph_result.errors else None,
+        )
+
     def _persist_analysis_artifacts(
         self,
         session: Session,
@@ -383,6 +473,34 @@ class ChatHandler:
             _initial_analysis_state(
                 url,
                 metadata_fallback_by_arxiv_id=self.analysis_metadata_fallback_by_arxiv_id,
+            ),
+            config=self._graph_config(session),
+        )
+        return _normalize_analysis_result(raw)
+
+    def _invoke_analysis_input(
+        self,
+        session: Session,
+        *,
+        input_type: str,
+        input_value: str,
+        skip_arxiv_metadata_fetch: bool = False,
+    ) -> GraphInvocationResult:
+        if self.analysis_runner is None:
+            return GraphInvocationResult(
+                response_text="Please configure analysis before analyzing papers.",
+                intent="analyze_paper",
+                needs_analysis=True,
+                next_phase=session.phase,
+                raw={"needs_analysis": True, "analysis_runner_missing": True},
+            )
+
+        raw = self.analysis_runner.invoke(
+            _initial_analysis_state_for_input(
+                input_type=input_type,
+                input_value=input_value,
+                metadata_fallback_by_arxiv_id=self.analysis_metadata_fallback_by_arxiv_id,
+                skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
             ),
             config=self._graph_config(session),
         )
@@ -705,6 +823,25 @@ def _initial_analysis_state(
     )
 
 
+def _initial_analysis_state_for_input(
+    *,
+    input_type: str,
+    input_value: str,
+    metadata_fallback_by_arxiv_id: dict[str, dict[str, Any]] | None = None,
+    skip_arxiv_metadata_fetch: bool = False,
+) -> dict[str, Any]:
+    state = _initial_analysis_state_for_urls(
+        [input_value],
+        metadata_fallback_by_arxiv_id=metadata_fallback_by_arxiv_id,
+    )
+    state["input_type"] = input_type
+    state["input_value"] = input_value
+    state["batch_urls"] = None
+    state["total_papers"] = 1
+    state["skip_arxiv_metadata_fetch"] = skip_arxiv_metadata_fetch
+    return state
+
+
 def _initial_analysis_state_for_urls(
     urls: list[str],
     *,
@@ -745,4 +882,5 @@ def _initial_analysis_state_for_urls(
         "agent_runs": [],
         "cost_tracking": {},
         "metadata_fallback_by_arxiv_id": metadata_fallback_by_arxiv_id or {},
+        "skip_arxiv_metadata_fetch": False,
     }

@@ -183,3 +183,37 @@ def test_ingestion_uses_injected_metadata_fallback_when_arxiv_metadata_fails(mon
     assert result["processing_stage"] == "extraction"
     assert result["metadata"].title == "Fallback title"
     assert result["ingestion_provenance"]["metadata_source"] == "injected_fallback"
+
+
+def test_pdf_ingestion_can_skip_arxiv_metadata_with_injected_fallback(monkeypatch):
+    ingestion = _load_ingestion_with_stubs()
+
+    def fail_if_called(arxiv_id):
+        raise AssertionError("arXiv metadata should not be fetched")
+
+    monkeypatch.setattr(ingestion, "get_metadata", fail_if_called)
+
+    result = ingestion.ingestion_agent(
+        {
+            "input_type": "pdf",
+            "input_value": "/tmp/local.pdf",
+            "batch_urls": None,
+            "current_paper_index": 0,
+            "total_papers": 1,
+            "skip_arxiv_metadata_fetch": True,
+            "metadata_fallback_by_arxiv_id": {
+                "2501.12948": {
+                    "title": "Golden title",
+                    "authors": [],
+                    "arxiv_id": "2501.12948",
+                    "published_date": "",
+                    "abstract": "",
+                    "categories": [],
+                }
+            },
+        }
+    )
+
+    assert result["processing_stage"] == "extraction"
+    assert result["metadata"].title == "Golden title"
+    assert result["ingestion_provenance"]["metadata_source"] == "injected_fallback"
