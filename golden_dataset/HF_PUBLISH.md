@@ -54,7 +54,41 @@ the dataset only contains manually created labels plus paper metadata. Before
 publication, decide whether the annotation layer should use a more specific
 license, for example `cc-by-4.0`.
 
-## Publish Steps
+## Scripted Upload
+
+The repository includes a small upload helper. First validate without network
+access:
+
+```bash
+.venv/bin/python scripts/upload_golden_dataset_to_hf.py --dry-run
+```
+
+Then upload to the existing dataset repo:
+
+```bash
+.venv/bin/python -m pip install huggingface_hub
+HF_TOKEN=... .venv/bin/python scripts/upload_golden_dataset_to_hf.py
+```
+
+The default repo id is:
+
+```text
+AIAnastasia/arxiv-papers
+```
+
+To upload the local seed file too:
+
+```bash
+HF_TOKEN=... .venv/bin/python scripts/upload_golden_dataset_to_hf.py --include-seed
+```
+
+The script uploads:
+
+- `paperintel_30_v0_1.jsonl`
+- `README.md` copied from `HF_DATASET_CARD.md`
+- `SCHEMA.md`
+
+## Manual Publish Steps
 
 1. Create a new Hugging Face dataset repository.
 2. Copy `golden_dataset/HF_DATASET_CARD.md` to the dataset repo as `README.md`.
@@ -73,4 +107,3 @@ After publishing, update:
 
 Add the final dataset URL and keep `seed_5.jsonl` documented as the local fast
 test subset.
-
