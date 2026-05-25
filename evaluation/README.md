@@ -115,6 +115,63 @@ After analyzing papers in a session, export persisted artifacts from Postgres:
   --output /tmp/paperintel-workspaces.jsonl
 ```
 
+## Generate 30-Paper Baseline Workspaces
+
+The baseline helper combines three steps in one command:
+
+1. read paper URLs from `paperintel_30_v0_1.jsonl`;
+2. analyze those papers into a PaperIntel session;
+3. export persisted `PaperWorkspace` rows to JSONL.
+
+Preview the planned papers without DB, Qdrant, or model calls:
+
+```bash
+.venv/bin/python evaluation/run_baseline_workspaces.py --dry-run
+```
+
+Run a small smoke batch first:
+
+```bash
+.venv/bin/python -m dotenv run -- \
+  .venv/bin/python evaluation/run_baseline_workspaces.py \
+    --upgrade-db \
+    --limit 2 \
+    --output /tmp/paperintel_2_workspaces.jsonl \
+    --continue-on-error
+```
+
+Run the full 30-paper baseline:
+
+```bash
+.venv/bin/python -m dotenv run -- \
+  .venv/bin/python evaluation/run_baseline_workspaces.py \
+    --upgrade-db \
+    --output /tmp/paperintel_30_workspaces.jsonl \
+    --continue-on-error
+```
+
+To resume a partially completed run:
+
+```bash
+.venv/bin/python -m dotenv run -- \
+  .venv/bin/python evaluation/run_baseline_workspaces.py \
+    --upgrade-db \
+    --resume-session-id "$SESSION_ID" \
+    --skip-existing \
+    --output /tmp/paperintel_30_workspaces.jsonl \
+    --continue-on-error
+```
+
+The command also writes a sibling summary file:
+
+```text
+/tmp/paperintel_30_workspaces.jsonl.summary.json
+```
+
+When any paper fails and `--continue-on-error` is set, the export contains the
+workspaces that were successfully persisted in the session. Re-run with
+`--resume-session-id` and `--skip-existing` after external failures.
+
 To export only selected papers:
 
 ```bash
