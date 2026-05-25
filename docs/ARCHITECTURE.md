@@ -170,6 +170,9 @@ The local seed dataset covers 5 papers for fast development and CI fixtures. The
 repository also includes a schema-clean 30-paper golden dataset for
 project-level evaluation, published on Hugging Face as
 [AIAnastasia/arxiv-papers](https://huggingface.co/datasets/AIAnastasia/arxiv-papers).
+The dataset and evaluation tooling are complete, but a full 30-paper workspace
+baseline is tracked as the next evaluation phase rather than as part of the MVP
+closeout.
 
 ## Discovery Flow
 

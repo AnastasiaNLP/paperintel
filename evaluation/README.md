@@ -12,8 +12,8 @@ non-deterministic.
 
 ## Evaluation MVP Status
 
-The current Evaluation MVP is complete for artifact-level deterministic checks
-and manual judge scoring:
+The Evaluation MVP is closed for dataset, artifact-level deterministic checks,
+workspace export, and manual judge scoring:
 
 - golden seed dataset: ready, with 5 manually verified papers
 - 30-paper golden dataset: ready, schema-clean, and published on Hugging Face
@@ -29,6 +29,35 @@ and manual judge scoring:
 Normal CI should use deterministic validation and deterministic runner tests.
 Live judge scoring should remain manual or scheduled until score variance is
 measured on the larger dataset.
+
+## Eval Stage Closeout
+
+Closed in this stage:
+
+- `seed_5.jsonl` remains the fast local seed for loader, runner, and fixture
+  tests.
+- `paperintel_30_v0_1.jsonl` is the schema-clean 30-paper golden dataset and is
+  published as
+  [AIAnastasia/arxiv-papers](https://huggingface.co/datasets/AIAnastasia/arxiv-papers).
+- `golden_dataset/SCHEMA.md` documents the v0.1 dataset contract.
+- `golden_dataset/HF_DATASET_CARD.md` and `golden_dataset/HF_PUBLISH.md`
+  document the external dataset package and upload flow.
+- Deterministic evaluation can validate exported `PaperWorkspace` JSONL files
+  without live model calls.
+- Judge rubrics are versioned repository artifacts, and judge scoring is
+  available as an explicit manual gauge.
+
+Not closed in this stage:
+
+- Full 30-paper analysis has not been run end to end to produce a complete
+  exported workspace baseline.
+- Deterministic baseline numbers for all 30 papers are not claimed yet.
+- QA faithfulness judge task generation is not wired yet.
+- Judge scores are not CI gates.
+
+The next evaluation step is an explicit baseline phase: analyze the 30 papers,
+export their persisted workspaces, run deterministic evaluation against
+`paperintel_30_v0_1.jsonl`, and publish the resulting baseline report.
 
 ## Inputs
 
@@ -210,7 +239,10 @@ loading failures and provider setup failures still return exit code `1`.
 
 ## Next Steps
 
-1. Add QA judge task generation for `qa_faithfulness`.
-2. Add a judge report artifact format for trend tracking across runs.
-3. Add optional scheduled judge evaluation once score variance is understood.
-4. Add a deterministic CI job after the repository CI shape is finalized.
+1. Generate and export the 30-paper workspace baseline.
+2. Run deterministic evaluation against `paperintel_30_v0_1.jsonl` and document
+   the first baseline numbers.
+3. Add QA judge task generation for `qa_faithfulness`.
+4. Add a judge report artifact format for trend tracking across runs.
+5. Add optional scheduled judge evaluation once score variance is understood.
+6. Add a deterministic CI job after the repository CI shape is finalized.
