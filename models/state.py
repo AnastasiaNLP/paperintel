@@ -41,7 +41,7 @@ class IngestionProvenance(TypedDict):
     Downstream agents use this to understand input quality.
     """
     text_source: Literal["pdf", "abstract_fallback", "none"]
-    metadata_source: Literal["arxiv", "pdf_fallback", "none"]
+    metadata_source: Literal["arxiv", "pdf_fallback", "injected_fallback", "none"]
     enrichment_status: Literal["s2_ok", "s2_failed", "not_attempted"]
     arxiv_id_found: bool
 
@@ -51,6 +51,7 @@ class PaperIntelState(TypedDict):
     input_type: str        # "url" | "pdf" | "topic_query"
     input_value: str       # URL, file path, or search query
     batch_urls: Optional[List[str]]
+    metadata_fallback_by_arxiv_id: dict
 
     # Paper data
     papers: Annotated[list, add_to_list]
