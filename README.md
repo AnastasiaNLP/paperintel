@@ -125,7 +125,8 @@ exported `PaperWorkspace` JSONL files. A separate judge runner can score
 engineer-report rubrics manually through the configured LLM provider.
 
 The repository includes both a fast 5-paper seed and a schema-clean 30-paper
-golden dataset intended for Hugging Face/portfolio publication.
+golden dataset published on Hugging Face:
+[AIAnastasia/arxiv-papers](https://huggingface.co/datasets/AIAnastasia/arxiv-papers).
 
 See [evaluation/README.md](evaluation/README.md) for commands, scope, and known
 limitations. Deterministic checks are suitable for CI-style gating; LLM-judge

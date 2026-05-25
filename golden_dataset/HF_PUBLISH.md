@@ -3,6 +3,12 @@
 This checklist prepares the 30-paper golden dataset for a Hugging Face Dataset
 repository.
 
+Published dataset:
+
+```text
+https://huggingface.co/datasets/AIAnastasia/arxiv-papers
+```
+
 ## Files To Upload
 
 Upload these files to the Hugging Face dataset repo:
@@ -35,7 +41,7 @@ OK records=30
 
 ## Suggested Dataset Repository Name
 
-Suggested Hugging Face dataset repo:
+Hugging Face dataset repo:
 
 ```text
 paperintel-30-golden-eval
@@ -95,15 +101,14 @@ The script uploads:
 3. Copy `golden_dataset/paperintel_30_v0_1.jsonl` to the dataset repo root.
 4. Optionally copy `golden_dataset/SCHEMA.md`.
 5. Run the Hugging Face preview/load check in the web UI.
-6. Add the final Hugging Face URL back to the PaperIntel README.
+6. Confirm the public URL is documented in the PaperIntel README files.
 
 ## Post-Publish Repository Update
 
-After publishing, update:
+After publishing, keep these files aligned with the public dataset URL:
 
 - `README.md`
 - `evaluation/README.md`
 - `golden_dataset/README.md`
 
-Add the final dataset URL and keep `seed_5.jsonl` documented as the local fast
-test subset.
+Keep `seed_5.jsonl` documented as the local fast test subset.

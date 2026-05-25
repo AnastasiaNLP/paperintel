@@ -16,8 +16,7 @@ The current Evaluation MVP is complete for artifact-level deterministic checks
 and manual judge scoring:
 
 - golden seed dataset: ready, with 5 manually verified papers
-- 30-paper golden dataset: ready, schema-clean, and intended for Hugging Face
-  publication
+- 30-paper golden dataset: ready, schema-clean, and published on Hugging Face
 - golden loader and schema validation: ready
 - deterministic artifact metrics: ready
 - workspace export from Postgres: ready
@@ -38,11 +37,13 @@ Evaluation uses two JSONL files:
 - `golden_dataset/seed_5.jsonl`: 5-paper manually verified local seed for fast
   development and CI-style contract checks.
 - `golden_dataset/paperintel_30_v0_1.jsonl`: 30-paper manually verified dataset
-  for portfolio/Hugging Face publication and project-level evaluation.
+  for portfolio/Hugging Face publication and project-level evaluation. Published
+  dataset:
+  [AIAnastasia/arxiv-papers](https://huggingface.co/datasets/AIAnastasia/arxiv-papers).
 - `workspaces.jsonl`: exported `PaperWorkspace` rows from Postgres.
 
 The local seed keeps CI and development independent from network access. The
-30-paper dataset is small enough to keep versioned in the repository and can be
+30-paper dataset is small enough to keep versioned in the repository and is also
 published to Hugging Face as the external portfolio dataset.
 
 ## Validate Golden Labels
@@ -209,9 +210,7 @@ loading failures and provider setup failures still return exit code `1`.
 
 ## Next Steps
 
-1. Publish the 30-paper dataset to Hugging Face using
-   `golden_dataset/HF_DATASET_CARD.md`.
-2. Add QA judge task generation for `qa_faithfulness`.
-3. Add a judge report artifact format for trend tracking across runs.
-4. Add optional scheduled judge evaluation once score variance is understood.
-5. Add a deterministic CI job after the repository CI shape is finalized.
+1. Add QA judge task generation for `qa_faithfulness`.
+2. Add a judge report artifact format for trend tracking across runs.
+3. Add optional scheduled judge evaluation once score variance is understood.
+4. Add a deterministic CI job after the repository CI shape is finalized.

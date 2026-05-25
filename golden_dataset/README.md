@@ -6,7 +6,8 @@ evaluation.
 - `seed_5.jsonl`: small local seed used for fast development and CI-style
   contract checks.
 - `paperintel_30_v0_1.jsonl`: full 30-paper evaluation dataset intended for
-  portfolio and Hugging Face publication.
+  portfolio use and published on Hugging Face:
+  [AIAnastasia/arxiv-papers](https://huggingface.co/datasets/AIAnastasia/arxiv-papers).
 - `SCHEMA.md`: schema contract and labeling rules.
 - `HF_DATASET_CARD.md`: Hugging Face dataset card template.
 - `HF_PUBLISH.md`: Hugging Face publication checklist.
