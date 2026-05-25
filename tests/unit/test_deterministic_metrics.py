@@ -5,12 +5,16 @@ from evaluation.deterministic_metrics import (
     evaluate_report_coverage,
     evaluate_workspace,
 )
-from evaluation.golden_dataset import load_golden_records
+from evaluation.golden_dataset import GoldenBenchmark, load_golden_records
 from models.artifacts import PaperWorkspace
 
 
 def _transformer_record():
     return load_golden_records("golden_dataset/seed_5.jsonl")[0]
+
+
+def _record_with_benchmark(benchmark: GoldenBenchmark):
+    return _transformer_record().model_copy(update={"expected_benchmarks": [benchmark]})
 
 
 def test_evaluate_method_extraction_scores_keyword_and_list_coverage():
@@ -55,7 +59,7 @@ def test_evaluate_method_extraction_scores_keyword_and_list_coverage():
     assert result.score == 1.0
 
 
-def test_evaluate_benchmarks_requires_task_metric_value_and_conditions():
+def test_evaluate_benchmarks_requires_task_metric_and_value():
     record = _transformer_record()
 
     result = evaluate_benchmarks(
@@ -80,6 +84,150 @@ def test_evaluate_benchmarks_requires_task_metric_value_and_conditions():
     assert result.score == 0.5
     assert result.details["matched_count"] == 2
     assert len(result.details["missing"]) == 2
+
+
+def test_evaluate_benchmarks_matches_task_and_metric_aliases():
+    record = _record_with_benchmark(
+        GoldenBenchmark(
+            task="Natural Questions",
+            metric="Exact Match",
+            value=44.5,
+            unit=None,
+            conditions_keywords=["RAG-Sequence"],
+        )
+    )
+
+    result = evaluate_benchmarks(
+        record,
+        [
+            {
+                "task": "NQ",
+                "metric": "EM",
+                "value": 44.5,
+                "conditions": "RAG-Seq.",
+            }
+        ],
+    )
+
+    assert result.passed
+    assert result.score == 1.0
+
+
+def test_evaluate_benchmarks_searches_conditions_in_task_and_metric():
+    record = _record_with_benchmark(
+        GoldenBenchmark(
+            task="Natural Questions",
+            metric="Exact Match",
+            value=44.5,
+            unit=None,
+            conditions_keywords=["NQ", "EM"],
+        )
+    )
+
+    result = evaluate_benchmarks(
+        record,
+        [
+            {
+                "task": "Natural Questions",
+                "metric": "Exact Match",
+                "value": 44.5,
+                "conditions": None,
+            }
+        ],
+    )
+
+    assert result.passed
+    assert result.score == 1.0
+
+
+def test_evaluate_benchmarks_allows_single_candidate_with_missing_conditions():
+    record = _record_with_benchmark(
+        GoldenBenchmark(
+            task="HumanEval",
+            metric="pass@1",
+            value=91.0,
+            unit="percent",
+            conditions_keywords=["Reflexion", "GPT-4", "Python"],
+        )
+    )
+
+    result = evaluate_benchmarks(
+        record,
+        [
+            {
+                "task": "HumanEval",
+                "metric": "pass@1",
+                "value": 91.0,
+                "unit": "%",
+                "conditions": None,
+            }
+        ],
+    )
+
+    assert result.passed
+    assert result.score == 1.0
+
+
+def test_evaluate_benchmarks_uses_conditions_to_reject_ambiguous_candidates():
+    record = _record_with_benchmark(
+        GoldenBenchmark(
+            task="GLUE",
+            metric="Accuracy",
+            value=80.5,
+            unit="percent",
+            conditions_keywords=["BERTLARGE", "single-model"],
+        )
+    )
+
+    result = evaluate_benchmarks(
+        record,
+        [
+            {
+                "task": "GLUE",
+                "metric": "Accuracy",
+                "value": 80.5,
+                "unit": "%",
+                "conditions": "BERTBASE single-model",
+            },
+            {
+                "task": "GLUE",
+                "metric": "Accuracy",
+                "value": 80.5,
+                "unit": "%",
+                "conditions": "BERTLARGE ensemble",
+            },
+        ],
+    )
+
+    assert not result.passed
+    assert result.score == 0.0
+
+
+def test_evaluate_benchmarks_does_not_match_on_value_only():
+    record = _record_with_benchmark(
+        GoldenBenchmark(
+            task="Natural Questions",
+            metric="Exact Match",
+            value=44.5,
+            unit=None,
+            conditions_keywords=["RAG-Sequence"],
+        )
+    )
+
+    result = evaluate_benchmarks(
+        record,
+        [
+            {
+                "task": "TriviaQA",
+                "metric": "Accuracy",
+                "value": 44.5,
+                "conditions": "RAG-Sequence",
+            }
+        ],
+    )
+
+    assert not result.passed
+    assert result.score == 0.0
 
 
 def test_evaluate_readiness_uses_framework_integrations_field():
@@ -153,4 +301,3 @@ def test_evaluate_workspace_combines_deterministic_checks():
         "report_coverage",
     }
     assert 0 < result.score < 1
-
