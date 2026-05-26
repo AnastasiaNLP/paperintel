@@ -1,5 +1,6 @@
 from typing import Protocol
 
+from agents.comparison_analyst import compare_workspaces
 from api.chat_handler import ChatHandler
 from models.api import HealthStatus
 from models.artifacts import ComparisonArtifact, PaperWorkspace
@@ -40,6 +41,16 @@ class ComparisonNotFoundError(ValueError):
         self.session_id = session_id
 
 
+class NotEnoughPapersForComparisonError(ValueError):
+    def __init__(self, *, session_id: str, paper_ids: list[str]) -> None:
+        super().__init__(
+            f"Comparison requires at least two papers in session {session_id}; "
+            f"got {len(paper_ids)}."
+        )
+        self.session_id = session_id
+        self.paper_ids = paper_ids
+
+
 class SearchCandidateRepository(Protocol):
     def update_status(
         self,
@@ -61,6 +72,9 @@ class PaperWorkspaceRepository(Protocol):
         ...
 
     def latest_comparison(self, session_id: str) -> ComparisonArtifact | None:
+        ...
+
+    def save_comparison(self, artifact: ComparisonArtifact) -> ComparisonArtifact:
         ...
 
 
@@ -200,6 +214,65 @@ class PaperIntelService:
         if comparison is None:
             raise ComparisonNotFoundError(session_id)
         return comparison
+
+    def compare_papers(
+        self,
+        session_id: str,
+        paper_ids: list[str] | None = None,
+        prompt: str | None = None,
+    ) -> ComparisonArtifact:
+        session = self.handler.store.require_session(session_id)
+        if self.artifact_repository is None:
+            raise RuntimeError("Paper workspace repository is not configured.")
+
+        requested_ids = (
+            list(paper_ids)
+            if paper_ids is not None
+            else list(session.active_paper_ids)
+        )
+        requested_ids = list(dict.fromkeys(requested_ids))
+        if len(requested_ids) < 2:
+            raise NotEnoughPapersForComparisonError(
+                session_id=session_id,
+                paper_ids=requested_ids,
+            )
+
+        workspaces_by_id = {
+            workspace.paper_id: workspace
+            for workspace in self.artifact_repository.list_workspaces(session_id)
+        }
+        missing = [
+            paper_id
+            for paper_id in requested_ids
+            if paper_id not in workspaces_by_id
+        ]
+        if missing:
+            raise PaperWorkspaceNotFoundError(
+                session_id=session_id,
+                paper_id=missing[0],
+            )
+
+        workspaces = [workspaces_by_id[paper_id] for paper_id in requested_ids]
+        # TODO(CA.2/CA.3): reject or explicitly filter failed/incomplete
+        # workspaces before request-driven comparison and synthesis.
+        result = compare_workspaces(
+            session_id=session_id,
+            workspaces=workspaces,
+            prompt=prompt,
+            config={
+                "configurable": {
+                    "session_id": session_id,
+                    "agent_run_persistence": self.handler.agent_run_persistence,
+                }
+            },
+        )
+        artifact = ComparisonArtifact(
+            session_id=session_id,
+            paper_ids=requested_ids,
+            comparison_report_json=result.report.model_dump(mode="json"),
+            comparison_markdown=result.markdown,
+        )
+        return self.artifact_repository.save_comparison(artifact)
 
     def health(self) -> HealthStatus:
         if self.health_checker is None:

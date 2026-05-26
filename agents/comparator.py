@@ -3,7 +3,7 @@ import logging
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from agents.llm_provider import call_text_llm
 from config.settings import settings
@@ -727,6 +727,8 @@ def _normalize_comparison_report(
     unique_rows: dict[int, list[str]],
     papers_summary: list[dict],
     matrix_stats: dict,
+    *,
+    producer: Literal["batch_comparator", "comparison_analyst"] = "batch_comparator",
 ) -> ComparisonReport:
     valid_indexes = _eligible_indexes(papers)
 
@@ -764,6 +766,7 @@ def _normalize_comparison_report(
 
     return ComparisonReport(
         papers_summary=papers_summary,
+        producer=producer,
         comparison_matrix=matrix,
         unique_tasks_per_paper=unique_tasks,
         unique_rows_per_paper=unique_rows,

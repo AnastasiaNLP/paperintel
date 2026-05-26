@@ -73,6 +73,13 @@ DEFAULT_AGENT_POLICIES: dict[str, AgentRuntimePolicy] = {
         timeout_seconds=45,
         fallback_strategy="deterministic_shortlist",
     ),
+    "comparison_analyst": AgentRuntimePolicy(
+        max_iterations=1,
+        max_tool_calls=1,
+        max_tokens=4_000,
+        timeout_seconds=60,
+        fallback_strategy="deterministic_comparison_fallback",
+    ),
 }
 
 CONSERVATIVE_AGENT_POLICY = AgentRuntimePolicy(

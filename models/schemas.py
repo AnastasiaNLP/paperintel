@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -114,6 +114,7 @@ class ComparisonReport(BaseModel):
     """
 
     papers_summary: List[dict] = Field(default_factory=list)
+    producer: Literal["batch_comparator", "comparison_analyst"] = "batch_comparator"
     comparison_matrix: List[ComparisonMatrixRow] = Field(default_factory=list)
     unique_tasks_per_paper: dict[int, List[str]] = Field(default_factory=dict)
     unique_rows_per_paper: dict[int, List[str]] = Field(default_factory=dict)
