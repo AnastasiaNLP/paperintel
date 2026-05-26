@@ -8,9 +8,15 @@ from pathlib import Path
 DEFAULT_RUBRIC_DIR = Path("evaluation/rubrics")
 EXPECTED_RUBRIC_IDS = {
     "action_reasoning",
+    "comparison_balance",
+    "comparison_grounding",
+    "comparison_recommendation_justification",
     "implementation_difficulty",
     "qa_faithfulness",
     "recommended_action",
+    "synthesis_citation_faithfulness",
+    "synthesis_justification",
+    "synthesis_persona_fit",
 }
 
 
@@ -66,4 +72,3 @@ def _load_rubric(path: Path) -> JudgeRubric:
         text=text,
         sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
     )
-

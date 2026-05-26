@@ -30,6 +30,43 @@ Normal CI should use deterministic validation and deterministic runner tests.
 Live judge scoring should remain manual or scheduled until score variance is
 measured on the larger dataset.
 
+## Comparison and Synthesis Evaluation
+
+Comparison Analyst and Synthesis Agent coverage is split into two layers:
+
+- deterministic structural checks;
+- non-gating G-Eval judge gauges.
+
+CA deterministic checks are structural only. They validate schema shape, paper
+coverage, citation validity, artifact presence, and agent-run metadata. They do
+not evaluate the quality of free-text trade-offs, recommendations, or
+explanations.
+
+Passing CA structural checks means the artifacts are well-formed and reference
+the right papers; it does not mean the comparison or synthesis is semantically
+correct.
+
+Deterministic gate checks include:
+
+- schema validity for comparison and synthesis outputs;
+- requested/selected paper coverage;
+- citation paper-id validity;
+- artifact and agent-run presence;
+- producer/run provenance for request-driven CA artifacts.
+
+Judge gauges cover semantic quality signals and are intentionally
+non-deterministic and non-gating:
+
+- comparison balance;
+- comparison grounding;
+- recommendation justification;
+- synthesis persona fit;
+- synthesis next-step justification;
+- synthesis citation faithfulness.
+
+No live judge calls are made by default for CA checks. Use G-Eval rubrics only
+as a manual or scheduled quality gauge, not as a CI pass/fail gate.
+
 ## Eval Stage Closeout
 
 Closed in this stage:

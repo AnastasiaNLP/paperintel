@@ -2,12 +2,25 @@ import json
 import subprocess
 import sys
 
+import pytest
+
+from evaluation.ca_judge_payloads import (
+    build_comparison_judge_payload,
+    build_synthesis_judge_payload,
+)
 from evaluation.golden_dataset import load_golden_records
 from evaluation.judge_rubrics import EXPECTED_RUBRIC_IDS, load_judge_rubrics
 from evaluation.judge_models import JudgeResult
 from evaluation.judge_runner import build_dry_run_judge_report, build_judge_report
 from evaluation.runner import load_workspace_records
-from models.artifacts import PaperWorkspace
+from models.agent_runs import AgentRun
+from models.artifacts import ComparisonArtifact, PaperWorkspace
+from models.synthesis import (
+    SynthesisAgentResult,
+    SynthesisCitation,
+    SynthesisRecommendation,
+    SynthesisReport,
+)
 
 
 WORKSPACES_PATH = "tests/fixtures/evaluation/workspaces_seed_sample.jsonl"
@@ -29,6 +42,8 @@ def test_load_judge_rubrics_finds_expected_versioned_files():
     assert set(rubrics) == EXPECTED_RUBRIC_IDS
     assert all(len(rubric.sha256) == 64 for rubric in rubrics.values())
     assert rubrics["recommended_action"].text.startswith("# Rubric:")
+    assert rubrics["comparison_balance"].text.startswith("# Rubric:")
+    assert rubrics["synthesis_persona_fit"].text.startswith("# Rubric:")
 
 
 def test_dry_run_judge_report_builds_report_tasks_for_matched_workspaces():
@@ -145,3 +160,179 @@ def test_run_judge_eval_requires_exactly_one_mode_flag():
 
     assert result.returncode == 1
     assert "choose exactly one" in result.stdout
+
+
+def test_ca_comparison_judge_payload_includes_only_selected_workspaces():
+    artifact = ComparisonArtifact(
+        id="cmp-1",
+        session_id="session-1",
+        paper_ids=["paper-1", "paper-0"],
+        comparison_report_json={"producer": "comparison_analyst"},
+        comparison_markdown="# Comparison",
+    )
+    payload = build_comparison_judge_payload(
+        artifact=artifact,
+        workspaces=[
+            _workspace("paper-0"),
+            _workspace("paper-1"),
+            _workspace("paper-x"),
+        ],
+    )
+
+    assert payload["selected_paper_ids"] == ["paper-1", "paper-0"]
+    assert [workspace["paper_id"] for workspace in payload["workspaces"]] == [
+        "paper-1",
+        "paper-0",
+    ]
+    assert "paper-x" not in {
+        workspace["paper_id"] for workspace in payload["workspaces"]
+    }
+    assert payload["comparison_artifact"]["comparison_markdown"] == "# Comparison"
+
+
+def test_ca_comparison_judge_payload_raises_if_selected_workspace_missing():
+    artifact = ComparisonArtifact(
+        id="cmp-1",
+        session_id="session-1",
+        paper_ids=["paper-0", "paper-1"],
+        comparison_report_json={"producer": "comparison_analyst"},
+        comparison_markdown="# Comparison",
+    )
+
+    with pytest.raises(ValueError, match="paper-1"):
+        build_comparison_judge_payload(
+            artifact=artifact,
+            workspaces=[_workspace("paper-0")],
+        )
+
+
+def test_ca_synthesis_judge_payload_includes_persona_and_optional_comparison():
+    comparison = ComparisonArtifact(
+        id="cmp-1",
+        session_id="session-1",
+        paper_ids=["paper-0", "paper-1"],
+        comparison_report_json={"producer": "comparison_analyst"},
+        comparison_markdown="# Comparison",
+    )
+    payload = build_synthesis_judge_payload(
+        result=_synthesis_result(),
+        workspaces=[
+            _workspace("paper-0"),
+            _workspace("paper-1"),
+            _workspace("paper-x"),
+        ],
+        comparison=comparison,
+    )
+
+    assert payload["persona"] == "engineer"
+    assert payload["selected_paper_ids"] == ["paper-0", "paper-1"]
+    assert [workspace["paper_id"] for workspace in payload["workspaces"]] == [
+        "paper-0",
+        "paper-1",
+    ]
+    assert payload["comparison_context"]["id"] == "cmp-1"
+    assert "paper-x" not in {
+        workspace["paper_id"] for workspace in payload["workspaces"]
+    }
+
+
+def test_ca_synthesis_judge_payload_raises_if_selected_workspace_missing():
+    with pytest.raises(ValueError, match="paper-1"):
+        build_synthesis_judge_payload(
+            result=_synthesis_result(),
+            workspaces=[_workspace("paper-0")],
+        )
+
+
+def test_ca_synthesis_judge_payload_omits_unrelated_comparison_context():
+    payload = build_synthesis_judge_payload(
+        result=_synthesis_result(),
+        workspaces=[_workspace("paper-0"), _workspace("paper-1")],
+        comparison=ComparisonArtifact(
+            id="cmp-unrelated",
+            session_id="session-1",
+            paper_ids=["paper-x", "paper-y"],
+            comparison_markdown="# Unrelated",
+        ),
+    )
+
+    assert "comparison_context" not in payload
+
+
+def _workspace(paper_id: str) -> PaperWorkspace:
+    return PaperWorkspace(
+        session_id="session-1",
+        paper_id=paper_id,
+        title=f"Paper {paper_id}",
+        source_url=f"https://arxiv.org/abs/{paper_id}",
+        pipeline_stage="completed",
+        finalized_report_json={
+            "executive_summary": f"{paper_id} summary",
+            "key_innovation": "innovation",
+            "practical_implications": "implications",
+            "implementation_difficulty": "moderate",
+            "recommended_action": "prototype",
+            "action_reasoning": "reasoning",
+        },
+        method_extraction_json={
+            "method_name": f"Method {paper_id}",
+            "description": "description",
+            "novelty_claim": "novelty",
+            "key_components": ["component"],
+            "compared_to": ["baseline"],
+            "limitations_stated": ["limitation"],
+        },
+        benchmarks_json=[
+            {
+                "task": "MMLU",
+                "metric": "Accuracy",
+                "value": 72.0,
+            }
+        ],
+        readiness_json={
+            "has_open_code": True,
+            "framework_integrations": ["PyTorch"],
+            "dependencies": ["torch"],
+            "maturity_level": "experimental",
+            "maturity_reasoning": "reasoning",
+        },
+        full_markdown_report="# Report",
+    )
+
+
+def _synthesis_result() -> SynthesisAgentResult:
+    run = AgentRun(
+        agent_name="synthesis_agent",
+        session_id="session-1",
+        input_refs=["paper_workspace:paper-0", "paper_workspace:paper-1"],
+    )
+    run.complete(
+        output_ref="synthesis_report",
+        details={"policy_applied": {"max_tokens": 4000}},
+    )
+    return SynthesisAgentResult(
+        report=SynthesisReport(
+            persona="engineer",
+            summary="Synthesis summary.",
+            key_takeaways=["Takeaway."],
+            trade_offs=["Trade-off."],
+            recommended_next_steps=[
+                SynthesisRecommendation(
+                    recommendation="Prototype.",
+                    reasoning="Evidence supports a small trial.",
+                )
+            ],
+            citations=[
+                SynthesisCitation(
+                    paper_id="paper-0",
+                    quote_or_summary="Paper 0 summary.",
+                ),
+                SynthesisCitation(
+                    paper_id="paper-1",
+                    quote_or_summary="Paper 1 summary.",
+                ),
+            ],
+        ),
+        response_text="Synthesis for engineer",
+        agent_run=run,
+    )
