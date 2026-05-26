@@ -81,6 +81,13 @@ class FakeService:
             agent_run=run,
         )
 
+    def compare_papers(self, session_id, paper_ids=None, prompt=None):
+        return ComparisonArtifact(
+            session_id=session_id,
+            paper_ids=paper_ids or ["1706.03762", "2401.00001"],
+            comparison_markdown="# Comparison",
+        )
+
     def get_session(self, session_id):
         return Session(id=session_id, phase="qa", active_paper_ids=["1706.03762"])
 
@@ -127,6 +134,7 @@ def test_mcp_server_builds_with_four_tools():
         "select_papers",
         "analyze_selected_papers",
         "synthesize_papers",
+        "compare_papers",
         "get_session",
         "list_paper_workspaces",
         "get_paper_workspace",

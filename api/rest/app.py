@@ -6,6 +6,7 @@ from api.in_memory_session_store import SessionNotFoundError
 from api.rest.schemas import (
     AnalyzeRequest,
     AskRequest,
+    CompareRequest,
     ComparisonArtifactResponse,
     CreateSessionRequest,
     DiscoverRequest,
@@ -156,6 +157,22 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     async def get_latest_comparison(session_id: str):
         comparison = service.get_latest_comparison(session_id)
         return ComparisonArtifactResponse.from_artifact(comparison)
+
+    @app.post(
+        "/sessions/{session_id}/compare",
+        response_model=ComparisonArtifactResponse,
+    )
+    async def compare_papers(
+        session_id: str,
+        payload: CompareRequest | None = None,
+    ):
+        """Create a new request-driven comparison artifact for session papers."""
+        artifact = service.compare_papers(
+            session_id,
+            paper_ids=payload.paper_ids if payload is not None else None,
+            prompt=payload.prompt if payload is not None else None,
+        )
+        return ComparisonArtifactResponse.from_artifact(artifact)
 
     @app.post("/sessions/{session_id}/analyze", response_model=MessageResponse)
     async def analyze_paper(session_id: str, payload: AnalyzeRequest):

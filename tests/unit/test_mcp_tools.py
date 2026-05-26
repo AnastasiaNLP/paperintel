@@ -7,6 +7,7 @@ from mcp_server.tools import (
     analyze_paper_tool,
     analyze_selected_papers_tool,
     ask_paper_tool,
+    compare_papers_tool,
     create_session_tool,
     discover_papers_tool,
     format_comparison_artifact,
@@ -49,6 +50,7 @@ class FakeService:
         self.select_calls = []
         self.analyze_selected_calls = []
         self.synthesize_calls = []
+        self.compare_calls = []
         self.list_workspace_calls = []
         self.get_workspace_calls = []
         self.comparison_calls = []
@@ -182,6 +184,15 @@ class FakeService:
             agent_run=run,
         )
 
+    def compare_papers(self, session_id, paper_ids=None, prompt=None):
+        self.compare_calls.append((session_id, paper_ids, prompt))
+        return ComparisonArtifact(
+            session_id=session_id,
+            paper_ids=paper_ids or ["1706.03762", "2401.00001"],
+            comparison_report_json={"producer": "comparison_analyst"},
+            comparison_markdown="# Comparison\n\nA vs B",
+        )
+
     def get_session(self, session_id):
         return self.sessions[session_id]
 
@@ -206,6 +217,9 @@ class ExplodingService(FakeService):
         raise RuntimeError("internal details should not leak")
 
     def synthesize_papers(self, session_id, prompt=None):
+        raise RuntimeError("internal details should not leak")
+
+    def compare_papers(self, session_id, paper_ids=None, prompt=None):
         raise RuntimeError("internal details should not leak")
 
     def get_paper_workspace(self, session_id, paper_id):
@@ -440,6 +454,70 @@ def test_synthesize_papers_handles_service_exception_safely():
     )
 
     assert "could not synthesize the active papers safely" in text
+    assert "internal details" not in text
+
+
+def test_compare_papers_tool_calls_service_with_prompt_and_paper_ids():
+    service = FakeService()
+
+    text = asyncio.run(
+        compare_papers_tool(
+            service,
+            session_id="session-1",
+            paper_ids=["2401.00001", "1706.03762"],
+            prompt="Prefer deployability.",
+        )
+    )
+
+    assert "Latest persisted comparison" in text
+    assert "# Comparison" in text
+    assert service.compare_calls == [
+        ("session-1", ["2401.00001", "1706.03762"], "Prefer deployability.")
+    ]
+
+
+def test_compare_papers_tool_calls_service_without_paper_ids():
+    service = FakeService()
+
+    text = asyncio.run(compare_papers_tool(service, session_id="session-1"))
+
+    assert "A vs B" in text
+    assert service.compare_calls == [("session-1", None, None)]
+
+
+def test_compare_papers_rejects_invalid_inputs():
+    with pytest.raises(ValueError):
+        asyncio.run(compare_papers_tool(FakeService(), session_id=""))
+    with pytest.raises(ValueError):
+        asyncio.run(
+            compare_papers_tool(
+                FakeService(),
+                session_id="session-1",
+                prompt="x" * 2001,
+            )
+        )
+    with pytest.raises(ValueError):
+        asyncio.run(
+            compare_papers_tool(
+                FakeService(),
+                session_id="session-1",
+                paper_ids=["1706.03762", "  "],
+            )
+        )
+    with pytest.raises(ValueError):
+        asyncio.run(
+            compare_papers_tool(
+                FakeService(),
+                session_id="session-1",
+                paper_ids=["1706.03762", "1706.03762"],
+            )
+        )
+
+
+def test_compare_papers_handles_service_exception_safely():
+    text = asyncio.run(compare_papers_tool(ExplodingService(), session_id="session-1"))
+
+    assert "could not compare the selected papers safely" in text
     assert "internal details" not in text
 
 

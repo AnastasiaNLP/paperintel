@@ -19,7 +19,9 @@ from services.paperintel_service import (
     ComparisonNotFoundError,
     InvalidSessionPhaseError,
     NoActivePapersError,
+    NotEnoughPapersForComparisonError,
     PaperWorkspaceNotFoundError,
+    PaperWorkspaceNotReadyError,
 )
 from services.selected_candidate_resolver import (
     NoSelectedCandidatesError,
@@ -54,6 +56,7 @@ class FakeService:
         self.select_calls = []
         self.analyze_selected_calls = []
         self.synthesize_calls = []
+        self.compare_calls = []
         self.workspaces = [
             PaperWorkspace(
                 session_id="session-1",
@@ -180,6 +183,19 @@ class FakeService:
             agent_run=run,
         )
 
+    def compare_papers(self, session_id, paper_ids=None, prompt=None):
+        self.get_session(session_id)
+        self.compare_calls.append((session_id, paper_ids, prompt))
+        return ComparisonArtifact(
+            session_id=session_id,
+            paper_ids=paper_ids or ["1706.03762", "2401.00001"],
+            comparison_report_json={
+                "producer": "comparison_analyst",
+                "winner_basis": "quality",
+            },
+            comparison_markdown="# Comparison\n\nA vs B",
+        )
+
     def list_paper_workspaces(self, session_id):
         self.get_session(session_id)
         return [
@@ -238,6 +254,44 @@ class CandidateNotReadyService(FakeService):
 class NoActivePapersService(FakeService):
     def synthesize_papers(self, session_id, prompt=None):
         raise NoActivePapersError(session_id)
+
+
+class NotEnoughPapersService(FakeService):
+    def compare_papers(self, session_id, paper_ids=None, prompt=None):
+        raise NotEnoughPapersForComparisonError(
+            session_id=session_id,
+            paper_ids=["1706.03762"],
+        )
+
+    def synthesize_papers(self, session_id, prompt=None):
+        raise NotEnoughPapersForComparisonError(
+            session_id=session_id,
+            paper_ids=["1706.03762"],
+        )
+
+
+class NotReadyWorkspaceService(FakeService):
+    def compare_papers(self, session_id, paper_ids=None, prompt=None):
+        raise PaperWorkspaceNotReadyError(
+            session_id=session_id,
+            paper_id="1706.03762",
+            pipeline_stage="failed",
+        )
+
+    def synthesize_papers(self, session_id, prompt=None):
+        raise PaperWorkspaceNotReadyError(
+            session_id=session_id,
+            paper_id="1706.03762",
+            pipeline_stage="failed",
+        )
+
+
+class MissingWorkspaceService(FakeService):
+    def compare_papers(self, session_id, paper_ids=None, prompt=None):
+        raise PaperWorkspaceNotFoundError(
+            session_id=session_id,
+            paper_id="missing",
+        )
 
 
 class MissingComparisonService(FakeService):
@@ -378,6 +432,53 @@ def test_get_latest_comparison_returns_404_when_missing():
 
     assert response.status_code == 404
     assert response.json()["error"] == "comparison_not_found"
+
+
+def test_compare_creates_new_comparison_with_prompt_and_paper_ids():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/compare",
+        json={
+            "paper_ids": ["2401.00001", "1706.03762"],
+            "prompt": "Prefer deployability.",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["paper_ids"] == ["2401.00001", "1706.03762"]
+    assert payload["comparison_report_json"]["producer"] == "comparison_analyst"
+    assert payload["comparison_markdown"] == "# Comparison\n\nA vs B"
+    assert service.compare_calls == [
+        ("session-1", ["2401.00001", "1706.03762"], "Prefer deployability.")
+    ]
+
+
+def test_compare_accepts_empty_body_and_uses_active_papers():
+    service = FakeService()
+
+    response = _request(service, "POST", "/sessions/session-1/compare")
+
+    assert response.status_code == 200
+    assert response.json()["paper_ids"] == ["1706.03762", "2401.00001"]
+    assert service.compare_calls == [("session-1", None, None)]
+
+
+def test_compare_maps_shared_workspace_errors():
+    cases = [
+        (NotEnoughPapersService(), "not_enough_papers", 409),
+        (MissingWorkspaceService(), "paper_workspace_not_found", 404),
+        (NotReadyWorkspaceService(), "paper_workspace_not_ready", 409),
+    ]
+
+    for service, expected_error, expected_status in cases:
+        response = _request(service, "POST", "/sessions/session-1/compare")
+
+        assert response.status_code == expected_status
+        assert response.json()["error"] == expected_error
 
 
 def test_health_returns_service_health():
@@ -611,6 +712,17 @@ def test_synthesize_returns_409_when_no_active_papers():
 
     assert response.status_code == 409
     assert response.json()["error"] == "no_active_papers"
+
+
+def test_synthesize_maps_shared_workspace_errors_to_409():
+    for service, expected_error in [
+        (NotEnoughPapersService(), "not_enough_papers"),
+        (NotReadyWorkspaceService(), "paper_workspace_not_ready"),
+    ]:
+        response = _request(service, "POST", "/sessions/session-1/synthesize")
+
+        assert response.status_code == 409
+        assert response.json()["error"] == expected_error
 
 
 def test_synthesize_rejects_prompt_over_max_length():

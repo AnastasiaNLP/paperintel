@@ -115,6 +115,31 @@ async def synthesize_papers_tool(
     return format_synthesis_result(result)
 
 
+async def compare_papers_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    paper_ids: list[str] | None = None,
+    prompt: str | None = None,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    if prompt is not None:
+        prompt = prompt.strip() or None
+    if prompt is not None:
+        prompt = _validate_question(prompt)
+    paper_ids = _validate_optional_paper_ids(paper_ids)
+    try:
+        artifact = await _run_sync(
+            service.compare_papers,
+            session_id,
+            paper_ids=paper_ids,
+            prompt=prompt,
+        )
+    except Exception:
+        return _safe_error("compare the selected papers")
+    return format_comparison_artifact(artifact)
+
+
 async def get_session_tool(
     service: PaperIntelService,
     *,
@@ -372,6 +397,21 @@ def _validate_question(question: str) -> str:
     if len(question) > MAX_QUESTION_LENGTH:
         raise ValueError(f"question must be at most {MAX_QUESTION_LENGTH} characters")
     return question
+
+
+def _validate_optional_paper_ids(paper_ids: list[str] | None) -> list[str] | None:
+    if paper_ids is None:
+        return None
+    if not isinstance(paper_ids, list):
+        raise ValueError("paper_ids must be a list of strings")
+    validated = [
+        _validate_non_empty("paper_id", paper_id)
+        for paper_id in paper_ids
+    ]
+    deduped = list(dict.fromkeys(validated))
+    if len(deduped) < 2:
+        raise ValueError("paper_ids must contain at least two distinct paper ids")
+    return validated
 
 
 def _validate_non_empty(name: str, value: str) -> str:

@@ -33,6 +33,11 @@ class SynthesizeRequest(BaseModel):
     prompt: str | None = Field(default=None, max_length=2000)
 
 
+class CompareRequest(BaseModel):
+    paper_ids: list[str] | None = None
+    prompt: str | None = Field(default=None, max_length=2000)
+
+
 class SessionResponse(BaseModel):
     id: str
     persona: Persona

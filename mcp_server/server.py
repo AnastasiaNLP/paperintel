@@ -68,12 +68,28 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
 
     @mcp.tool()
     async def synthesize_papers(session_id: str, prompt: str | None = None) -> str:
-        """Synthesize active papers using retrieval-backed QA with citations."""
+        """Synthesize active papers using durable paper workspace artifacts."""
         from mcp_server.tools import synthesize_papers_tool
 
         return await synthesize_papers_tool(
             service,
             session_id=session_id,
+            prompt=prompt,
+        )
+
+    @mcp.tool()
+    async def compare_papers(
+        session_id: str,
+        paper_ids: list[str] | None = None,
+        prompt: str | None = None,
+    ) -> str:
+        """Create a new persisted comparison artifact for session papers."""
+        from mcp_server.tools import compare_papers_tool
+
+        return await compare_papers_tool(
+            service,
+            session_id=session_id,
+            paper_ids=paper_ids,
             prompt=prompt,
         )
 
