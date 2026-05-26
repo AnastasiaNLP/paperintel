@@ -7,9 +7,20 @@ Do not explain your reasoning. Do not say what you are looking at. Do not includ
 You will receive:
 1. The proposed method name.
 2. Raw table data extracted from the PDF, with page-level context when available.
-3. Optional fallback text context if no tables were extracted.
+3. Optional fallback text context with nearby prose, captions, and result mentions.
 
 Extract benchmark results where the proposed method is evaluated.
+
+## Field contract:
+- task = dataset or benchmark name only.
+  Good: "Natural Questions", "TriviaQA", "WebArena", "HumanEval", "SWE-bench Lite", "MMLU".
+  Bad: "open-domain QA", "natural language understanding", "interactive decision making", "agent benchmark", "system evaluation".
+- metric = metric name only.
+  Good: "Exact Match", "Accuracy", "F1", "BLEU", "pass@1", "Success Rate", "nDCG@10".
+  Bad: "NQ", "TriviaQA", "RAG-Sequence", "GPT-4", "Top-1 Accuracy on ImageNet".
+- conditions = proposed method/model variant, split, shot setting, top-k/top-N setting, prompt or decoding setting.
+  Good: "RAG-Sequence test set", "GPT-4 zero-shot", "Top-1 zero-shot ViT-L/14@336px", "ReAct best of 6".
+  Bad: null when the row includes model/method variant, split, shot setting, top-k, or evaluation setting.
 
 ## Output format (strict JSON array, no markdown, no explanation):
 [
@@ -26,6 +37,13 @@ Extract benchmark results where the proposed method is evaluated.
 ## Rules:
 - Extract ONLY results for the proposed method or clearly named variants of the proposed method.
 - If a table contains multiple models, do not extract baseline rows unless they are needed only to describe baseline_comparison.
+- Prefer dataset/benchmark names from table headers, column headers, row labels, captions, and nearby prose.
+- For QA/RAG tables, do not put dataset abbreviations in metric. Map dataset columns to task and use the stated metric.
+  Example: if columns are NQ/TQA/WQ/CT and the table reports EM, output task="Natural Questions", metric="Exact Match".
+- For systems/agent papers, task should be the named benchmark or environment, not a broad category.
+  Example: task="WebArena", metric="Success Rate", conditions="GPT-4 + agent setting".
+- Put model/method variants such as RAG-Sequence, RAG-Token, ReAct, CoT-SC, Reflexion, SWE-agent, Top-1, 5-shot, zero-shot, test/dev split in conditions.
+- Do not use broad categories as task when a specific benchmark/dataset/environment name is available.
 - Do not invent benchmark values.
 - Do not infer values from prose unless the number is explicitly stated.
 - If you are unsure whether a number belongs to the proposed method, skip it.
@@ -46,6 +64,30 @@ I found benchmark results in Table 1. The proposed model gets 25.8 BLEU.
     "unit": null,
     "baseline_comparison": null,
     "conditions": "newstest2014"
+  }
+]
+
+## Invalid field mapping:
+[
+  {
+    "task": "Open-Domain QA",
+    "metric": "NQ",
+    "value": 44.5,
+    "unit": null,
+    "baseline_comparison": null,
+    "conditions": "RAG-Seq."
+  }
+]
+
+## Valid field mapping:
+[
+  {
+    "task": "Natural Questions",
+    "metric": "Exact Match",
+    "value": 44.5,
+    "unit": null,
+    "baseline_comparison": null,
+    "conditions": "RAG-Sequence test set"
   }
 ]
 

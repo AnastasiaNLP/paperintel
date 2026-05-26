@@ -225,7 +225,7 @@ def _should_include_fallback_text(
     tables_truncated: bool,
     complex_tables: bool,
 ) -> bool:
-    return not tables or tables_truncated or complex_tables
+    return True
 
 
 def _should_use_sonnet_fallback(
@@ -235,10 +235,31 @@ def _should_use_sonnet_fallback(
     tables: list,
     tables_truncated: bool,
     complex_tables: bool,
+    fallback_text: str,
 ) -> bool:
-    if benchmarks:
-        return False
-    return bool(parse_error or tables_truncated or complex_tables or not tables)
+    if parse_error:
+        return True
+    if not benchmarks:
+        return bool(tables_truncated or complex_tables or not tables or fallback_text)
+    if len(benchmarks) < 2 and fallback_text:
+        return True
+    return False
+
+
+def _benchmark_context_diagnostic(
+    *,
+    tables: list,
+    tables_truncated: bool,
+    complex_tables: bool,
+    fallback_text: str,
+) -> str:
+    return (
+        "Benchmark extraction returned no rows "
+        f"(tables_count={len(tables)}, "
+        f"complex_tables={complex_tables}, "
+        f"tables_truncated={tables_truncated}, "
+        f"fallback_context_chars={len(fallback_text)})"
+    )
 
 
 def _extract_text_block(response: object, *, context: str) -> tuple[Optional[str], Optional[str]]:
@@ -432,19 +453,21 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
         tables=tables,
         tables_truncated=tables_truncated,
         complex_tables=complex_tables,
+        fallback_text=fallback_text,
     ):
         logger.info(
             "Benchmark Sonnet fallback triggered: benchmarks=%d parse_error=%s "
-            "tables=%d truncated=%s complex=%s",
+            "tables=%d truncated=%s complex=%s fallback_context_chars=%d",
             len(benchmarks),
             bool(parse_error),
             len(tables),
             tables_truncated,
             complex_tables,
+            len(fallback_text),
         )
         fallback_warning = (
-            "Benchmark Sonnet fallback used due to complex, truncated, empty, or "
-            "unparseable benchmark context"
+            "Benchmark Sonnet fallback used due to low row count, complex, "
+            "truncated, empty, or unparseable benchmark context"
         )
         sonnet_fallback_text = fallback_text or _format_benchmark_context(raw_text)
         sonnet_json, sonnet_error = _call_llm(
@@ -504,6 +527,15 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
         "benchmarks": benchmarks,
         "processing_stage": "readiness",
     }
+    if not benchmarks:
+        new_errors.append(
+            _benchmark_context_diagnostic(
+                tables=tables,
+                tables_truncated=tables_truncated,
+                complex_tables=complex_tables,
+                fallback_text=fallback_text,
+            )
+        )
     final_errors = new_errors + ([parse_warning] if parse_warning else [])
     if final_errors:
         result["errors"] = _warning_errors(final_errors)
