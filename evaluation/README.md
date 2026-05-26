@@ -47,17 +47,16 @@ Closed in this stage:
 - Judge rubrics are versioned repository artifacts, and judge scoring is
   available as an explicit manual gauge.
 
-Not closed in this stage:
+Still deferred:
 
-- Full 30-paper analysis has not been run end to end to produce a complete
-  exported workspace baseline.
-- Deterministic baseline numbers for all 30 papers are not claimed yet.
 - QA faithfulness judge task generation is not wired yet.
 - Judge scores are not CI gates.
+- Benchmark extraction quality remains a measured weakness, especially on
+  complex PDF tables and systems/alignment papers.
 
-The next evaluation step is an explicit baseline phase: analyze the 30 papers,
-export their persisted workspaces, run deterministic evaluation against
-`paperintel_30_v0_1.jsonl`, and publish the resulting baseline report.
+The 30-paper baseline has been run and exported successfully. The baseline is
+not presented as high model quality; it is presented as a measured v0.1 quality
+profile with explicit weaknesses and next targets.
 
 ## Inputs
 
@@ -231,6 +230,44 @@ Exit codes:
 - `1`: input loading or validation failed.
 - `2`: evaluation ran, but some records are missing or some checks failed.
 
+## Baseline Results v0.1
+
+The first 30-paper baseline used `golden_dataset/paperintel_30_v0_1.jsonl` and
+an exported `PaperWorkspace` JSONL from a live PaperIntel run.
+
+Workspace coverage:
+
+- matched workspaces: `30/30`
+- missing workspaces: `0`
+
+Deterministic evaluation after benchmark matcher normalization:
+
+- average score: `0.2659`
+- benchmark score: `0.1127`
+- matched workspaces: `30/30`
+- missing workspaces: `0`
+
+A targeted local-PDF rerun on the 12 papers that previously had empty benchmark
+extraction produced:
+
+- analyzed: `12`
+- failed: `0`
+- exported: `12`
+- empty benchmark papers: `11 -> 9`
+- non-empty benchmark papers: `1 -> 3`
+- subset benchmark score: `0.0 -> 0.0417`
+
+Manual benchmark extraction review over the 30-paper seed:
+
+- empty benchmark extraction: `11/30`
+- clean benchmark extraction: `11/30`
+- partial benchmark extraction: `6/30`
+- corrupt/noisy benchmark extraction: `2/30`
+
+Interpretation: benchmark extraction is the weakest measured component in
+v0.1. This is a useful result of the evaluation stage, not a hidden caveat. The
+system now has a reproducible way to expose and track this weakness.
+
 ## Deterministic Checks
 
 Current deterministic checks cover:
@@ -309,6 +346,13 @@ loading failures and provider setup failures still return exit code `1`.
 - The 30-paper dataset is manually verified and schema-clean, but still small
   and curated. Treat it as a focused evaluation corpus, not a broad benchmark of
   general LLM paper understanding.
+- Benchmark extraction is weak in v0.1. Observed failure modes include:
+  empty extraction on papers with clear benchmark tables, partial extraction
+  that misses headline rows or variants, and noisy extraction of auxiliary or
+  ambiguous values.
+- The deterministic benchmark matcher now normalizes common aliases but still
+  requires task, metric, and value agreement. Low benchmark scores should be
+  read as extraction quality gaps, not just matcher artifacts.
 - Method and report keyword checks are coverage proxies, not semantic
   correctness checks.
 - Judge scores are non-deterministic and should not be used as normal CI gates.
@@ -321,10 +365,13 @@ loading failures and provider setup failures still return exit code `1`.
 
 ## Next Steps
 
-1. Generate and export the 30-paper workspace baseline.
-2. Run deterministic evaluation against `paperintel_30_v0_1.jsonl` and document
-   the first baseline numbers.
+1. Improve benchmark extraction on complex PDF tables and systems/alignment
+   papers.
+2. Reduce partial/corrupt benchmark rows by strengthening unit, condition, and
+   headline-row handling.
 3. Add QA judge task generation for `qa_faithfulness`.
-4. Add a judge report artifact format for trend tracking across runs.
-5. Add optional scheduled judge evaluation once score variance is understood.
-6. Add a deterministic CI job after the repository CI shape is finalized.
+4. Add citation-grounding metrics.
+5. Add comparison/synthesis evaluation once the comparison analyst and synthesis
+   agent land.
+6. Revisit benchmark extraction after expanding beyond the 30-paper seed
+   dataset, to avoid overfitting prompt changes to the current corpus.
