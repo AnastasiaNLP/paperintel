@@ -25,8 +25,10 @@ from services.paperintel_service import (
     ComparisonNotFoundError,
     InvalidSessionPhaseError,
     NoActivePapersError,
+    NotEnoughPapersForComparisonError,
     PaperIntelService,
     PaperWorkspaceNotFoundError,
+    PaperWorkspaceNotReadyError,
 )
 from services.selected_candidate_resolver import (
     NoSelectedCandidatesError,
@@ -73,6 +75,16 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     async def paper_workspace_not_found_handler(request, exc):  # noqa: ANN001
         error = ErrorResponse(error="paper_workspace_not_found", detail=str(exc))
         return JSONResponse(status_code=404, content=error.model_dump(mode="json"))
+
+    @app.exception_handler(PaperWorkspaceNotReadyError)
+    async def paper_workspace_not_ready_handler(request, exc):  # noqa: ANN001
+        error = ErrorResponse(error="paper_workspace_not_ready", detail=str(exc))
+        return JSONResponse(status_code=409, content=error.model_dump(mode="json"))
+
+    @app.exception_handler(NotEnoughPapersForComparisonError)
+    async def not_enough_papers_handler(request, exc):  # noqa: ANN001
+        error = ErrorResponse(error="not_enough_papers", detail=str(exc))
+        return JSONResponse(status_code=409, content=error.model_dump(mode="json"))
 
     @app.exception_handler(ComparisonNotFoundError)
     async def comparison_not_found_handler(request, exc):  # noqa: ANN001
@@ -179,6 +191,9 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
             session_id,
             prompt=payload.prompt if payload is not None else None,
         )
-        return MessageResponse.from_handler_result(result)
+        return MessageResponse.from_synthesis_result(
+            session_id=session_id,
+            result=result,
+        )
 
     return app

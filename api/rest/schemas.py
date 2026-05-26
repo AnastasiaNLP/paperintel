@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, HttpUrl
 from models.api import HealthStatus
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.session import HandlerResult, Persona, Session, Turn
+from models.synthesis import SynthesisAgentResult
 
 
 class CreateSessionRequest(BaseModel):
@@ -85,6 +86,36 @@ class MessageResponse(BaseModel):
             discovery_topic=result.discovery_topic,
             discovery_candidate_count=result.discovery_candidate_count,
             selected_candidate_ids=result.selected_candidate_ids,
+        )
+
+    @classmethod
+    def from_synthesis_result(
+        cls,
+        *,
+        session_id: str,
+        result: SynthesisAgentResult,
+    ) -> "MessageResponse":
+        referenced_paper_ids = [
+            ref.removeprefix("paper_workspace:")
+            for ref in result.agent_run.input_refs
+            if ref.startswith("paper_workspace:")
+        ]
+        artifact_refs = [
+            ref
+            for ref in result.agent_run.input_refs
+            if ref.startswith("comparison_artifact:")
+        ]
+        return cls(
+            session_id=session_id,
+            response_text=result.response_text,
+            phase="qa",
+            intent="synthesis",
+            referenced_paper_ids=referenced_paper_ids,
+            citations=[
+                citation.model_dump(mode="json")
+                for citation in result.report.citations
+            ],
+            artifact_refs=artifact_refs,
         )
 
 

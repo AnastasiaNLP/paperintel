@@ -1,12 +1,16 @@
 from typing import Protocol
 
 from agents.comparison_analyst import compare_workspaces
+from agents.synthesis_agent import synthesize_workspaces
 from api.chat_handler import ChatHandler
 from models.api import HealthStatus
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import CandidateStatus, SearchCandidate
 from models.session import HandlerResult, Persona, Session, Turn
+from models.synthesis import SynthesisAgentResult
 from services.selected_candidate_resolver import SelectedCandidateResolver
+
+_FAILED_WORKSPACE_STAGES = {"failed", "paper_failure_finalize"}
 
 
 class InvalidSessionPhaseError(ValueError):
@@ -33,6 +37,23 @@ class PaperWorkspaceNotFoundError(ValueError):
         )
         self.session_id = session_id
         self.paper_id = paper_id
+
+
+class PaperWorkspaceNotReadyError(ValueError):
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        paper_id: str,
+        pipeline_stage: str,
+    ) -> None:
+        super().__init__(
+            f"Paper workspace {paper_id} in session {session_id} is not ready "
+            f"for request-driven comparison or synthesis; stage={pipeline_stage}."
+        )
+        self.session_id = session_id
+        self.paper_id = paper_id
+        self.pipeline_stage = pipeline_stage
 
 
 class ComparisonNotFoundError(ValueError):
@@ -143,14 +164,34 @@ class PaperIntelService:
         self,
         session_id: str,
         prompt: str | None = None,
-    ) -> HandlerResult:
+        paper_ids: list[str] | None = None,
+    ) -> SynthesisAgentResult:
         session = self.handler.store.require_session(session_id)
-        if not session.active_paper_ids:
+        requested_ids = (
+            list(paper_ids)
+            if paper_ids is not None
+            else list(session.active_paper_ids)
+        )
+        if not requested_ids:
             raise NoActivePapersError(session_id)
-        question = (prompt or _DEFAULT_SYNTHESIS_PROMPT).strip()
-        if not question:
-            question = _DEFAULT_SYNTHESIS_PROMPT
-        return self.handler.handle_message(session_id, question)
+        workspaces = self._load_request_workspaces(session_id, requested_ids)
+        comparison = self._latest_relevant_comparison(
+            session_id,
+            [workspace.paper_id for workspace in workspaces],
+        )
+        return synthesize_workspaces(
+            session_id=session_id,
+            persona=session.persona,
+            workspaces=workspaces,
+            prompt=prompt,
+            comparison=comparison,
+            config={
+                "configurable": {
+                    "session_id": session_id,
+                    "agent_run_persistence": self.handler.agent_run_persistence,
+                }
+            },
+        )
 
     def discover_papers(self, session_id: str, topic_message: str) -> HandlerResult:
         topic_message = topic_message.strip()
@@ -230,6 +271,35 @@ class PaperIntelService:
             if paper_ids is not None
             else list(session.active_paper_ids)
         )
+        workspaces = self._load_request_workspaces(session_id, requested_ids)
+        requested_ids = [workspace.paper_id for workspace in workspaces]
+        result = compare_workspaces(
+            session_id=session_id,
+            workspaces=workspaces,
+            prompt=prompt,
+            config={
+                "configurable": {
+                    "session_id": session_id,
+                    "agent_run_persistence": self.handler.agent_run_persistence,
+                }
+            },
+        )
+        artifact = ComparisonArtifact(
+            session_id=session_id,
+            paper_ids=requested_ids,
+            comparison_report_json=result.report.model_dump(mode="json"),
+            comparison_markdown=result.markdown,
+        )
+        return self.artifact_repository.save_comparison(artifact)
+
+    def _load_request_workspaces(
+        self,
+        session_id: str,
+        requested_ids: list[str],
+    ) -> list[PaperWorkspace]:
+        if self.artifact_repository is None:
+            raise RuntimeError("Paper workspace repository is not configured.")
+
         requested_ids = list(dict.fromkeys(requested_ids))
         if len(requested_ids) < 2:
             raise NotEnoughPapersForComparisonError(
@@ -253,26 +323,29 @@ class PaperIntelService:
             )
 
         workspaces = [workspaces_by_id[paper_id] for paper_id in requested_ids]
-        # TODO(CA.2/CA.3): reject or explicitly filter failed/incomplete
-        # workspaces before request-driven comparison and synthesis.
-        result = compare_workspaces(
-            session_id=session_id,
-            workspaces=workspaces,
-            prompt=prompt,
-            config={
-                "configurable": {
-                    "session_id": session_id,
-                    "agent_run_persistence": self.handler.agent_run_persistence,
-                }
-            },
-        )
-        artifact = ComparisonArtifact(
-            session_id=session_id,
-            paper_ids=requested_ids,
-            comparison_report_json=result.report.model_dump(mode="json"),
-            comparison_markdown=result.markdown,
-        )
-        return self.artifact_repository.save_comparison(artifact)
+        for workspace in workspaces:
+            if workspace.pipeline_stage in _FAILED_WORKSPACE_STAGES:
+                raise PaperWorkspaceNotReadyError(
+                    session_id=session_id,
+                    paper_id=workspace.paper_id,
+                    pipeline_stage=workspace.pipeline_stage,
+                )
+        return workspaces
+
+    def _latest_relevant_comparison(
+        self,
+        session_id: str,
+        paper_ids: list[str],
+    ) -> ComparisonArtifact | None:
+        if self.artifact_repository is None:
+            raise RuntimeError("Paper workspace repository is not configured.")
+        comparison = self.artifact_repository.latest_comparison(session_id)
+        if comparison is None:
+            return None
+        selected = set(paper_ids)
+        if not selected.intersection(comparison.paper_ids):
+            return None
+        return comparison
 
     def health(self) -> HealthStatus:
         if self.health_checker is None:
@@ -287,10 +360,3 @@ def _looks_like_discovery_message(message: str) -> bool:
     return any(word in normalized for word in discovery_words) and any(
         word in normalized for word in target_words
     )
-
-
-_DEFAULT_SYNTHESIS_PROMPT = (
-    "Synthesize the active papers. Compare their main contributions, methods, "
-    "trade-offs, limitations, and practical implications. Ground the answer in "
-    "the papers and include citations."
-)

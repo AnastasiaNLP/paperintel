@@ -4,10 +4,17 @@ import httpx
 
 from api.in_memory_session_store import SessionNotFoundError
 from api.rest.app import create_rest_app
+from models.agent_runs import AgentRun
 from models.api import HealthStatus
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.session import HandlerResult, Session, Turn
+from models.synthesis import (
+    SynthesisAgentResult,
+    SynthesisCitation,
+    SynthesisRecommendation,
+    SynthesisReport,
+)
 from services.paperintel_service import (
     ComparisonNotFoundError,
     InvalidSessionPhaseError,
@@ -144,12 +151,33 @@ class FakeService:
     def synthesize_papers(self, session_id, prompt=None):
         self.get_session(session_id)
         self.synthesize_calls.append((session_id, prompt))
-        return _handler_result(
+        run = AgentRun(
+            agent_name="synthesis_agent",
             session_id=session_id,
+            input_refs=["paper_workspace:1706.03762"],
+        )
+        run.complete(output_ref="synthesis_report")
+        return SynthesisAgentResult(
+            report=SynthesisReport(
+                persona="engineer",
+                summary="Synthesis answer.",
+                key_takeaways=["Transformer is mature."],
+                trade_offs=["Quality vs cost."],
+                recommended_next_steps=[
+                    SynthesisRecommendation(
+                        recommendation="Prototype.",
+                        reasoning="Readiness is sufficient.",
+                    )
+                ],
+                citations=[
+                    SynthesisCitation(
+                        paper_id="1706.03762",
+                        quote_or_summary="Transformer summary.",
+                    )
+                ],
+            ),
             response_text="Synthesis answer.",
-            phase="qa",
-            intent="qa_comparison",
-            referenced_paper_ids=["1706.03762"],
+            agent_run=run,
         )
 
     def list_paper_workspaces(self, session_id):
@@ -556,8 +584,10 @@ def test_synthesize_calls_service_with_optional_prompt():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["intent"] == "qa_comparison"
+    assert payload["intent"] == "synthesis"
     assert payload["response_text"] == "Synthesis answer."
+    assert payload["referenced_paper_ids"] == ["1706.03762"]
+    assert payload["citations"][0]["paper_id"] == "1706.03762"
     assert service.synthesize_calls == [
         ("session-1", "Compare implementation trade-offs.")
     ]

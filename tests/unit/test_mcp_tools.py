@@ -21,8 +21,15 @@ from mcp_server.tools import (
     synthesize_papers_tool,
 )
 from models.artifacts import ComparisonArtifact, PaperWorkspace
+from models.agent_runs import AgentRun
 from models.retrieval import CitationRef
 from models.session import HandlerResult, Session
+from models.synthesis import (
+    SynthesisAgentResult,
+    SynthesisCitation,
+    SynthesisRecommendation,
+    SynthesisReport,
+)
 
 
 class FakeService:
@@ -146,21 +153,33 @@ class FakeService:
 
     def synthesize_papers(self, session_id, prompt=None):
         self.synthesize_calls.append((session_id, prompt))
-        return HandlerResult(
+        run = AgentRun(
+            agent_name="synthesis_agent",
             session_id=session_id,
+            input_refs=["paper_workspace:1706.03762"],
+        )
+        run.complete(output_ref="synthesis_report")
+        return SynthesisAgentResult(
+            report=SynthesisReport(
+                persona="engineer",
+                summary="The papers trade off quality and deployment cost.",
+                key_takeaways=["Quality differs."],
+                trade_offs=["Deployment cost differs."],
+                recommended_next_steps=[
+                    SynthesisRecommendation(
+                        recommendation="Prototype the cheaper option.",
+                        reasoning="It is lower risk.",
+                    )
+                ],
+                citations=[
+                    SynthesisCitation(
+                        paper_id="1706.03762",
+                        quote_or_summary="Transformer summary.",
+                    )
+                ],
+            ),
             response_text="The papers trade off quality and deployment cost.",
-            phase="qa",
-            intent="qa_comparison",
-            citations=[
-                CitationRef(
-                    paper_id="1706.03762",
-                    chunk_id="1706.03762:chunk:2",
-                    page_start=2,
-                    page_end=2,
-                )
-            ],
-            user_turn_id="user-turn",
-            assistant_turn_id="assistant-turn",
+            agent_run=run,
         )
 
     def get_session(self, session_id):

@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.session import HandlerResult, Persona, Session
+from models.synthesis import SynthesisAgentResult
 from services.paperintel_service import PaperIntelService
 
 
@@ -111,7 +112,7 @@ async def synthesize_papers_tool(
         result = await _run_sync(service.synthesize_papers, session_id, prompt=prompt)
     except Exception:
         return _safe_error("synthesize the active papers")
-    return format_answer_result(result)
+    return format_synthesis_result(result)
 
 
 async def get_session_tool(
@@ -210,6 +211,17 @@ def format_answer_result(result: HandlerResult) -> str:
     text = result.response_text.strip()
     citations = _format_citations(result)
     if citations:
+        return f"{text}\n\nSources:\n{citations}"
+    return text
+
+
+def format_synthesis_result(result: SynthesisAgentResult) -> str:
+    text = result.response_text.strip()
+    if result.report.citations:
+        citations = "\n".join(
+            f"- {citation.paper_id}: {citation.quote_or_summary}"
+            for citation in result.report.citations
+        )
         return f"{text}\n\nSources:\n{citations}"
     return text
 

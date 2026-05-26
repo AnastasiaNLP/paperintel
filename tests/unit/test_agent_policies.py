@@ -68,6 +68,8 @@ def test_current_pipeline_agent_policies_are_registered():
         "citation_critic",
         "intent_router",
         "retrieval_planner",
+        "comparison_analyst",
+        "synthesis_agent",
     }
 
     assert expected.issubset(DEFAULT_AGENT_POLICIES.keys())

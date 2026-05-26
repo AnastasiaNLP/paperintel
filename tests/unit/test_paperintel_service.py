@@ -1,5 +1,6 @@
 import pytest
 
+from agents.agent_run_recorder import InMemoryAgentRunPersistence
 from api.in_memory_session_store import SessionNotFoundError
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
@@ -10,6 +11,7 @@ from services.paperintel_service import (
     ComparisonNotFoundError,
     InvalidSessionPhaseError,
     NoActivePapersError,
+    NotEnoughPapersForComparisonError,
     PaperIntelService,
     PaperWorkspaceNotFoundError,
 )
@@ -24,6 +26,7 @@ class FakeHandler:
         self.analysis_input_calls = []
         self.selected_analysis_calls = []
         self.selected_analysis_result = None
+        self.agent_run_persistence = InMemoryAgentRunPersistence()
 
     def create_session(self, *, persona="engineer", original_query=None):
         session = self.store.create_session(
@@ -192,6 +195,10 @@ class FakeArtifactRepository:
             return self.comparison
         return None
 
+    def save_comparison(self, artifact):
+        self.comparison = artifact
+        return artifact
+
 
 def _candidate(candidate_id: str) -> SearchCandidate:
     return SearchCandidate(
@@ -278,41 +285,20 @@ def test_service_ask_question_delegates_to_handler():
     assert handler.messages == [(session.id, "What is the contribution?")]
 
 
-def test_service_synthesize_papers_uses_default_prompt():
+@pytest.mark.parametrize("active_ids", [["paper-1"], ["paper-1", "paper-1"]])
+def test_service_synthesize_papers_requires_two_distinct_active_papers(active_ids):
     handler = FakeHandler()
-    service = PaperIntelService(handler=handler)
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=FakeArtifactRepository(),
+    )
     session = service.create_session()
     handler.store.sessions[session.id] = session.model_copy(
-        update={"active_paper_ids": ["paper-1", "paper-2"]}
+        update={"active_paper_ids": active_ids}
     )
 
-    result = service.synthesize_papers(session.id)
-
-    assert result.response_text.startswith("handled: Synthesize the active papers")
-    assert handler.messages == [
-        (
-            session.id,
-            (
-                "Synthesize the active papers. Compare their main contributions, "
-                "methods, trade-offs, limitations, and practical implications. "
-                "Ground the answer in the papers and include citations."
-            ),
-        )
-    ]
-
-
-def test_service_synthesize_papers_uses_custom_prompt():
-    handler = FakeHandler()
-    service = PaperIntelService(handler=handler)
-    session = service.create_session()
-    handler.store.sessions[session.id] = session.model_copy(
-        update={"active_paper_ids": ["paper-1"]}
-    )
-
-    result = service.synthesize_papers(session.id, "Compare deployment risks.")
-
-    assert result.response_text == "handled: Compare deployment risks."
-    assert handler.messages == [(session.id, "Compare deployment risks.")]
+    with pytest.raises(NotEnoughPapersForComparisonError):
+        service.synthesize_papers(session.id, "Compare deployment risks.")
 
 
 def test_service_synthesize_papers_requires_active_papers():

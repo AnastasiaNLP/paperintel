@@ -2,8 +2,10 @@ import asyncio
 
 import pytest
 
+from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.session import HandlerResult, Session
+from models.synthesis import SynthesisAgentResult, SynthesisReport
 
 
 class FakeService:
@@ -60,13 +62,23 @@ class FakeService:
         )
 
     def synthesize_papers(self, session_id, prompt=None):
-        return HandlerResult(
+        run = AgentRun(
+            agent_name="synthesis_agent",
             session_id=session_id,
+            input_refs=["paper_workspace:1706.03762", "paper_workspace:2401.00001"],
+        )
+        run.complete(output_ref="synthesis_report")
+        return SynthesisAgentResult(
+            report=SynthesisReport(
+                persona="engineer",
+                summary="Synthesis.",
+                key_takeaways=["Takeaway."],
+                trade_offs=["Trade-off."],
+                recommended_next_steps=[],
+                citations=[],
+            ),
             response_text="Synthesis.",
-            phase="qa",
-            intent="qa_comparison",
-            user_turn_id="user-turn",
-            assistant_turn_id="assistant-turn",
+            agent_run=run,
         )
 
     def get_session(self, session_id):
