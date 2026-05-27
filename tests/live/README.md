@@ -95,6 +95,66 @@ LIVE_CA_POSTGRES_CLEANUP=success
 `fallback_used` is treated as a test failure. The smoke is intended to verify the
 happy path, not only deterministic fallback behavior.
 
+## Async Jobs Live Smoke
+
+`tests/live/test_async_jobs_live_smoke.py` verifies the async job path
+end-to-end on the real stack:
+
+- REST enqueue: `POST /sessions/{id}/jobs/analyze-paper` creates a queued
+  `WorkflowJob`.
+- Worker execution: an in-process `WorkflowWorker` claims the Postgres job and
+  runs `analyze_paper`.
+- REST status: `GET /jobs/{job_id}` returns the succeeded `result_json`.
+- MCP status: `get_workflow_job` and `list_workflow_jobs` return readable job
+  status output.
+- Failure path: an invalid job payload fails deterministically with
+  `invalid_job_input`.
+- Cancel path: a queued job can be canceled and is not claimed by the worker.
+- Cleanup: temporary Qdrant collection and Postgres foundation tables.
+
+The test is skipped unless `PAPERINTEL_RUN_ASYNC_JOBS_LIVE=1` is set.
+
+This smoke currently uses one arXiv URL job (`https://arxiv.org/abs/1706.03762`)
+because the current worker supports `analyze_paper` URL jobs. Local PDF
+async jobs are a separate future job kind.
+
+### Run Without LangSmith Trace
+
+```bash
+PAPERINTEL_RUN_ASYNC_JOBS_LIVE=1 \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+.venv/bin/python -m dotenv run -- \
+.venv/bin/python -m pytest -s tests/live/test_async_jobs_live_smoke.py
+```
+
+### Run With LangSmith Trace
+
+```bash
+PAPERINTEL_RUN_ASYNC_JOBS_LIVE=1 \
+PAPERINTEL_LIVE_TRACE=1 \
+LANGCHAIN_TRACING_V2=true \
+LANGSMITH_TRACING=true \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+.venv/bin/python -m dotenv run -- \
+.venv/bin/python -m pytest -s tests/live/test_async_jobs_live_smoke.py
+```
+
+### Expected Success Markers
+
+```text
+LIVE_AJ_RUN_ID=<run_id>
+LIVE_AJ_SESSION_ID=<uuid>
+LIVE_AJ_JOB_ID=<uuid>
+LIVE_AJ_WORKER_PROCESSED=<job_id>:succeeded
+LIVE_AJ_JOB_STATUS=succeeded
+LIVE_AJ_WORKSPACE_IDS=1706.03762
+LIVE_AJ_INVALID_JOB=<job_id>:failed
+LIVE_AJ_CANCELED_JOB=<job_id>:canceled
+LIVE_AJ_QDRANT_CLEANUP=success
+LIVE_AJ_POSTGRES_CLEANUP=success
+1 passed
+```
+
 ## Common Failures
 
 ROS pytest plugin error:
