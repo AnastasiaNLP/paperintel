@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import httpx
 
@@ -18,6 +19,7 @@ from models.synthesis import (
 )
 from services.paperintel_service import (
     ComparisonNotFoundError,
+    InvalidPdfInputError,
     InvalidSessionPhaseError,
     NoActivePapersError,
     NotEnoughPapersForComparisonError,
@@ -53,6 +55,7 @@ class FakeService:
         ]
         self.created_payloads = []
         self.analyze_calls = []
+        self.analyze_pdf_calls = []
         self.ask_calls = []
         self.discover_calls = []
         self.select_calls = []
@@ -119,6 +122,26 @@ class FakeService:
         self.get_session(session_id)
         self.analyze_calls.append((session_id, paper_url))
         return _handler_result(session_id=session_id, response_text="Analyzed paper.")
+
+    def analyze_pdf(
+        self,
+        session_id,
+        pdf_path,
+        *,
+        paper_id=None,
+        skip_arxiv_metadata_fetch=False,
+    ):
+        self.get_session(session_id)
+        self.analyze_pdf_calls.append(
+            {
+                "session_id": session_id,
+                "pdf_path": pdf_path,
+                "paper_id": paper_id,
+                "skip_arxiv_metadata_fetch": skip_arxiv_metadata_fetch,
+                "exists_during_call": Path(pdf_path).exists(),
+            }
+        )
+        return _handler_result(session_id=session_id, response_text="Analyzed PDF.")
 
     def ask_question(self, session_id, question):
         self.get_session(session_id)
@@ -271,6 +294,11 @@ class FakeService:
 
     def health(self):
         return self.health_status
+
+
+class InvalidPdfService(FakeService):
+    def analyze_pdf(self, session_id, pdf_path, **kwargs):
+        raise InvalidPdfInputError("bad pdf")
 
 
 class ExplodingService(FakeService):
@@ -638,6 +666,78 @@ def test_analyze_calls_service():
     assert response.json()["response_text"] == "Analyzed paper."
     assert service.analyze_calls[0][0] == "session-1"
     assert service.analyze_calls[0][1].startswith("https://arxiv.org/abs/1706.03762")
+
+
+def test_analyze_pdf_upload_returns_message_and_cleans_temp_file():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/analyze-pdf",
+        files={"file": ("paper.pdf", b"%PDF-1.7\nbody", "application/pdf")},
+        data={"paper_id": "2501.12948", "skip_arxiv_metadata_fetch": "true"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["response_text"] == "Analyzed PDF."
+    assert len(service.analyze_pdf_calls) == 1
+    call = service.analyze_pdf_calls[0]
+    assert call["session_id"] == "session-1"
+    assert call["paper_id"] == "2501.12948"
+    assert call["skip_arxiv_metadata_fetch"] is True
+    assert call["exists_during_call"] is True
+    assert not Path(call["pdf_path"]).exists()
+
+
+def test_analyze_pdf_upload_rejects_non_pdf_content_type():
+    response = _request(
+        FakeService(),
+        "POST",
+        "/sessions/session-1/analyze-pdf",
+        files={"file": ("paper.txt", b"%PDF-1.7\nbody", "text/plain")},
+    )
+
+    assert response.status_code == 415
+    assert response.json()["error"] == "unsupported_media_type"
+
+
+def test_analyze_pdf_upload_rejects_bad_magic_bytes():
+    response = _request(
+        FakeService(),
+        "POST",
+        "/sessions/session-1/analyze-pdf",
+        files={"file": ("paper.pdf", b"not pdf", "application/pdf")},
+    )
+
+    assert response.status_code == 415
+    assert response.json()["error"] == "unsupported_media_type"
+
+
+def test_analyze_pdf_upload_rejects_oversized_file(monkeypatch):
+    monkeypatch.setattr("api.rest.app.MAX_UPLOAD_PDF_BYTES", 4)
+
+    response = _request(
+        FakeService(),
+        "POST",
+        "/sessions/session-1/analyze-pdf",
+        files={"file": ("paper.pdf", b"%PDF-1.7\nbody", "application/pdf")},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"] == "pdf_too_large"
+
+
+def test_analyze_pdf_upload_maps_service_pdf_validation_error():
+    response = _request(
+        InvalidPdfService(),
+        "POST",
+        "/sessions/session-1/analyze-pdf",
+        files={"file": ("paper.pdf", b"%PDF-1.7\nbody", "application/pdf")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_pdf_input"
 
 
 def test_ask_requires_non_empty_question():

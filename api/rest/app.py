@@ -1,4 +1,7 @@
-from fastapi import FastAPI
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -27,6 +30,7 @@ from api.rest.schemas import (
 )
 from services.paperintel_service import (
     ComparisonNotFoundError,
+    InvalidPdfInputError,
     InvalidSessionPhaseError,
     InvalidWorkflowJobInputError,
     NoActivePapersError,
@@ -41,6 +45,13 @@ from services.selected_candidate_resolver import (
     NoSelectedCandidatesError,
     SelectedCandidateNotReadyError,
 )
+
+MAX_UPLOAD_PDF_BYTES = 50 * 1024 * 1024
+
+
+def _pdf_upload_error(status_code: int, error: str, detail: str) -> JSONResponse:
+    payload = ErrorResponse(error=error, detail=detail)
+    return JSONResponse(status_code=status_code, content=payload.model_dump(mode="json"))
 
 
 def create_rest_app(*, service: PaperIntelService) -> FastAPI:
@@ -102,6 +113,11 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     async def workflow_job_not_found_handler(request, exc):  # noqa: ANN001
         error = ErrorResponse(error="workflow_job_not_found", detail=str(exc))
         return JSONResponse(status_code=404, content=error.model_dump(mode="json"))
+
+    @app.exception_handler(InvalidPdfInputError)
+    async def invalid_pdf_input_handler(request, exc):  # noqa: ANN001
+        error = ErrorResponse(error="invalid_pdf_input", detail=str(exc))
+        return JSONResponse(status_code=400, content=error.model_dump(mode="json"))
 
     @app.exception_handler(InvalidWorkflowJobInputError)
     async def invalid_workflow_job_input_handler(request, exc):  # noqa: ANN001
@@ -199,6 +215,58 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
             prompt=payload.prompt if payload is not None else None,
         )
         return ComparisonArtifactResponse.from_artifact(artifact)
+
+
+    @app.post("/sessions/{session_id}/analyze-pdf", response_model=MessageResponse)
+    async def analyze_pdf_upload(
+        session_id: str,
+        file: UploadFile = File(...),
+        paper_id: str | None = Form(default=None),
+        skip_arxiv_metadata_fetch: bool = Form(default=False),
+    ):
+        content_type = (file.content_type or "").lower()
+        if content_type and content_type != "application/pdf":
+            return _pdf_upload_error(
+                415,
+                "unsupported_media_type",
+                "PDF upload must use content type application/pdf.",
+            )
+
+        data = await file.read(MAX_UPLOAD_PDF_BYTES + 1)
+        if len(data) > MAX_UPLOAD_PDF_BYTES:
+            return _pdf_upload_error(
+                413,
+                "pdf_too_large",
+                f"PDF upload exceeds {MAX_UPLOAD_PDF_BYTES} bytes.",
+            )
+        if not data.startswith(b"%PDF-"):
+            return _pdf_upload_error(
+                415,
+                "unsupported_media_type",
+                "PDF upload must start with %PDF- magic bytes.",
+            )
+
+        temp_path = None
+        try:
+            suffix = Path(file.filename or "uploaded.pdf").suffix or ".pdf"
+            with NamedTemporaryFile(
+                mode="wb",
+                suffix=suffix,
+                prefix="paperintel_upload_",
+                delete=False,
+            ) as temp_file:
+                temp_file.write(data)
+                temp_path = temp_file.name
+            result = service.analyze_pdf(
+                session_id,
+                temp_path,
+                paper_id=paper_id.strip() if paper_id and paper_id.strip() else None,
+                skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+            )
+            return MessageResponse.from_handler_result(result)
+        finally:
+            if temp_path is not None:
+                Path(temp_path).unlink(missing_ok=True)
 
     @app.post("/sessions/{session_id}/analyze", response_model=MessageResponse)
     async def analyze_paper(session_id: str, payload: AnalyzeRequest):
