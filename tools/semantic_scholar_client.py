@@ -2,22 +2,38 @@ import logging
 import os
 import time
 import httpx
-from typing import List, Optional
+from threading import Lock
+from typing import List
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
 S2_API_URL = "https://api.semanticscholar.org/graph/v1/paper"
 S2_RECOMMENDATIONS_URL = "https://api.semanticscholar.org/recommendations/v1/papers/forpaper"
-RATE_LIMIT_DELAY = 1.2
+S2_REQUEST_INTERVAL_SECONDS = 1.2
+# Backward-compatible alias for tests and older imports.
+RATE_LIMIT_DELAY = S2_REQUEST_INTERVAL_SECONDS
 RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 
 _timeout = httpx.Timeout(30.0, connect=5.0)
 _client = httpx.Client(timeout=_timeout, follow_redirects=True)
+_rate_limit_lock = Lock()
+_last_request_at = 0.0
 
 
 def _rate_limit():
-    time.sleep(RATE_LIMIT_DELAY)
+    global _last_request_at
+    with _rate_limit_lock:
+        now = time.monotonic()
+        elapsed = now - _last_request_at
+        if elapsed < RATE_LIMIT_DELAY:
+            time.sleep(RATE_LIMIT_DELAY - elapsed)
+        _last_request_at = time.monotonic()
+
+
+def _get(url: str, *, params: dict | None = None) -> httpx.Response:
+    _rate_limit()
+    return _client.get(url, params=params, headers=_headers())
 
 
 def _headers() -> dict[str, str]:
@@ -40,7 +56,6 @@ def _handle_non_retryable_status(response: httpx.Response, arxiv_id: str) -> boo
         return True
     if response.status_code == 429:
         logger.warning("S2 rate-limited for %s; continuing without enrichment", arxiv_id)
-        _rate_limit()
         return True
     return False
 
@@ -93,7 +108,7 @@ def get_paper(arxiv_id: str) -> dict:
     }
 
     t0 = time.perf_counter()
-    response = _client.get(url, params=params, headers=_headers())
+    response = _get(url, params=params)
     if _handle_non_retryable_status(response, arxiv_id):
         return {}
     response.raise_for_status()
@@ -103,7 +118,6 @@ def get_paper(arxiv_id: str) -> dict:
     data = response.json()
     _check_for_error(data, arxiv_id)
 
-    _rate_limit()
     return _parse_paper(data)
 
 
@@ -121,7 +135,7 @@ def get_related_papers(arxiv_id: str, limit: int = 5) -> List[dict]:
     }
 
     t0 = time.perf_counter()
-    response = _client.get(S2_RECOMMENDATIONS_URL, params=params, headers=_headers())
+    response = _get(S2_RECOMMENDATIONS_URL, params=params)
     latency = time.perf_counter() - t0
     logger.info(f"S2 related latency: {latency:.2f}s")
 
@@ -133,5 +147,4 @@ def get_related_papers(arxiv_id: str, limit: int = 5) -> List[dict]:
     _check_for_error(data, arxiv_id)
 
     papers = data.get("recommendedPapers", [])
-    _rate_limit()
     return [_parse_related(p) for p in papers]
