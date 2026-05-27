@@ -22,6 +22,16 @@ class FakeService:
             assistant_turn_id="assistant-turn",
         )
 
+    def analyze_pdf(self, session_id, pdf_path, **kwargs):
+        return HandlerResult(
+            session_id=session_id,
+            response_text="PDF analysis complete.",
+            phase="qa",
+            referenced_paper_ids=[kwargs.get("paper_id") or "local-pdf"],
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
     def ask_question(self, session_id, question):
         return HandlerResult(
             session_id=session_id,
@@ -129,6 +139,7 @@ def test_mcp_server_builds_with_four_tools():
     assert {
         "create_session",
         "analyze_paper",
+        "analyze_pdf",
         "ask_paper",
         "discover_papers",
         "select_papers",

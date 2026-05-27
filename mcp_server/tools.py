@@ -40,6 +40,31 @@ async def analyze_paper_tool(
     return format_analysis_result(result)
 
 
+async def analyze_pdf_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    pdf_path: str,
+    paper_id: str | None = None,
+    skip_arxiv_metadata_fetch: bool = False,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    pdf_path = _validate_non_empty("pdf_path", pdf_path)
+    if paper_id is not None:
+        paper_id = paper_id.strip() or None
+    try:
+        result = await _run_sync(
+            service.analyze_pdf,
+            session_id,
+            pdf_path,
+            paper_id=paper_id,
+            skip_arxiv_metadata_fetch=bool(skip_arxiv_metadata_fetch),
+        )
+    except Exception:
+        return _safe_error("analyze the local PDF")
+    return format_analysis_result(result)
+
+
 async def ask_paper_tool(
     service: PaperIntelService,
     *,

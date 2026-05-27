@@ -5,6 +5,7 @@ import pytest
 import mcp_server.tools as tool_module
 from mcp_server.tools import (
     analyze_paper_tool,
+    analyze_pdf_tool,
     analyze_selected_papers_tool,
     cancel_workflow_job_tool,
     ask_paper_tool,
@@ -51,6 +52,7 @@ class FakeService:
         }
         self.create_calls = []
         self.analyze_calls = []
+        self.analyze_pdf_calls = []
         self.ask_calls = []
         self.discover_calls = []
         self.select_calls = []
@@ -112,6 +114,31 @@ class FakeService:
             response_text="Analysis complete.",
             phase="qa",
             referenced_paper_ids=["1706.03762"],
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
+    def analyze_pdf(
+        self,
+        session_id,
+        pdf_path,
+        *,
+        paper_id=None,
+        skip_arxiv_metadata_fetch=False,
+    ):
+        self.analyze_pdf_calls.append(
+            {
+                "session_id": session_id,
+                "pdf_path": pdf_path,
+                "paper_id": paper_id,
+                "skip_arxiv_metadata_fetch": skip_arxiv_metadata_fetch,
+            }
+        )
+        return HandlerResult(
+            session_id=session_id,
+            response_text="PDF analysis complete.",
+            phase="qa",
+            referenced_paper_ids=[paper_id or "local-pdf"],
             user_turn_id="user-turn",
             assistant_turn_id="assistant-turn",
         )
@@ -262,6 +289,9 @@ class FakeService:
 
 
 class ExplodingService(FakeService):
+    def analyze_pdf(self, session_id, pdf_path, **kwargs):
+        raise RuntimeError("internal details should not leak")
+
     def ask_question(self, session_id, question):
         raise RuntimeError("internal details should not leak")
 
@@ -340,6 +370,78 @@ def test_analyze_paper_rejects_non_url():
                 paper_url="arxiv 1706.03762",
             )
         )
+
+
+def test_analyze_pdf_tool_calls_service_with_local_path():
+    service = FakeService()
+
+    text = asyncio.run(
+        analyze_pdf_tool(
+            service,
+            session_id="session-1",
+            pdf_path="/home/nastassia/Desktop/pdfs/1706.03762.pdf",
+            paper_id="1706.03762",
+            skip_arxiv_metadata_fetch=True,
+        )
+    )
+
+    assert "Paper analysis completed." in text
+    assert "PDF analysis complete." in text
+    assert service.analyze_pdf_calls == [
+        {
+            "session_id": "session-1",
+            "pdf_path": "/home/nastassia/Desktop/pdfs/1706.03762.pdf",
+            "paper_id": "1706.03762",
+            "skip_arxiv_metadata_fetch": True,
+        }
+    ]
+
+
+def test_analyze_pdf_tool_treats_blank_paper_id_as_none():
+    service = FakeService()
+
+    asyncio.run(
+        analyze_pdf_tool(
+            service,
+            session_id="session-1",
+            pdf_path="/tmp/paper.pdf",
+            paper_id="   ",
+        )
+    )
+
+    assert service.analyze_pdf_calls[0]["paper_id"] is None
+
+
+def test_analyze_pdf_tool_rejects_invalid_inputs():
+    with pytest.raises(ValueError):
+        asyncio.run(
+            analyze_pdf_tool(
+                FakeService(),
+                session_id="",
+                pdf_path="/tmp/paper.pdf",
+            )
+        )
+    with pytest.raises(ValueError):
+        asyncio.run(
+            analyze_pdf_tool(
+                FakeService(),
+                session_id="session-1",
+                pdf_path="   ",
+            )
+        )
+
+
+def test_analyze_pdf_tool_handles_service_exception_safely():
+    text = asyncio.run(
+        analyze_pdf_tool(
+            ExplodingService(),
+            session_id="session-1",
+            pdf_path="/tmp/paper.pdf",
+        )
+    )
+
+    assert "could not analyze the local PDF safely" in text
+    assert "internal details" not in text
 
 
 def test_ask_paper_tool_calls_service():

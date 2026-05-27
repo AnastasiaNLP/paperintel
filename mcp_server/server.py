@@ -27,6 +27,28 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
         )
 
     @mcp.tool()
+    async def analyze_pdf(
+        session_id: str,
+        pdf_path: str,
+        paper_id: str | None = None,
+        skip_arxiv_metadata_fetch: bool = False,
+    ) -> str:
+        """Analyze a local PDF path on the MCP server machine.
+
+        Use this only for trusted local files. REST users should use the
+        multipart PDF upload endpoint instead of server-local paths.
+        """
+        from mcp_server.tools import analyze_pdf_tool
+
+        return await analyze_pdf_tool(
+            service,
+            session_id=session_id,
+            pdf_path=pdf_path,
+            paper_id=paper_id,
+            skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+        )
+
+    @mcp.tool()
     async def ask_paper(session_id: str, question: str) -> str:
         """Ask a question about papers already analyzed in this session."""
         from mcp_server.tools import ask_paper_tool
