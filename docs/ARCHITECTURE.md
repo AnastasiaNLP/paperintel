@@ -79,7 +79,10 @@ discover recent candidate papers for a research topic.
 The analysis graph handles explicit arXiv URLs, PDFs, and URL batches:
 
 1. `supervisor` validates routing state.
-2. `ingestion` fetches arXiv metadata, Semantic Scholar metadata, and PDF text.
+2. `ingestion` fetches arXiv metadata, Semantic Scholar metadata, and PDF
+   text. arXiv metadata is cached in Postgres, Semantic Scholar enrichment is
+   non-fatal, and URL analysis can continue with PDF fallback metadata when
+   arXiv metadata is unavailable.
 3. `extraction` extracts method, novelty, components, and limitations.
 4. `benchmark` extracts tasks, datasets, metrics, and result context.
 5. `readiness` checks implementation maturity and external resources.
@@ -207,6 +210,7 @@ Postgres stores durable product state:
 - `paper_workspaces`
 - `comparison_artifacts`
 - `workflow_jobs`
+- `arxiv_metadata_cache`
 
 Qdrant stores chunk vectors. Point IDs are deterministic UUID5 values derived
 from stable chunk IDs, so repeated indexing updates instead of duplicating.
@@ -242,6 +246,22 @@ retry/backoff scheduling, process supervision, job budgets, async comparison or
 synthesis jobs, or PDF/page-image asset storage. Those are separate later
 hardening layers.
 
+## External Dependency Resilience
+
+arXiv metadata lookups use a global Postgres cache keyed by `arxiv_id`. Cache
+hits avoid arXiv API calls. Cache misses still respect a process-local arXiv
+request limiter and an in-memory circuit breaker. If arXiv metadata is
+unavailable but the PDF can be parsed, ingestion continues with `pdf_fallback`
+metadata instead of failing the paper.
+
+Semantic Scholar enrichment is optional. Its client uses the same process-local
+limiter/breaker pattern, and failures degrade to missing citation enrichment
+rather than failing analysis.
+
+These protections are process-local, not distributed. Multiple REST/worker
+processes can still exceed upstream rate limits collectively. See
+[RESILIENCE.md](RESILIENCE.md) for operational details.
+
 ## AgentRun Contract
 
 Production-shaped agents record:
@@ -274,4 +294,4 @@ See [AGENT_CONTRACT.md](AGENT_CONTRACT.md) for implementation details.
   is deferred to a future PaperCache layer.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
-- Authentication, rate limiting, and deployment hardening are future work.
+- Authentication, distributed rate limiting, and deployment hardening are future work.

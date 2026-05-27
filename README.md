@@ -32,6 +32,7 @@ and implementation implications" without losing grounding in the source text.
 - Supports persona-aware answers: `engineer`, `researcher`, and `techlead`.
 - Exposes both a REST API and an MCP server.
 - Supports Postgres-backed async analysis jobs with a separate worker process.
+- Caches arXiv metadata and degrades gracefully when paper metadata enrichment fails.
 
 ## Quick Start
 
@@ -157,6 +158,8 @@ Full architecture details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - [docs/API.md](docs/API.md) — REST API usage patterns.
 - [docs/MCP_SETUP.md](docs/MCP_SETUP.md) — MCP server setup.
 - [docs/ASYNC_JOBS.md](docs/ASYNC_JOBS.md) — workflow job queue and worker operations.
+- [docs/RESILIENCE.md](docs/RESILIENCE.md) — arXiv/Semantic Scholar cache,
+  limits, breakers, and fallback behavior.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — common issues.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — implemented architecture.
 - [docs/AGENT_CONTRACT.md](docs/AGENT_CONTRACT.md) — AgentRun and policy contract.
@@ -230,7 +233,7 @@ runs completed without failures.
   advanced job scheduling/retries, and PDF asset storage are separate later work.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
-- Authentication, rate limiting, and deployment hardening are future work.
+- Authentication, distributed rate limiting, and deployment hardening are future work.
 
 ## License
 

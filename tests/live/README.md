@@ -115,8 +115,10 @@ end-to-end on the real stack:
 The test is skipped unless `PAPERINTEL_RUN_ASYNC_JOBS_LIVE=1` is set.
 
 This smoke currently uses one arXiv URL job (`https://arxiv.org/abs/1706.03762`)
-because the current worker supports `analyze_paper` URL jobs. Local PDF
-async jobs are a separate future job kind.
+because the current worker supports `analyze_paper` URL jobs. It can therefore
+exercise the arXiv metadata cache, process-local limiter, circuit breaker, and
+PDF fallback path when upstream services are slow or degraded. Local PDF async
+jobs are a separate future job kind.
 
 ### Run Without LangSmith Trace
 

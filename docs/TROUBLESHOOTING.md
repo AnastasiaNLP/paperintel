@@ -62,11 +62,33 @@ query returns candidates, the workflow continues.
 
 ## Analyze selected papers returns no active papers
 
-Selected-paper analysis depends on arXiv metadata and PDF retrieval for the
-chosen candidate. If arXiv metadata retrieval fails, the analysis phase is
-marked `failed` and the paper is not added to `active_paper_ids`.
+Selected-paper analysis depends on retrieving usable PDF/text for the chosen
+candidate. arXiv metadata failure alone should not fail analysis: PaperIntel
+first checks the Postgres metadata cache, then the arXiv API, and can continue
+with PDF-derived fallback metadata when the PDF is available.
 
-Try again later, or select a different candidate from the discovery shortlist.
+If no active papers are produced, inspect the job/session errors for PDF
+download, PDF parsing, indexing, or provider failures. Retry later if the public
+arXiv PDF service or embedding provider is unavailable, or select a different
+candidate from the discovery shortlist.
+
+## arXiv or Semantic Scholar rate limits
+
+PaperIntel has process-local rate limiters and in-memory circuit breakers for
+arXiv and Semantic Scholar. arXiv metadata is cached in Postgres, and Semantic
+Scholar enrichment is optional. If a breaker opens, requests fail fast until the
+half-open timeout instead of repeatedly calling the unhealthy upstream service.
+
+Current limitations:
+
+- The limiter and breaker are process-local. Multiple REST/worker processes can
+  still exceed upstream limits collectively.
+- arXiv metadata failures can degrade to PDF fallback metadata, but PDF download
+  and parsing must still succeed for URL analysis to continue.
+- Semantic Scholar failures remove citation enrichment but should not fail
+  analysis.
+
+See `docs/RESILIENCE.md` for details.
 
 ## Asking questions returns weak or insufficient evidence
 
