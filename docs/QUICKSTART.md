@@ -114,20 +114,28 @@ Analyze the selected papers, then ask questions as usual:
 curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/analyze-selected
 ```
 
-If you selected multiple papers, the analysis response may include a batch
-comparison report. You can also ask for a retrieval-backed synthesis over active
-papers:
+If you selected multiple papers, the analysis response may include a legacy
+batch comparison report. You can also create an on-demand comparison artifact
+from durable workspaces:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/compare \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"Prefer production readiness."}'
+```
+
+Reload the latest persisted comparison without running an LLM:
+
+```bash
+curl -s http://127.0.0.1:8000/sessions/<SESSION_ID>/comparison
+```
+
+Ask for persona-aware synthesis over active papers:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/sessions/<SESSION_ID>/synthesize \
   -H 'content-type: application/json' \
   -d '{"prompt":"Compare implementation trade-offs across these papers."}'
-```
-
-Reload the latest persisted batch comparison:
-
-```bash
-curl -s http://127.0.0.1:8000/sessions/<SESSION_ID>/comparison
 ```
 
 Discovery depends on the public arXiv API and may be rate-limited. If that

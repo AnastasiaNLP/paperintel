@@ -68,7 +68,11 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
 
     @mcp.tool()
     async def synthesize_papers(session_id: str, prompt: str | None = None) -> str:
-        """Synthesize active papers using durable paper workspace artifacts."""
+        """Synthesize active papers with the dedicated synthesis agent.
+
+        Uses durable paper workspaces and may use the latest comparison as
+        optional context. Does not persist a synthesis artifact.
+        """
         from mcp_server.tools import synthesize_papers_tool
 
         return await synthesize_papers_tool(
@@ -83,7 +87,11 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
         paper_ids: list[str] | None = None,
         prompt: str | None = None,
     ) -> str:
-        """Create a new persisted comparison artifact for session papers."""
+        """Create a new persisted request-driven comparison artifact.
+
+        Each call runs comparison_analyst over durable paper workspaces. If
+        paper_ids are omitted, the service uses the session active papers.
+        """
         from mcp_server.tools import compare_papers_tool
 
         return await compare_papers_tool(
@@ -120,7 +128,7 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
 
     @mcp.tool()
     async def get_latest_comparison(session_id: str) -> str:
-        """Get the latest persisted comparison artifact for a session."""
+        """Get the latest persisted comparison artifact without running an LLM."""
         from mcp_server.tools import get_latest_comparison_tool
 
         return await get_latest_comparison_tool(service, session_id=session_id)

@@ -21,7 +21,7 @@ discover recent candidate papers for a research topic.
 │  - create_session                                                │
 │  - analyze_paper                                                 │
 │  - ask_question                                                  │
-│  - synthesize_papers                                             │
+│  - compare_papers / synthesize_papers                           │
 │  - discover_papers / select_papers                               │
 │  - analyze_selected_papers                                       │
 │  - list/get paper workspaces and latest comparison               │
@@ -122,57 +122,53 @@ indexed in the current session:
 Repair is bounded by `MAX_REPAIR_ITERATIONS = 2` and centralized in
 `services/repair.py`.
 
-`PaperIntelService.synthesize_papers` is a product-facing wrapper over this same
-conversation QA flow. It uses a default synthesis prompt, or a caller-provided
-prompt, to compare and synthesize active papers through retrieval-backed QA with
-citations. It does not replace the batch comparator; it is an on-demand
-conversational synthesis path over indexed paper chunks.
+`PaperIntelService.compare_papers` is the request-driven comparison path. It
+loads durable `PaperWorkspace` artifacts, runs `comparison_analyst`, and
+persists a new `ComparisonArtifact` with `producer="comparison_analyst"`.
+Each successful request creates a new artifact; `GET /comparison` only reloads
+the latest artifact and does not run an LLM.
 
-PaperIntel therefore has two comparison paths:
+`PaperIntelService.synthesize_papers` runs the dedicated `synthesis_agent` over
+durable workspaces. It returns persona-aware synthesis with citations and may
+use the latest relevant comparison as optional context. It does not persist a
+`SynthesisArtifact`.
+
+PaperIntel therefore has three multi-paper paths:
 
 - Batch comparison: produced automatically when multiple papers are analyzed
-  together. It compares structured analysis outputs and returns a comparison
-  artifact.
-- Conversational synthesis: produced on demand through QA over active paper
-  chunks, with citations.
+  together. It writes `ComparisonArtifact` with `producer="batch_comparator"`.
+- Request-driven comparison: produced on demand by `comparison_analyst` from
+  durable workspaces. It writes `ComparisonArtifact` with
+  `producer="comparison_analyst"`.
+- Request-driven synthesis: produced on demand by `synthesis_agent`; it returns
+  a response but does not persist a synthesis artifact.
 
-This closes the current discovery plus comparison/synthesis MVP. Dedicated
-`comparison_analyst` and `synthesis_agent` components are intentionally
-deferred until artifact persistence exists. Without durable finalized reports,
-method extraction outputs, benchmark results, readiness outputs, and comparison
-reports, those agents would have to rely on transient graph state, markdown
-scraping, or re-analysis, which would make the design brittle.
-
-Artifact persistence now provides that durable substrate. The dedicated
-comparison and synthesis agents remain deferred until their input contracts,
-prompt policies, and evaluation shape are designed on top of persisted
-workspaces.
-
-`agents/comparator.py` is a known transitional component. It remains the batch
-analysis comparator used after multi-paper analysis, and future work should
-migrate that behavior into a `comparison_analyst` path once durable artifacts
-can be loaded directly.
+`agents/comparator.py` remains as the legacy batch-analysis comparator. It
+coexists with `comparison_analyst`; both write the same comparison artifact type
+so callers have one persisted comparison surface.
 
 ## Evaluation Layer
 
-The evaluation MVP is built on persisted `PaperWorkspace` artifacts rather than
-transient graph state. It has two separate paths:
+The evaluation layer is built on persisted artifacts rather than transient
+graph state. It has three complementary paths:
 
-- Deterministic evaluation: validates golden JSONL labels, exports
+- Deterministic paper evaluation: validates golden JSONL labels, exports
   `PaperWorkspace` rows, and checks benchmark rows, readiness fields, and
   keyword coverage. This path is stable enough for CI-style gating.
+- Deterministic CA structural checks: validate comparison and synthesis output
+  shape, citation coverage, selected paper coverage, producer markers, and
+  AgentRun policy metadata. These are CI-safe structural checks, not quality
+  claims.
 - Judge evaluation: loads versioned rubrics from `evaluation/rubrics/` and can
-  score engineer-report fields through the configured LLM provider. This path is
-  a manual or scheduled quality gauge, not a normal CI gate, because judge scores
-  are non-deterministic.
+  score report, comparison, and synthesis fields through the configured LLM
+  provider. This path is a manual or scheduled quality gauge, not a normal CI
+  gate, because judge scores are non-deterministic.
 
-The local seed dataset covers 5 papers for fast development and CI fixtures. The
-repository also includes a schema-clean 30-paper golden dataset for
-project-level evaluation, published on Hugging Face as
+The repository includes a schema-clean 30-paper golden dataset for project-level
+evaluation, published on Hugging Face as
 [AIAnastasia/arxiv-papers](https://huggingface.co/datasets/AIAnastasia/arxiv-papers).
-The dataset and evaluation tooling are complete, but a full 30-paper workspace
-baseline is tracked as the next evaluation phase rather than as part of the MVP
-closeout.
+The measured v0.1 baseline identifies benchmark extraction on complex PDF
+tables as the main known quality weakness.
 
 ## Discovery Flow
 
@@ -192,7 +188,7 @@ about retrieval augmented generation":
    to URLs, invokes the existing analysis graph in batch mode, and marks
    candidates `analyzed` only after successful analysis.
 7. Successfully analyzed selected papers are indexed and become available for
-   retrieval-backed QA and synthesis through the conversation graph.
+   retrieval-backed QA, request-driven comparison, and dedicated synthesis.
 
 Only `research_strategist` and `selection_advisor` are LLM agents. Search,
 ranking, and selection parsing are deterministic components.
@@ -221,8 +217,9 @@ Artifact persistence is intentionally narrow and Postgres-backed:
   keyed by `(session_id, paper_id)`.
 - A workspace contains finalized report JSON, method extraction JSON,
   benchmark JSON, readiness JSON, and the markdown report.
-- `comparison_artifacts` stores session-scoped batch comparison artifacts for
-  groups of papers, including `paper_ids` and `comparison_markdown`.
+- `comparison_artifacts` stores session-scoped comparison artifacts for groups
+  of papers, including `paper_ids`, `comparison_markdown`, and a report JSON
+  producer marker (`batch_comparator` or `comparison_analyst`).
 - REST and MCP read paths can reload these artifacts without re-running
   analysis.
 - Re-analysis of the same paper in the same session uses last-write-wins

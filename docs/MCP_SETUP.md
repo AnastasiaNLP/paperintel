@@ -18,7 +18,7 @@ docker compose up -d postgres qdrant
 
 ## Tools
 
-The MCP server exposes eleven tools:
+The MCP server exposes twelve tools:
 
 - `create_session(persona)` creates a PaperIntel session and returns a session ID.
 - `analyze_paper(session_id, paper_url)` analyzes an arXiv or PDF URL. This is synchronous and can take about one minute.
@@ -26,11 +26,12 @@ The MCP server exposes eleven tools:
 - `discover_papers(session_id, topic)` searches for candidate papers on arXiv and returns a shortlist.
 - `select_papers(session_id, selection)` selects papers from the current discovery shortlist by display number.
 - `analyze_selected_papers(session_id)` analyzes papers selected from the discovery shortlist.
-- `synthesize_papers(session_id, prompt)` synthesizes active papers through retrieval-backed QA. The prompt is optional.
+- `synthesize_papers(session_id, prompt)` synthesizes active papers with the dedicated synthesis agent. The prompt is optional. It does not persist a synthesis artifact.
+- `compare_papers(session_id, paper_ids, prompt)` creates a new persisted request-driven comparison artifact. `paper_ids` and `prompt` are optional.
 - `get_session(session_id)` returns persona, phase, and active paper IDs.
 - `list_paper_workspaces(session_id)` lists persisted artifact summaries for analyzed papers.
 - `get_paper_workspace(session_id, paper_id)` returns a readable summary of one persisted paper workspace.
-- `get_latest_comparison(session_id)` returns the latest persisted batch comparison artifact.
+- `get_latest_comparison(session_id)` returns the latest persisted comparison artifact without running an LLM.
 
 The server does not keep an implicit current session. Pass the `session_id` returned by `create_session` to later tool calls.
 
@@ -107,13 +108,22 @@ Analyze the selected papers.
 Claude should call `analyze_selected_papers`. If multiple selected papers are
 analyzed together, the result may include a batch comparison report.
 
-After analysis finishes, ask questions with `ask_paper`, or ask for synthesis:
+After analysis finishes, ask questions with `ask_paper`, request a durable
+comparison, or ask for synthesis:
 
 ```text
-Synthesize the active papers and compare their implementation trade-offs.
+Compare the active papers and prefer production readiness.
 ```
 
-Claude should call `synthesize_papers`.
+Claude should call `compare_papers`. Each successful call creates a new
+comparison artifact.
+
+```text
+Synthesize the active papers and recommend what I should implement first.
+```
+
+Claude should call `synthesize_papers`. Synthesis can use the latest comparison
+as optional context but also works without one.
 
 To inspect saved artifacts without re-running analysis:
 
@@ -127,7 +137,7 @@ Claude should call `list_paper_workspaces`. For a specific paper:
 Show the saved workspace for paper 1706.03762.
 ```
 
-Claude should call `get_paper_workspace`. For the latest batch comparison:
+Claude should call `get_paper_workspace`. For the latest persisted comparison:
 
 ```text
 Show the latest saved comparison for this session.
@@ -138,7 +148,7 @@ Claude should call `get_latest_comparison`.
 The full discovery workflow is:
 
 ```text
-create_session -> discover_papers -> select_papers -> analyze_selected_papers -> ask_paper / synthesize_papers
+create_session -> discover_papers -> select_papers -> analyze_selected_papers -> ask_paper / compare_papers / synthesize_papers
 ```
 
 ## Troubleshooting

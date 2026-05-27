@@ -20,12 +20,13 @@ and implementation implications" without losing grounding in the source text.
   available for citation-backed QA.
 - Produces a batch comparison report when multiple selected papers are analyzed
   together.
-- Persists analysis workspaces and batch comparison artifacts so they can be
-  reloaded without re-running analysis.
-- Includes an evaluation MVP with deterministic artifact checks, a local
-  5-paper golden seed, workspace export, and manual LLM-judge scoring.
-- Synthesizes active papers on demand through retrieval-backed QA with
-  citations.
+- Creates request-driven comparison artifacts with `comparison_analyst`.
+- Synthesizes active papers with a dedicated `synthesis_agent` over durable
+  workspaces, optionally using the latest comparison as context.
+- Persists analysis workspaces and comparison artifacts so they can be reloaded
+  without re-running analysis.
+- Includes deterministic artifact checks, a 30-paper golden dataset, CA
+  structural checks, and non-gating G-Eval rubric gauges.
 - Uses an adversarial Citation Critic with bounded repair to reduce unsupported
   confident claims.
 - Supports persona-aware answers: `engineer`, `researcher`, and `techlead`.
@@ -212,16 +213,14 @@ runs completed without failures.
 
 - REST and MCP analysis/discovery calls are synchronous.
 - Discovery currently searches arXiv only.
-- Discovery plus comparison/synthesis is implemented as an MVP: discovery,
-  shortlist selection, selected-paper analysis, batch comparison artifacts, and
-  retrieval-backed synthesis are working.
-- Dedicated `comparison_analyst` and `synthesis_agent` components are deferred
-  until the current artifact layer is used as their input contract. The durable
-  workspaces now exist; agent design, prompt contracts, and evaluation are a
-  separate follow-up.
-- `agents/comparator.py` is a known transitional component: it remains the
-  batch analysis comparator for multi-paper analysis and is expected to migrate
-  into a future `comparison_analyst` path built on persisted artifacts.
+- Discovery plus comparison/synthesis is implemented: discovery, shortlist
+  selection, selected-paper analysis, batch comparison artifacts, request-driven
+  comparison, and dedicated synthesis are working.
+- `comparison_analyst` and `synthesis_agent` are production-shaped agents over
+  durable paper workspaces.
+- `agents/comparator.py` remains as the legacy batch-analysis comparator and
+  writes comparison artifacts with `producer="batch_comparator"`;
+  request-driven comparisons use `producer="comparison_analyst"`.
 - Artifact persistence is intentionally narrow: Postgres stores finalized
   reports, method extraction, benchmarks, readiness results, and comparison
   reports. S3/object storage, paper cache versioning, outbox/job processing,

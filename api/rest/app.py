@@ -166,7 +166,12 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
         session_id: str,
         payload: CompareRequest | None = None,
     ):
-        """Create a new request-driven comparison artifact for session papers."""
+        """Create a new request-driven comparison artifact.
+
+        Each successful POST runs comparison_analyst over durable paper
+        workspaces and persists a new ComparisonArtifact. If paper_ids are not
+        provided, the service uses the session active papers.
+        """
         artifact = service.compare_papers(
             session_id,
             paper_ids=payload.paper_ids if payload is not None else None,

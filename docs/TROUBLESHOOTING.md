@@ -93,15 +93,20 @@ If you selected only one paper, or one of the selected papers failed during
 metadata/PDF retrieval, the session can still support QA but may not include a
 batch comparison artifact.
 
-For on-demand comparison after papers are active, use `/synthesize` or the MCP
-`synthesize_papers` tool. That path uses retrieval-backed QA with citations
-rather than the batch comparator.
+For on-demand comparison after papers are active, use `POST /sessions/{id}/compare`
+or the MCP `compare_papers` tool. That request-driven path loads durable
+workspaces and creates a new `ComparisonArtifact` with
+`producer="comparison_analyst"`. Use `/synthesize` or MCP `synthesize_papers`
+when you want a persona-aware recommendation rather than a persisted comparison
+artifact.
 
 ## `GET /sessions/{id}/comparison` returns `comparison_not_found`
 
-This is expected until a multi-paper analysis has produced a batch comparison.
-Analyze at least two selected papers together with `/analyze-selected`, then
-retry the comparison endpoint or MCP `get_latest_comparison` tool.
+This is expected until either multi-paper batch analysis or request-driven
+`/compare` has produced a comparison artifact. Analyze at least two papers and
+then call `POST /sessions/{id}/compare`, or analyze selected papers together
+with `/analyze-selected`, then retry the comparison endpoint or MCP
+`get_latest_comparison` tool.
 
 Single-paper analysis still persists a paper workspace. Use
 `/sessions/{id}/workspaces` or MCP `list_paper_workspaces` to inspect saved

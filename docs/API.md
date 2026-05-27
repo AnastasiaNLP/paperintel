@@ -32,8 +32,9 @@ Discovery-to-QA:
 3. Select papers from the numbered shortlist.
 4. Analyze selected papers.
 5. Ask questions about the analyzed selected papers.
-6. Optionally synthesize the active papers with a custom comparison prompt.
-7. Reload persisted paper workspaces or the latest batch comparison without
+6. Optionally create a request-driven comparison artifact for active papers.
+7. Optionally synthesize active papers with the dedicated synthesis agent.
+8. Reload persisted paper workspaces or the latest comparison without
    re-running analysis.
 
 ## Endpoints
@@ -46,13 +47,14 @@ Discovery-to-QA:
 | `GET` | `/sessions/{session_id}/turns` | Get recent conversation turns. |
 | `GET` | `/sessions/{session_id}/workspaces` | List persisted artifact summaries for analyzed papers in the session. |
 | `GET` | `/sessions/{session_id}/workspaces/{paper_id}` | Get one persisted paper workspace. `paper_id` matches `active_paper_ids`, usually an arXiv ID. |
-| `GET` | `/sessions/{session_id}/comparison` | Get the latest persisted batch comparison artifact for the session. Returns `404` if none exists. |
+| `GET` | `/sessions/{session_id}/comparison` | Get the latest persisted comparison artifact for the session. Read-only; does not run an LLM. Returns `404` if none exists. |
+| `POST` | `/sessions/{session_id}/compare` | Create a new request-driven comparison artifact from durable paper workspaces. Optional `paper_ids` and `prompt` body. |
 | `POST` | `/sessions/{session_id}/analyze` | Analyze a paper URL. URL validation happens at the API boundary. |
 | `POST` | `/sessions/{session_id}/ask` | Ask a question about active papers in the session. |
 | `POST` | `/sessions/{session_id}/discover` | Find candidate papers for a research topic and enter selection phase. |
 | `POST` | `/sessions/{session_id}/select` | Select papers from the latest discovery shortlist by display number. |
 | `POST` | `/sessions/{session_id}/analyze-selected` | Analyze the currently selected discovery candidates. No request body required. |
-| `POST` | `/sessions/{session_id}/synthesize` | Synthesize active papers through retrieval-backed QA. Optional `prompt` body. |
+| `POST` | `/sessions/{session_id}/synthesize` | Run the dedicated synthesis agent over durable paper workspaces. Optional `prompt` body. Does not persist a synthesis artifact. |
 
 ## Example
 
@@ -88,11 +90,15 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/select" \
 
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze-selected"
 
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/compare" \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"Prefer production readiness."}'
+
+curl -s "http://127.0.0.1:8000/sessions/$SESSION_ID/comparison"
+
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/synthesize" \
   -H 'content-type: application/json' \
   -d '{"prompt":"Compare implementation trade-offs across these papers."}'
-
-curl -s "http://127.0.0.1:8000/sessions/$SESSION_ID/comparison"
 ```
 
 Discovery is synchronous and uses live arXiv search. If arXiv rate-limits a
@@ -109,13 +115,28 @@ the finalized report, method extraction, benchmarks, readiness data, and
 markdown report without re-running analysis.
 
 If multiple selected papers are analyzed together, `/analyze-selected` may
-return `comparison_markdown`. This is a batch comparison artifact produced by
-the analysis graph from structured paper outputs. It is also persisted and can
-be reloaded with `/comparison`.
+return `comparison_markdown`. This is a legacy batch comparison artifact
+produced by the analysis graph from structured paper outputs. It is persisted
+and can be reloaded with `/comparison`.
 
-`/synthesize` is different: it asks the conversation QA flow to synthesize the
-currently active papers using retrieved chunks and citations. It accepts an
-optional body:
+`/compare` is the request-driven comparison path. It loads durable
+`PaperWorkspace` artifacts, runs `comparison_analyst`, and persists a new
+`ComparisonArtifact` on every successful POST. If `paper_ids` are omitted, it
+uses the session's active papers. The endpoint requires at least two ready
+workspaces. Example body:
+
+```json
+{"paper_ids": ["1706.03762", "2005.11401"], "prompt": "Prefer production readiness."}
+```
+
+`/comparison` is read-only. It returns the latest persisted comparison artifact
+and does not run an LLM.
+
+`/synthesize` runs the dedicated `synthesis_agent` over durable workspaces. It
+returns a synthesis response with citations and does not persist a
+`SynthesisArtifact`. If a relevant latest comparison exists, synthesis may use
+it as optional context; synthesis also works without comparison context. It
+accepts an optional body:
 
 ```json
 {"prompt": "Compare implementation trade-offs across these papers."}
@@ -135,13 +156,18 @@ prompt.
 - `/analyze-selected` runs the existing analysis graph on selected candidate
   URLs. With multiple selected papers, the analysis graph uses batch mode and
   may also produce a comparison report.
+- `/compare` creates a new `ComparisonArtifact` every time it succeeds. It
+  returns `409` if fewer than two papers are available, `404` if a requested
+  workspace is missing, and `409` if a requested workspace is failed or
+  incomplete.
 - `/synthesize` requires at least one active paper and returns `409` if the
-  session has no active papers.
+  session has no active papers. It also returns `404` for missing requested
+  workspaces and `409` for failed or incomplete workspaces.
 - `/analyze-selected` returns `400` if no candidates were selected and `409`
   if selected candidates are not in the correct state for analysis.
 - `/sessions/{session_id}/comparison` returns `404` with
-  `comparison_not_found` until at least one multi-paper analysis has produced a
-  batch comparison.
+  `comparison_not_found` until either batch analysis or `/compare` has produced
+  a comparison artifact.
 - API responses intentionally exclude internal `AgentRun` payloads and raw
   structured errors. Those are stored for observability, not returned as public
   transport data.
