@@ -3,14 +3,17 @@ from datetime import datetime, timezone
 from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
+from models.external_metadata import ArxivMetadataCacheEntry
 from models.errors import ErrorCodes, StructuredError, make_error
 from models.jobs import WorkflowJob
 from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
 from models.session import Session, Turn
 from storage.mappers import (
     agent_run_to_orm,
+    arxiv_metadata_cache_entry_to_orm,
     comparison_artifact_to_orm,
     orm_to_agent_run,
+    orm_to_arxiv_metadata_cache_entry,
     orm_to_comparison_artifact,
     orm_to_paper_chunk,
     orm_to_paper_workspace,
@@ -208,3 +211,26 @@ def test_workflow_job_mapper_round_trip():
     mapped = orm_to_workflow_job(workflow_job_to_orm(job))
 
     assert mapped == job
+
+
+def test_arxiv_metadata_cache_mapper_round_trip():
+    fetched_at = datetime(2017, 6, 12, tzinfo=timezone.utc)
+    entry = ArxivMetadataCacheEntry(
+        arxiv_id="1706.03762",
+        title="Attention Is All You Need",
+        authors=["Ashish Vaswani", "Noam Shazeer"],
+        abstract="Transformer paper.",
+        published_date="2017-06-12T17:57:34Z",
+        categories=["cs.CL", "cs.LG"],
+        source_url="https://arxiv.org/abs/1706.03762",
+        fetched_at=fetched_at,
+        last_error_json={"code": "429", "message": "rate limited"},
+        error_count=2,
+    )
+
+    mapped = orm_to_arxiv_metadata_cache_entry(
+        arxiv_metadata_cache_entry_to_orm(entry)
+    )
+
+    assert mapped == entry
+    assert mapped.has_successful_fetch is True

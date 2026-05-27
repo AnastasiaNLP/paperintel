@@ -9,12 +9,14 @@ from api.in_memory_session_store import SessionNotFoundError
 from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
+from models.external_metadata import ArxivMetadataCacheEntry
 from models.jobs import WorkflowJob
 from models.errors import ErrorCodes, make_error
 from models.retrieval import ChunkSource, PaperChunk
 from storage.db import make_engine, make_session_factory
 from storage.repositories import (
     PostgresAgentRunPersistence,
+    PostgresArxivMetadataCacheRepository,
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
     PostgresSearchCandidateRepository,
@@ -756,3 +758,72 @@ def test_postgres_workflow_job_cancel_allows_queued_or_running_only(session_fact
     assert canceled_running.status == "canceled"
     with pytest.raises(InvalidWorkflowJobTransitionError):
         repository.mark_canceled(canceled_queued.id)
+
+
+def test_postgres_arxiv_metadata_cache_repository_saves_and_reads_global_entry(
+    session_factory,
+):
+    repository = PostgresArxivMetadataCacheRepository(session_factory)
+    fetched_at = datetime(2017, 6, 12, tzinfo=timezone.utc)
+    entry = ArxivMetadataCacheEntry(
+        arxiv_id="1706.03762",
+        title="Attention Is All You Need",
+        authors=["Ashish Vaswani"],
+        abstract="Transformer paper.",
+        published_date="2017-06-12T17:57:34Z",
+        categories=["cs.CL"],
+        source_url="https://arxiv.org/abs/1706.03762",
+        fetched_at=fetched_at,
+    )
+
+    saved = repository.save(entry)
+    loaded = repository.get("1706.03762")
+
+    assert saved.arxiv_id == "1706.03762"
+    assert loaded is not None
+    assert loaded.title == "Attention Is All You Need"
+    assert loaded.authors == ["Ashish Vaswani"]
+    assert loaded.categories == ["cs.CL"]
+    assert loaded.fetched_at == fetched_at
+    assert loaded.error_count == 0
+    assert repository.get("missing") is None
+
+
+def test_postgres_arxiv_metadata_cache_repository_records_error_then_success(
+    session_factory,
+):
+    repository = PostgresArxivMetadataCacheRepository(session_factory)
+
+    failed = repository.record_error(
+        "2501.12948",
+        error_json={"code": "429", "message": "rate limited"},
+    )
+    failed_again = repository.record_error(
+        "2501.12948",
+        error_json={"code": "timeout", "message": "timed out"},
+    )
+
+    assert failed.error_count == 1
+    assert failed_again.error_count == 2
+    assert failed_again.last_error_json == {
+        "code": "timeout",
+        "message": "timed out",
+    }
+    assert failed_again.has_successful_fetch is False
+
+    succeeded = repository.record_success(
+        failed_again.model_copy(
+            update={
+                "title": "Cached title",
+                "authors": [],
+                "abstract": "Cached abstract.",
+                "published_date": "2025-01",
+                "categories": ["cs.CL"],
+                "source_url": "https://arxiv.org/abs/2501.12948",
+            }
+        )
+    )
+
+    assert succeeded.error_count == 0
+    assert succeeded.last_error_json is None
+    assert succeeded.has_successful_fetch is True

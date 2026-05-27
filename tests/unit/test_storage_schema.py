@@ -2,6 +2,7 @@ from sqlalchemy.dialects import postgresql
 
 from storage.models import (
     AgentRunORM,
+    ArxivMetadataCacheORM,
     Base,
     ComparisonArtifactORM,
     PaperChunkORM,
@@ -29,6 +30,7 @@ def test_initial_storage_metadata_contains_foundation_tables():
         "paper_workspaces",
         "comparison_artifacts",
         "workflow_jobs",
+        "arxiv_metadata_cache",
     }.issubset(Base.metadata.tables.keys())
 
 
@@ -236,3 +238,35 @@ def test_workflow_job_table_matches_async_job_contract_columns():
         "ix_workflow_jobs_status_created_at",
         "ix_workflow_jobs_kind_status",
     }.issubset({index.name for index in WorkflowJobORM.__table__.indexes})
+
+
+def test_arxiv_metadata_cache_table_matches_resilience_contract_columns():
+    columns = ArxivMetadataCacheORM.__table__.c
+
+    for name in [
+        "arxiv_id",
+        "title",
+        "authors_json",
+        "abstract",
+        "published_date",
+        "categories_json",
+        "source_url",
+        "fetched_at",
+        "last_error_json",
+        "error_count",
+        "created_at",
+        "updated_at",
+    ]:
+        assert name in columns
+
+    assert columns.arxiv_id.primary_key
+    assert not ArxivMetadataCacheORM.__table__.foreign_keys
+    assert isinstance(_postgres_type(columns.authors_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.categories_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.last_error_json), postgresql.JSONB)
+    assert "ck_arxiv_metadata_cache_error_count_nonnegative" in {
+        constraint.name for constraint in ArxivMetadataCacheORM.__table__.constraints
+    }
+    assert "ix_arxiv_metadata_cache_fetched_at" in {
+        index.name for index in ArxivMetadataCacheORM.__table__.indexes
+    }

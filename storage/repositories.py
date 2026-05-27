@@ -11,14 +11,17 @@ from api.session_store import SessionStore
 from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import CandidateStatus, SearchCandidate
+from models.external_metadata import ArxivMetadataCacheEntry
 from models.errors import StructuredError
 from models.jobs import JobKind, JobStatus, WorkflowJob
 from models.retrieval import PaperChunk, UpsertChunksResult
 from models.session import Persona, Session, SessionPhase, Turn, TurnRole
 from storage.mappers import (
     agent_run_to_orm,
+    arxiv_metadata_cache_entry_to_orm,
     comparison_artifact_to_orm,
     orm_to_agent_run,
+    orm_to_arxiv_metadata_cache_entry,
     orm_to_comparison_artifact,
     orm_to_paper_chunk,
     orm_to_workflow_job,
@@ -37,6 +40,7 @@ from storage.mappers import (
 )
 from storage.models import (
     AgentRunORM,
+    ArxivMetadataCacheORM,
     ComparisonArtifactORM,
     PaperChunkORM,
     PaperWorkspaceORM,
@@ -46,6 +50,60 @@ from storage.models import (
     TurnORM,
     WorkflowJobORM,
 )
+
+
+class PostgresArxivMetadataCacheRepository:
+    def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
+        self.session_factory = session_factory
+
+    def get(self, arxiv_id: str) -> ArxivMetadataCacheEntry | None:
+        with self.session_factory() as db:
+            orm = db.get(ArxivMetadataCacheORM, arxiv_id)
+            return orm_to_arxiv_metadata_cache_entry(orm) if orm is not None else None
+
+    def save(self, entry: ArxivMetadataCacheEntry) -> ArxivMetadataCacheEntry:
+        with self.session_factory() as db:
+            orm = db.merge(arxiv_metadata_cache_entry_to_orm(entry))
+            db.commit()
+            db.refresh(orm)
+            return orm_to_arxiv_metadata_cache_entry(orm)
+
+    def record_success(self, entry: ArxivMetadataCacheEntry) -> ArxivMetadataCacheEntry:
+        now = _utc_now()
+        saved = entry.model_copy(
+            update={
+                "fetched_at": entry.fetched_at or now,
+                "last_error_json": None,
+                "error_count": 0,
+                "updated_at": now,
+            }
+        )
+        return self.save(saved)
+
+    def record_error(
+        self,
+        arxiv_id: str,
+        *,
+        error_json: dict,
+    ) -> ArxivMetadataCacheEntry:
+        with self.session_factory() as db:
+            orm = db.get(ArxivMetadataCacheORM, arxiv_id)
+            now = _utc_now()
+            if orm is None:
+                orm = ArxivMetadataCacheORM(
+                    arxiv_id=arxiv_id,
+                    last_error_json=error_json,
+                    error_count=1,
+                    updated_at=now,
+                )
+                db.add(orm)
+            else:
+                orm.last_error_json = error_json
+                orm.error_count += 1
+                orm.updated_at = now
+            db.commit()
+            db.refresh(orm)
+            return orm_to_arxiv_metadata_cache_entry(orm)
 
 
 class WorkflowJobNotFoundError(ValueError):
@@ -612,6 +670,7 @@ class PostgresPaperWorkspaceRepository:
 
 def clear_foundation_tables(db: DbSession) -> None:
     db.execute(delete(WorkflowJobORM))
+    db.execute(delete(ArxivMetadataCacheORM))
     db.execute(delete(ComparisonArtifactORM))
     db.execute(delete(PaperWorkspaceORM))
     db.execute(delete(SearchCandidateORM))

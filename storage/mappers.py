@@ -1,12 +1,14 @@
 from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
+from models.external_metadata import ArxivMetadataCacheEntry
 from models.errors import StructuredError
 from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
 from models.jobs import WorkflowJob
 from models.session import Session, Turn
 from storage.models import (
     AgentRunORM,
+    ArxivMetadataCacheORM,
     ComparisonArtifactORM,
     PaperChunkORM,
     PaperWorkspaceORM,
@@ -300,6 +302,44 @@ def orm_to_comparison_artifact(
         paper_ids=list(orm.paper_ids or []),
         comparison_report_json=orm.comparison_report_json,
         comparison_markdown=orm.comparison_markdown,
+        created_at=orm.created_at,
+        updated_at=orm.updated_at,
+    )
+
+
+def arxiv_metadata_cache_entry_to_orm(
+    entry: ArxivMetadataCacheEntry,
+) -> ArxivMetadataCacheORM:
+    return ArxivMetadataCacheORM(
+        arxiv_id=entry.arxiv_id,
+        title=entry.title,
+        authors_json=entry.authors,
+        abstract=entry.abstract,
+        published_date=entry.published_date,
+        categories_json=entry.categories,
+        source_url=entry.source_url,
+        fetched_at=entry.fetched_at,
+        last_error_json=entry.last_error_json,
+        error_count=entry.error_count,
+        created_at=entry.created_at,
+        updated_at=entry.updated_at,
+    )
+
+
+def orm_to_arxiv_metadata_cache_entry(
+    orm: ArxivMetadataCacheORM,
+) -> ArxivMetadataCacheEntry:
+    return ArxivMetadataCacheEntry(
+        arxiv_id=orm.arxiv_id,
+        title=orm.title,
+        authors=list(orm.authors_json or []),
+        abstract=orm.abstract,
+        published_date=orm.published_date,
+        categories=list(orm.categories_json or []),
+        source_url=orm.source_url,
+        fetched_at=orm.fetched_at,
+        last_error_json=orm.last_error_json,
+        error_count=orm.error_count,
         created_at=orm.created_at,
         updated_at=orm.updated_at,
     )

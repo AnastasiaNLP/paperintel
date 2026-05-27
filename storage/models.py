@@ -214,6 +214,44 @@ class AgentRunORM(Base):
     session: Mapped[SessionORM | None] = relationship(back_populates="agent_runs")
 
 
+class ArxivMetadataCacheORM(TimestampMixin, Base):
+    __tablename__ = "arxiv_metadata_cache"
+    __table_args__ = (
+        CheckConstraint(
+            "error_count >= 0",
+            name="ck_arxiv_metadata_cache_error_count_nonnegative",
+        ),
+    )
+
+    arxiv_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    authors_json: Mapped[list[str]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_date: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    categories_json: Mapped[list[str]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fetched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    last_error_json: Mapped[dict[str, Any] | None] = mapped_column(
+        jsonb_type(),
+        nullable=True,
+    )
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class WorkflowJobORM(TimestampMixin, Base):
     __tablename__ = "workflow_jobs"
     __table_args__ = (
