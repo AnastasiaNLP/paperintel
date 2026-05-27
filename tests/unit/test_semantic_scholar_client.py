@@ -4,6 +4,16 @@ import httpx
 import pytest
 
 from tools import semantic_scholar_client as s2
+from tools.circuit_breaker import CircuitBreakerOpenError
+
+
+@pytest.fixture(autouse=True)
+def reset_s2_client():
+    s2._last_request_at = 0.0
+    s2.reset_circuit_breaker()
+    yield
+    s2._last_request_at = 0.0
+    s2.reset_circuit_breaker()
 
 
 class FakeClient:
@@ -109,3 +119,45 @@ def test_s2_enrichment_failure_is_non_fatal(monkeypatch):
     monkeypatch.setattr(ingestion, "s2_get_paper", fail_get_paper)
 
     assert ingestion._enrich_s2("1706.03762") is None
+
+
+def test_get_paper_opens_breaker_after_repeated_retryable_failures(monkeypatch):
+    response = httpx.Response(500, request=httpx.Request("GET", "https://example.com"))
+    client = FakeClient(response)
+    monkeypatch.setattr(s2, "_client", client)
+    monkeypatch.setattr(s2, "_rate_limit", lambda: None)
+
+    for _ in range(3):
+        with pytest.raises(httpx.HTTPStatusError):
+            s2.get_paper.__wrapped__("1706.03762")
+
+    with pytest.raises(CircuitBreakerOpenError):
+        s2.get_paper.__wrapped__("1706.03762")
+
+    assert len(client.calls) == 3
+
+
+def test_s2_rate_limit_status_does_not_open_breaker(monkeypatch):
+    response = httpx.Response(429, request=httpx.Request("GET", "https://example.com"))
+    client = FakeClient(response)
+    monkeypatch.setattr(s2, "_client", client)
+    monkeypatch.setattr(s2, "_rate_limit", lambda: None)
+
+    for _ in range(3):
+        assert s2.get_paper.__wrapped__("1706.03762") == {}
+
+    assert s2._s2_breaker.failure_count == 0
+
+
+def test_s2_non_fatal_status_closes_half_open_breaker(monkeypatch):
+    response = httpx.Response(429, request=httpx.Request("GET", "https://example.com"))
+    client = FakeClient(response)
+    monkeypatch.setattr(s2, "_client", client)
+    monkeypatch.setattr(s2, "_rate_limit", lambda: None)
+    s2._s2_breaker._state = "half_open"
+    s2._s2_breaker._failure_count = 3
+
+    assert s2.get_paper.__wrapped__("1706.03762") == {}
+
+    assert s2._s2_breaker.state == "closed"
+    assert s2._s2_breaker.failure_count == 0

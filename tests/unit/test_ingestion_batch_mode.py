@@ -265,3 +265,57 @@ def test_pdf_ingestion_uses_expected_paper_id_when_parser_has_no_arxiv_id(
     assert result["metadata"].arxiv_id == "2501.12948"
     assert result["ingestion_provenance"]["metadata_source"] == "injected_fallback"
     assert result["ingestion_provenance"]["arxiv_id_found"] is False
+
+
+def test_url_ingestion_uses_pdf_fallback_when_arxiv_metadata_fails_without_injected_fallback(monkeypatch):
+    ingestion = _load_ingestion_with_stubs()
+
+    def fail_metadata(arxiv_id):
+        raise RuntimeError("arXiv down")
+
+    monkeypatch.setattr(ingestion, "get_metadata", fail_metadata)
+
+    result = ingestion.ingestion_agent(
+        {
+            "input_type": "url",
+            "input_value": "https://arxiv.org/abs/2501.12948",
+            "batch_urls": None,
+            "current_paper_index": 0,
+            "total_papers": 1,
+        }
+    )
+
+    assert result["processing_stage"] == "extraction"
+    assert result["metadata"].arxiv_id == "2501.12948"
+    assert result["metadata"].title == "Stub title"
+    assert result["metadata"].published_date == "2025-01"
+    assert result["raw_text"] == "arXiv: 2501.12948\npaper text"
+    assert result["ingestion_provenance"]["metadata_source"] == "pdf_fallback"
+    assert result["errors"]
+
+
+def test_url_ingestion_fails_when_metadata_and_pdf_fallback_are_unavailable(monkeypatch):
+    ingestion = _load_ingestion_with_stubs()
+
+    def fail_metadata(arxiv_id):
+        raise RuntimeError("arXiv down")
+
+    def fail_download(arxiv_id):
+        raise RuntimeError("PDF down")
+
+    monkeypatch.setattr(ingestion, "get_metadata", fail_metadata)
+    monkeypatch.setattr(ingestion, "download_pdf", fail_download)
+
+    result = ingestion.ingestion_agent(
+        {
+            "input_type": "url",
+            "input_value": "https://arxiv.org/abs/2501.12948",
+            "batch_urls": None,
+            "current_paper_index": 0,
+            "total_papers": 1,
+        }
+    )
+
+    assert result["processing_stage"] == "failed"
+    assert result["paper_failed"] is True
+    assert "PDF fallback unavailable" in result["errors"][0].message

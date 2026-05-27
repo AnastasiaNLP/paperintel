@@ -5,6 +5,7 @@ import pytest
 
 from models.external_metadata import ArxivMetadataCacheEntry
 from tools import arxiv_client
+from tools.circuit_breaker import CircuitBreakerOpenError
 
 
 FEED = """<?xml version="1.0" encoding="UTF-8"?>
@@ -60,9 +61,11 @@ class FakeMetadataCache:
 def reset_arxiv_client():
     arxiv_client.configure_metadata_cache(None)
     arxiv_client._last_request_at = 0.0
+    arxiv_client.reset_circuit_breaker()
     yield
     arxiv_client.configure_metadata_cache(None)
     arxiv_client._last_request_at = 0.0
+    arxiv_client.reset_circuit_breaker()
 
 
 def _response(text=FEED, *, status_code=200):
@@ -168,3 +171,68 @@ def test_rate_limit_waits_between_process_local_requests(monkeypatch):
 
     assert sleeps == [pytest.approx(2.2)]
     assert arxiv_client._last_request_at == pytest.approx(103.2)
+
+
+def test_get_metadata_opens_breaker_after_repeated_external_failures(monkeypatch):
+    cache = FakeMetadataCache()
+    arxiv_client.configure_metadata_cache(cache)
+    request = httpx.Request("GET", arxiv_client.ARXIV_API_URL)
+    response = httpx.Response(500, request=request)
+    calls = []
+
+    def fake_get(url, *, params=None):
+        calls.append(url)
+        return response
+
+    monkeypatch.setattr(arxiv_client, "_get", fake_get)
+
+    for _ in range(5):
+        with pytest.raises(httpx.HTTPStatusError):
+            arxiv_client.get_metadata.__wrapped__("1706.03762")
+
+    with pytest.raises(CircuitBreakerOpenError):
+        arxiv_client.get_metadata.__wrapped__("1706.03762")
+
+    assert len(calls) == 5
+    assert len(cache.errors) == 5
+
+
+def test_paper_not_found_does_not_open_breaker(monkeypatch):
+    empty_feed = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"></feed>
+"""
+    monkeypatch.setattr(
+        arxiv_client,
+        "_get",
+        lambda url, *, params=None: _response(empty_feed),
+    )
+
+    with pytest.raises(arxiv_client.ArxivPaperNotFoundError):
+        arxiv_client.get_metadata.__wrapped__("9999.99999")
+
+    assert arxiv_client._arxiv_breaker.failure_count == 0
+
+
+def test_local_value_errors_do_not_open_arxiv_breaker():
+    arxiv_client._record_arxiv_failure(ValueError("PDF too large"))
+
+    assert arxiv_client._arxiv_breaker.failure_count == 0
+
+
+def test_paper_not_found_closes_half_open_breaker(monkeypatch):
+    empty_feed = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"></feed>
+"""
+    monkeypatch.setattr(
+        arxiv_client,
+        "_get",
+        lambda url, *, params=None: _response(empty_feed),
+    )
+    arxiv_client._arxiv_breaker._state = "half_open"
+    arxiv_client._arxiv_breaker._failure_count = 5
+
+    with pytest.raises(arxiv_client.ArxivPaperNotFoundError):
+        arxiv_client.get_metadata.__wrapped__("9999.99999")
+
+    assert arxiv_client._arxiv_breaker.state == "closed"
+    assert arxiv_client._arxiv_breaker.failure_count == 0

@@ -205,6 +205,37 @@ def _resolve_current_url(state: PaperIntelState) -> str:
     return str(state["input_value"])
 
 
+
+def _published_date_from_arxiv_id(arxiv_id: str) -> str:
+    match = re.match(r"^(\d{2})(\d{2})\.", arxiv_id)
+    if not match:
+        return ""
+    year = 2000 + int(match.group(1))
+    month = int(match.group(2))
+    if month < 1 or month > 12:
+        return ""
+    return f"{year:04d}-{month:02d}"
+
+
+def _pdf_fallback_metadata(
+    *,
+    arxiv_id: str,
+    parsed: dict,
+    s2_data: Optional[dict],
+) -> PaperMetadata:
+    pdf_meta = parsed.get("metadata", {}) if isinstance(parsed, dict) else {}
+    citation_count = s2_data.get("citation_count") if s2_data else None
+    return PaperMetadata(
+        title=pdf_meta.get("title") or "",
+        authors=[],
+        arxiv_id=arxiv_id,
+        published_date=_published_date_from_arxiv_id(arxiv_id),
+        abstract="",
+        categories=[],
+        citation_count=citation_count,
+    )
+
+
 def _fallback_metadata_for_arxiv_id(
     state: PaperIntelState,
     arxiv_id: str,
@@ -246,8 +277,6 @@ def _route_url(state: PaperIntelState, url: str) -> dict:
         fallback_metadata,
         skip_arxiv_fetch=bool(state.get("skip_arxiv_metadata_fetch")),
     )
-    if metadata is None:
-        return _failure(state, meta_error or f"Metadata unavailable for {arxiv_id}")
 
     try:
         pdf_path = download_pdf(arxiv_id)
@@ -257,12 +286,28 @@ def _route_url(state: PaperIntelState, url: str) -> dict:
         if not raw_text or not raw_text.strip():
             raise ValueError("PDF parsed but raw_text is empty")
 
+        errors = []
+        if metadata is None:
+            logger.warning("arXiv metadata failed for %s: %s", arxiv_id, meta_error)
+            metadata = _pdf_fallback_metadata(
+                arxiv_id=arxiv_id,
+                parsed=parsed,
+                s2_data=s2_data,
+            )
+            metadata_source = "pdf_fallback"
+            errors.append(
+                _warning_error(
+                    f"arXiv metadata unavailable, PDF fallback used: {meta_error}"
+                )
+            )
+
         return _success_extraction(
             state,
             metadata=metadata,
             raw_text=raw_text,
             pdf_path=pdf_path,
             text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
+            errors=errors or None,
             ingestion_provenance=_make_provenance(
                 text_source="pdf",
                 metadata_source=metadata_source,
@@ -271,6 +316,12 @@ def _route_url(state: PaperIntelState, url: str) -> dict:
             ),
         )
     except Exception as exc:
+        if metadata is None:
+            reason = meta_error or f"Metadata unavailable for {arxiv_id}"
+            return _failure(
+                state,
+                f"{reason}; PDF fallback unavailable: {exc}",
+            )
         logger.warning("PDF failed for %s, using abstract fallback: %s", arxiv_id, exc)
         return _success_extraction(
             state,

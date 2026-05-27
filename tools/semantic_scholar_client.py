@@ -5,6 +5,7 @@ import httpx
 from threading import Lock
 from typing import List
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from tools.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,27 @@ _timeout = httpx.Timeout(30.0, connect=5.0)
 _client = httpx.Client(timeout=_timeout, follow_redirects=True)
 _rate_limit_lock = Lock()
 _last_request_at = 0.0
+_s2_breaker = CircuitBreaker(
+    service_name="semantic_scholar",
+    failure_threshold=3,
+    recovery_timeout_seconds=60.0,
+)
+
+
+def reset_circuit_breaker() -> None:
+    _s2_breaker.reset()
+
+
+def _record_s2_success() -> None:
+    _s2_breaker.record_success()
+
+
+def _record_s2_failure(exc: Exception) -> None:
+    if isinstance(exc, CircuitBreakerOpenError):
+        return
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {403, 404, 429}:
+        return
+    _s2_breaker.record_failure()
 
 
 def _rate_limit():
@@ -42,6 +64,8 @@ def _headers() -> dict[str, str]:
 
 
 def _should_retry(exc: BaseException) -> bool:
+    if isinstance(exc, CircuitBreakerOpenError):
+        return False
     if not isinstance(exc, httpx.HTTPStatusError):
         return True
     return exc.response.status_code in RETRYABLE_STATUS_CODES
@@ -108,16 +132,23 @@ def get_paper(arxiv_id: str) -> dict:
     }
 
     t0 = time.perf_counter()
-    response = _get(url, params=params)
-    if _handle_non_retryable_status(response, arxiv_id):
-        return {}
-    response.raise_for_status()
-    latency = time.perf_counter() - t0
-    logger.info(f"S2 get_paper latency: {latency:.2f}s")
+    try:
+        _s2_breaker.before_request()
+        response = _get(url, params=params)
+        if _handle_non_retryable_status(response, arxiv_id):
+            _record_s2_success()
+            return {}
+        response.raise_for_status()
+        latency = time.perf_counter() - t0
+        logger.info(f"S2 get_paper latency: {latency:.2f}s")
 
-    data = response.json()
-    _check_for_error(data, arxiv_id)
+        data = response.json()
+        _check_for_error(data, arxiv_id)
+    except Exception as exc:
+        _record_s2_failure(exc)
+        raise
 
+    _record_s2_success()
     return _parse_paper(data)
 
 
@@ -135,16 +166,23 @@ def get_related_papers(arxiv_id: str, limit: int = 5) -> List[dict]:
     }
 
     t0 = time.perf_counter()
-    response = _get(S2_RECOMMENDATIONS_URL, params=params)
-    latency = time.perf_counter() - t0
-    logger.info(f"S2 related latency: {latency:.2f}s")
+    try:
+        _s2_breaker.before_request()
+        response = _get(S2_RECOMMENDATIONS_URL, params=params)
+        latency = time.perf_counter() - t0
+        logger.info(f"S2 related latency: {latency:.2f}s")
 
-    if _handle_non_retryable_status(response, arxiv_id):
-        return []
+        if _handle_non_retryable_status(response, arxiv_id):
+            _record_s2_success()
+            return []
 
-    response.raise_for_status()
-    data = response.json()
-    _check_for_error(data, arxiv_id)
+        response.raise_for_status()
+        data = response.json()
+        _check_for_error(data, arxiv_id)
+    except Exception as exc:
+        _record_s2_failure(exc)
+        raise
 
+    _record_s2_success()
     papers = data.get("recommendedPapers", [])
     return [_parse_related(p) for p in papers]
