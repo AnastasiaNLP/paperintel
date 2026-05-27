@@ -6,6 +6,7 @@ from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.api import HealthStatus
 from models.errors import ErrorCodes, make_error
+from models.jobs import WorkflowJob
 from models.session import HandlerResult, Session, Turn
 from services.paperintel_service import (
     ComparisonNotFoundError,
@@ -14,6 +15,8 @@ from services.paperintel_service import (
     NotEnoughPapersForComparisonError,
     PaperIntelService,
     PaperWorkspaceNotFoundError,
+    InvalidWorkflowJobInputError,
+    WorkflowJobNotFoundError,
 )
 from services.selected_candidate_resolver import NoSelectedCandidatesError
 
@@ -200,6 +203,34 @@ class FakeArtifactRepository:
         return artifact
 
 
+class FakeWorkflowJobRepository:
+    def __init__(self) -> None:
+        self.jobs = {}
+        self.created = []
+        self.canceled = []
+
+    def create(self, job):
+        self.jobs[job.id] = job
+        self.created.append(job)
+        return job
+
+    def get(self, job_id):
+        return self.jobs.get(job_id)
+
+    def list_for_session(self, session_id, limit=50):
+        return [
+            job
+            for job in self.created
+            if job.session_id == session_id
+        ][:limit]
+
+    def mark_canceled(self, job_id):
+        job = self.jobs[job_id].model_copy(update={"status": "canceled"})
+        self.jobs[job_id] = job
+        self.canceled.append(job_id)
+        return job
+
+
 def _candidate(candidate_id: str) -> SearchCandidate:
     return SearchCandidate(
         id=candidate_id,
@@ -247,6 +278,81 @@ def test_service_analyze_paper_delegates_to_handler():
 
     assert result.response_text == "handled: https://arxiv.org/abs/1706.03762"
     assert handler.messages == [(session.id, "https://arxiv.org/abs/1706.03762")]
+
+
+def test_service_enqueue_analyze_paper_creates_queued_job():
+    repository = FakeWorkflowJobRepository()
+    service = PaperIntelService(
+        handler=FakeHandler(),
+        workflow_job_repository=repository,
+    )
+    session = service.create_session()
+
+    job = service.enqueue_analyze_paper(
+        session.id,
+        " https://arxiv.org/abs/1706.03762 ",
+    )
+
+    assert job.status == "queued"
+    assert job.kind == "analyze_paper"
+    assert job.session_id == session.id
+    assert job.input_json == {"paper_url": "https://arxiv.org/abs/1706.03762"}
+    assert repository.created == [job]
+
+
+def test_service_enqueue_analyze_paper_requires_non_empty_url():
+    service = PaperIntelService(
+        handler=FakeHandler(),
+        workflow_job_repository=FakeWorkflowJobRepository(),
+    )
+    session = service.create_session()
+
+    with pytest.raises(InvalidWorkflowJobInputError):
+        service.enqueue_analyze_paper(session.id, "   ")
+
+
+def test_service_enqueue_analyze_selected_creates_queued_job():
+    repository = FakeWorkflowJobRepository()
+    service = PaperIntelService(
+        handler=FakeHandler(),
+        workflow_job_repository=repository,
+    )
+    session = service.create_session()
+
+    job = service.enqueue_analyze_selected(session.id)
+
+    assert job.status == "queued"
+    assert job.kind == "analyze_selected"
+    assert job.session_id == session.id
+    assert job.input_json == {}
+
+
+def test_service_get_list_and_cancel_workflow_jobs():
+    repository = FakeWorkflowJobRepository()
+    service = PaperIntelService(
+        handler=FakeHandler(),
+        workflow_job_repository=repository,
+    )
+    session = service.create_session()
+    job = service.enqueue_analyze_selected(session.id)
+
+    assert service.get_workflow_job(job.id) == job
+    assert service.list_workflow_jobs(session.id) == [job]
+
+    canceled = service.cancel_workflow_job(job.id)
+
+    assert canceled.status == "canceled"
+    assert repository.canceled == [job.id]
+
+
+def test_service_get_workflow_job_raises_when_missing():
+    service = PaperIntelService(
+        handler=FakeHandler(),
+        workflow_job_repository=FakeWorkflowJobRepository(),
+    )
+
+    with pytest.raises(WorkflowJobNotFoundError):
+        service.get_workflow_job("missing")
 
 
 def test_service_analyze_pdf_passes_expected_paper_id_to_handler():

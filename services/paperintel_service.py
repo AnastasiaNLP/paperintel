@@ -6,6 +6,7 @@ from api.chat_handler import ChatHandler
 from models.api import HealthStatus
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import CandidateStatus, SearchCandidate
+from models.jobs import WorkflowJob
 from models.session import HandlerResult, Persona, Session, Turn
 from models.synthesis import SynthesisAgentResult
 from services.selected_candidate_resolver import SelectedCandidateResolver
@@ -72,6 +73,22 @@ class NotEnoughPapersForComparisonError(ValueError):
         self.paper_ids = paper_ids
 
 
+class WorkflowJobNotConfiguredError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("Workflow job repository is not configured.")
+
+
+class WorkflowJobNotFoundError(ValueError):
+    def __init__(self, job_id: str) -> None:
+        super().__init__(f"Workflow job not found: {job_id}")
+        self.job_id = job_id
+
+
+class InvalidWorkflowJobInputError(ValueError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class SearchCandidateRepository(Protocol):
     def update_status(
         self,
@@ -99,6 +116,20 @@ class PaperWorkspaceRepository(Protocol):
         ...
 
 
+class WorkflowJobRepository(Protocol):
+    def create(self, job: WorkflowJob) -> WorkflowJob:
+        ...
+
+    def get(self, job_id: str) -> WorkflowJob | None:
+        ...
+
+    def list_for_session(self, session_id: str, limit: int = 50) -> list[WorkflowJob]:
+        ...
+
+    def mark_canceled(self, job_id: str) -> WorkflowJob:
+        ...
+
+
 class PaperIntelService:
     """
     Product-facing application facade for PaperIntel.
@@ -115,12 +146,14 @@ class PaperIntelService:
         selected_candidate_resolver: SelectedCandidateResolver | None = None,
         candidate_repository: SearchCandidateRepository | None = None,
         artifact_repository: PaperWorkspaceRepository | None = None,
+        workflow_job_repository: WorkflowJobRepository | None = None,
     ) -> None:
         self.handler = handler
         self.health_checker = health_checker
         self.selected_candidate_resolver = selected_candidate_resolver
         self.candidate_repository = candidate_repository
         self.artifact_repository = artifact_repository
+        self.workflow_job_repository = workflow_job_repository
 
     def create_session(
         self,
@@ -138,6 +171,43 @@ class PaperIntelService:
 
     def analyze_paper(self, session_id: str, paper_url: str) -> HandlerResult:
         return self.handler.handle_message(session_id, paper_url)
+
+    def enqueue_analyze_paper(self, session_id: str, paper_url: str) -> WorkflowJob:
+        self.handler.store.require_session(session_id)
+        paper_url = paper_url.strip() if isinstance(paper_url, str) else ""
+        if not paper_url:
+            raise InvalidWorkflowJobInputError("paper_url must not be empty")
+        return self._workflow_jobs().create(
+            WorkflowJob(
+                session_id=session_id,
+                kind="analyze_paper",
+                input_json={"paper_url": paper_url},
+            )
+        )
+
+    def enqueue_analyze_selected(self, session_id: str) -> WorkflowJob:
+        self.handler.store.require_session(session_id)
+        return self._workflow_jobs().create(
+            WorkflowJob(
+                session_id=session_id,
+                kind="analyze_selected",
+                input_json={},
+            )
+        )
+
+    def get_workflow_job(self, job_id: str) -> WorkflowJob:
+        job = self._workflow_jobs().get(job_id)
+        if job is None:
+            raise WorkflowJobNotFoundError(job_id)
+        return job
+
+    def list_workflow_jobs(self, session_id: str, *, limit: int = 50) -> list[WorkflowJob]:
+        self.handler.store.require_session(session_id)
+        return self._workflow_jobs().list_for_session(session_id, limit=limit)
+
+    def cancel_workflow_job(self, job_id: str) -> WorkflowJob:
+        self.get_workflow_job(job_id)
+        return self._workflow_jobs().mark_canceled(job_id)
 
     def analyze_pdf(
         self,
@@ -291,6 +361,11 @@ class PaperIntelService:
             comparison_markdown=result.markdown,
         )
         return self.artifact_repository.save_comparison(artifact)
+
+    def _workflow_jobs(self) -> WorkflowJobRepository:
+        if self.workflow_job_repository is None:
+            raise WorkflowJobNotConfiguredError()
+        return self.workflow_job_repository
 
     def _load_request_workspaces(
         self,

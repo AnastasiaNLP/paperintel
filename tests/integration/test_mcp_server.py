@@ -139,6 +139,11 @@ def test_mcp_server_builds_with_four_tools():
         "list_paper_workspaces",
         "get_paper_workspace",
         "get_latest_comparison",
+        "enqueue_analyze_paper",
+        "enqueue_analyze_selected",
+        "get_workflow_job",
+        "list_workflow_jobs",
+        "cancel_workflow_job",
     }.issubset(names)
 
 

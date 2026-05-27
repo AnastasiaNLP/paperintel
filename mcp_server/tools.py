@@ -2,6 +2,7 @@ import asyncio
 from urllib.parse import urlparse
 
 from models.artifacts import ComparisonArtifact, PaperWorkspace
+from models.jobs import WorkflowJob
 from models.session import HandlerResult, Persona, Session
 from models.synthesis import SynthesisAgentResult
 from services.paperintel_service import PaperIntelService
@@ -95,6 +96,75 @@ async def analyze_selected_papers_tool(
     except Exception:
         return _safe_error("analyze the selected papers")
     return format_analysis_result(result)
+
+
+async def enqueue_analyze_paper_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    paper_url: str,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    paper_url = _validate_url(paper_url)
+    try:
+        job = await _run_sync(service.enqueue_analyze_paper, session_id, paper_url)
+    except Exception:
+        return _safe_error("enqueue paper analysis")
+    return format_workflow_job(job, heading="Queued paper analysis job")
+
+
+async def enqueue_analyze_selected_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    try:
+        job = await _run_sync(service.enqueue_analyze_selected, session_id)
+    except Exception:
+        return _safe_error("enqueue selected-paper analysis")
+    return format_workflow_job(job, heading="Queued selected-paper analysis job")
+
+
+async def get_workflow_job_tool(
+    service: PaperIntelService,
+    *,
+    job_id: str,
+) -> str:
+    job_id = _validate_non_empty("job_id", job_id)
+    try:
+        job = await _run_sync(service.get_workflow_job, job_id)
+    except Exception:
+        return _safe_error("load the workflow job")
+    return format_workflow_job(job, heading="Workflow job")
+
+
+async def list_workflow_jobs_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    limit: int = 50,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    limit = _validate_limit(limit)
+    try:
+        jobs = await _run_sync(service.list_workflow_jobs, session_id, limit=limit)
+    except Exception:
+        return _safe_error("list workflow jobs")
+    return format_workflow_job_list(jobs)
+
+
+async def cancel_workflow_job_tool(
+    service: PaperIntelService,
+    *,
+    job_id: str,
+) -> str:
+    job_id = _validate_non_empty("job_id", job_id)
+    try:
+        job = await _run_sync(service.cancel_workflow_job, job_id)
+    except Exception:
+        return _safe_error("cancel the workflow job")
+    return format_workflow_job(job, heading="Canceled workflow job")
 
 
 async def synthesize_papers_tool(
@@ -338,6 +408,53 @@ def format_comparison_artifact(artifact: ComparisonArtifact) -> str:
     )
 
 
+def format_workflow_job(job: WorkflowJob, *, heading: str = "Workflow job") -> str:
+    lines = [
+        heading,
+        "",
+        f"Job ID: {job.id}",
+        f"Session ID: {job.session_id}",
+        f"Kind: {job.kind}",
+        f"Status: {job.status}",
+        f"Attempts: {job.attempts}/{job.max_attempts}",
+    ]
+    if job.locked_by:
+        lines.append(f"Locked by: {job.locked_by}")
+    if job.result_json is not None:
+        lines.extend(["", "Result:", _format_json_summary(job.result_json)])
+    if job.error_json is not None:
+        lines.extend(["", "Error:", _format_json_summary(job.error_json)])
+    return "\n".join(lines)
+
+
+def format_workflow_job_list(jobs: list[WorkflowJob]) -> str:
+    if not jobs:
+        return "No workflow jobs are available for this session yet."
+    lines = ["Workflow jobs:"]
+    for job in jobs:
+        lines.append(
+            f"- {job.id}: {job.kind} / {job.status} "
+            f"(attempts {job.attempts}/{job.max_attempts})"
+        )
+    return "\n".join(lines)
+
+
+def _format_json_summary(payload: dict) -> str:
+    if not payload:
+        return "{}"
+    items = []
+    for key, value in payload.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            items.append(f"- {key}: {value}")
+        elif isinstance(value, list):
+            items.append(f"- {key}: {len(value)} item(s)")
+        elif isinstance(value, dict):
+            items.append(f"- {key}: object")
+        else:
+            items.append(f"- {key}: {type(value).__name__}")
+    return "\n".join(items)
+
+
 def _format_workspace_artifact_flags(workspace: PaperWorkspace) -> str:
     flags = []
     if workspace.finalized_report_json is not None or workspace.full_markdown_report:
@@ -397,6 +514,14 @@ def _validate_question(question: str) -> str:
     if len(question) > MAX_QUESTION_LENGTH:
         raise ValueError(f"question must be at most {MAX_QUESTION_LENGTH} characters")
     return question
+
+
+def _validate_limit(limit: int) -> int:
+    if not isinstance(limit, int):
+        raise ValueError("limit must be an integer")
+    if limit < 1 or limit > 100:
+        raise ValueError("limit must be between 1 and 100")
+    return limit
 
 
 def _validate_optional_paper_ids(paper_ids: list[str] | None) -> list[str] | None:

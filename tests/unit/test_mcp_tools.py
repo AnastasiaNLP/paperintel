@@ -6,23 +6,29 @@ import mcp_server.tools as tool_module
 from mcp_server.tools import (
     analyze_paper_tool,
     analyze_selected_papers_tool,
+    cancel_workflow_job_tool,
     ask_paper_tool,
     compare_papers_tool,
     create_session_tool,
+    enqueue_analyze_paper_tool,
+    enqueue_analyze_selected_tool,
     discover_papers_tool,
     format_comparison_artifact,
     format_answer_result,
     format_discovery_result,
     format_paper_workspace,
     get_session_tool,
+    get_workflow_job_tool,
     get_latest_comparison_tool,
     get_paper_workspace_tool,
     list_paper_workspaces_tool,
+    list_workflow_jobs_tool,
     select_papers_tool,
     synthesize_papers_tool,
 )
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.agent_runs import AgentRun
+from models.jobs import WorkflowJob
 from models.retrieval import CitationRef
 from models.session import HandlerResult, Session
 from models.synthesis import (
@@ -54,6 +60,20 @@ class FakeService:
         self.list_workspace_calls = []
         self.get_workspace_calls = []
         self.comparison_calls = []
+        self.enqueue_analyze_paper_calls = []
+        self.enqueue_analyze_selected_calls = []
+        self.workflow_job_calls = []
+        self.workflow_job_list_calls = []
+        self.workflow_job_cancel_calls = []
+        self.jobs = [
+            WorkflowJob(
+                id="job-1",
+                session_id="session-1",
+                kind="analyze_paper",
+                status="queued",
+                input_json={"paper_url": "https://arxiv.org/abs/1706.03762"},
+            )
+        ]
         self.workspaces = [
             PaperWorkspace(
                 session_id="session-1",
@@ -153,6 +173,38 @@ class FakeService:
             assistant_turn_id="assistant-turn",
         )
 
+    def enqueue_analyze_paper(self, session_id, paper_url):
+        self.enqueue_analyze_paper_calls.append((session_id, paper_url))
+        return WorkflowJob(
+            id="job-queued-paper",
+            session_id=session_id,
+            kind="analyze_paper",
+            status="queued",
+            input_json={"paper_url": paper_url},
+        )
+
+    def enqueue_analyze_selected(self, session_id):
+        self.enqueue_analyze_selected_calls.append(session_id)
+        return WorkflowJob(
+            id="job-queued-selected",
+            session_id=session_id,
+            kind="analyze_selected",
+            status="queued",
+            input_json={},
+        )
+
+    def get_workflow_job(self, job_id):
+        self.workflow_job_calls.append(job_id)
+        return self.jobs[0].model_copy(update={"id": job_id})
+
+    def list_workflow_jobs(self, session_id, *, limit=50):
+        self.workflow_job_list_calls.append((session_id, limit))
+        return self.jobs[:limit]
+
+    def cancel_workflow_job(self, job_id):
+        self.workflow_job_cancel_calls.append(job_id)
+        return self.jobs[0].model_copy(update={"id": job_id, "status": "canceled"})
+
     def synthesize_papers(self, session_id, prompt=None):
         self.synthesize_calls.append((session_id, prompt))
         run = AgentRun(
@@ -226,6 +278,12 @@ class ExplodingService(FakeService):
         raise RuntimeError("internal details should not leak")
 
     def get_latest_comparison(self, session_id):
+        raise RuntimeError("internal details should not leak")
+
+    def enqueue_analyze_paper(self, session_id, paper_url):
+        raise RuntimeError("internal details should not leak")
+
+    def get_workflow_job(self, job_id):
         raise RuntimeError("internal details should not leak")
 
 
@@ -392,6 +450,80 @@ def test_analyze_selected_papers_handles_service_exception_safely():
 
     assert "could not analyze the selected papers safely" in text
     assert "internal details" not in text
+
+
+def test_enqueue_analyze_paper_tool_calls_service():
+    service = FakeService()
+
+    text = asyncio.run(
+        enqueue_analyze_paper_tool(
+            service,
+            session_id="session-1",
+            paper_url="https://arxiv.org/abs/1706.03762",
+        )
+    )
+
+    assert "Queued paper analysis job" in text
+    assert "Job ID: job-queued-paper" in text
+    assert "Status: queued" in text
+    assert service.enqueue_analyze_paper_calls == [
+        ("session-1", "https://arxiv.org/abs/1706.03762")
+    ]
+
+
+def test_enqueue_analyze_selected_tool_calls_service():
+    service = FakeService()
+
+    text = asyncio.run(enqueue_analyze_selected_tool(service, session_id="session-1"))
+
+    assert "Queued selected-paper analysis job" in text
+    assert "Job ID: job-queued-selected" in text
+    assert service.enqueue_analyze_selected_calls == ["session-1"]
+
+
+def test_workflow_job_tools_get_list_and_cancel():
+    service = FakeService()
+
+    listed = asyncio.run(list_workflow_jobs_tool(service, session_id="session-1", limit=5))
+    loaded = asyncio.run(get_workflow_job_tool(service, job_id="job-1"))
+    canceled = asyncio.run(cancel_workflow_job_tool(service, job_id="job-1"))
+
+    assert "Workflow jobs:" in listed
+    assert "job-1: analyze_paper / queued" in listed
+    assert "Workflow job" in loaded
+    assert "Kind: analyze_paper" in loaded
+    assert "Canceled workflow job" in canceled
+    assert "Status: canceled" in canceled
+    assert service.workflow_job_list_calls == [("session-1", 5)]
+    assert service.workflow_job_calls == ["job-1"]
+    assert service.workflow_job_cancel_calls == ["job-1"]
+
+
+def test_workflow_job_tools_validate_inputs():
+    with pytest.raises(ValueError):
+        asyncio.run(enqueue_analyze_paper_tool(FakeService(), session_id="", paper_url="https://x.test"))
+    with pytest.raises(ValueError):
+        asyncio.run(enqueue_analyze_paper_tool(FakeService(), session_id="session-1", paper_url="not url"))
+    with pytest.raises(ValueError):
+        asyncio.run(list_workflow_jobs_tool(FakeService(), session_id="session-1", limit=0))
+    with pytest.raises(ValueError):
+        asyncio.run(get_workflow_job_tool(FakeService(), job_id=""))
+
+
+def test_workflow_job_tools_handle_service_exception_safely():
+    enqueue_text = asyncio.run(
+        enqueue_analyze_paper_tool(
+            ExplodingService(),
+            session_id="session-1",
+            paper_url="https://arxiv.org/abs/1706.03762",
+        )
+    )
+    get_text = asyncio.run(get_workflow_job_tool(ExplodingService(), job_id="job-1"))
+
+    assert "could not enqueue paper analysis safely" in enqueue_text
+    assert "could not load the workflow job safely" in get_text
+    assert "internal details" not in enqueue_text
+    assert "internal details" not in get_text
 
 
 def test_synthesize_papers_tool_calls_service_with_prompt():

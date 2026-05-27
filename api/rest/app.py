@@ -10,6 +10,7 @@ from api.rest.schemas import (
     ComparisonArtifactResponse,
     CreateSessionRequest,
     DiscoverRequest,
+    EnqueueAnalyzePaperRequest,
     ErrorResponse,
     HealthResponse,
     MessageResponse,
@@ -21,16 +22,21 @@ from api.rest.schemas import (
     SynthesizeRequest,
     TurnsResponse,
     TurnResponse,
+    WorkflowJobResponse,
+    WorkflowJobsResponse,
 )
 from services.paperintel_service import (
     ComparisonNotFoundError,
     InvalidSessionPhaseError,
+    InvalidWorkflowJobInputError,
     NoActivePapersError,
     NotEnoughPapersForComparisonError,
     PaperIntelService,
     PaperWorkspaceNotFoundError,
     PaperWorkspaceNotReadyError,
+    WorkflowJobNotFoundError,
 )
+from storage.repositories import InvalidWorkflowJobTransitionError
 from services.selected_candidate_resolver import (
     NoSelectedCandidatesError,
     SelectedCandidateNotReadyError,
@@ -91,6 +97,21 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     async def comparison_not_found_handler(request, exc):  # noqa: ANN001
         error = ErrorResponse(error="comparison_not_found", detail=str(exc))
         return JSONResponse(status_code=404, content=error.model_dump(mode="json"))
+
+    @app.exception_handler(WorkflowJobNotFoundError)
+    async def workflow_job_not_found_handler(request, exc):  # noqa: ANN001
+        error = ErrorResponse(error="workflow_job_not_found", detail=str(exc))
+        return JSONResponse(status_code=404, content=error.model_dump(mode="json"))
+
+    @app.exception_handler(InvalidWorkflowJobInputError)
+    async def invalid_workflow_job_input_handler(request, exc):  # noqa: ANN001
+        error = ErrorResponse(error="invalid_workflow_job_input", detail=str(exc))
+        return JSONResponse(status_code=400, content=error.model_dump(mode="json"))
+
+    @app.exception_handler(InvalidWorkflowJobTransitionError)
+    async def invalid_workflow_job_transition_handler(request, exc):  # noqa: ANN001
+        error = ErrorResponse(error="invalid_workflow_job_transition", detail=str(exc))
+        return JSONResponse(status_code=409, content=error.model_dump(mode="json"))
 
     @app.exception_handler(Exception)
     async def internal_error_handler(request, exc):  # noqa: ANN001
@@ -203,6 +224,47 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     async def analyze_selected_papers(session_id: str):
         result = service.analyze_selected_papers(session_id)
         return MessageResponse.from_handler_result(result)
+
+    @app.post(
+        "/sessions/{session_id}/jobs/analyze-paper",
+        response_model=WorkflowJobResponse,
+        status_code=202,
+    )
+    async def enqueue_analyze_paper_job(
+        session_id: str,
+        payload: EnqueueAnalyzePaperRequest,
+    ):
+        job = service.enqueue_analyze_paper(session_id, str(payload.paper_url))
+        return WorkflowJobResponse.from_job(job)
+
+    @app.post(
+        "/sessions/{session_id}/jobs/analyze-selected",
+        response_model=WorkflowJobResponse,
+        status_code=202,
+    )
+    async def enqueue_analyze_selected_job(session_id: str):
+        job = service.enqueue_analyze_selected(session_id)
+        return WorkflowJobResponse.from_job(job)
+
+    @app.get(
+        "/sessions/{session_id}/jobs",
+        response_model=WorkflowJobsResponse,
+    )
+    async def list_workflow_jobs(session_id: str, limit: int = 50):
+        jobs = service.list_workflow_jobs(session_id, limit=limit)
+        return WorkflowJobsResponse(
+            jobs=[WorkflowJobResponse.from_job(job) for job in jobs],
+        )
+
+    @app.get("/jobs/{job_id}", response_model=WorkflowJobResponse)
+    async def get_workflow_job(job_id: str):
+        job = service.get_workflow_job(job_id)
+        return WorkflowJobResponse.from_job(job)
+
+    @app.post("/jobs/{job_id}/cancel", response_model=WorkflowJobResponse)
+    async def cancel_workflow_job(job_id: str):
+        job = service.cancel_workflow_job(job_id)
+        return WorkflowJobResponse.from_job(job)
 
     @app.post("/sessions/{session_id}/synthesize", response_model=MessageResponse)
     async def synthesize_papers(

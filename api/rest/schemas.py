@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, HttpUrl
 
 from models.api import HealthStatus
 from models.artifacts import ComparisonArtifact, PaperWorkspace
+from models.jobs import WorkflowJob
 from models.session import HandlerResult, Persona, Session, Turn
 from models.synthesis import SynthesisAgentResult
 
@@ -14,6 +15,10 @@ class CreateSessionRequest(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
+    paper_url: HttpUrl
+
+
+class EnqueueAnalyzePaperRequest(BaseModel):
     paper_url: HttpUrl
 
 
@@ -230,6 +235,32 @@ class ComparisonArtifactResponse(BaseModel):
             created_at=artifact.created_at,
             updated_at=artifact.updated_at,
         )
+
+
+class WorkflowJobResponse(BaseModel):
+    id: str
+    session_id: str
+    kind: str
+    status: str
+    input_json: dict
+    result_json: dict | None = None
+    error_json: dict | None = None
+    attempts: int
+    max_attempts: int
+    locked_by: str | None = None
+    locked_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_job(cls, job: WorkflowJob) -> "WorkflowJobResponse":
+        return cls(**job.model_dump(mode="json"))
+
+
+class WorkflowJobsResponse(BaseModel):
+    jobs: list[WorkflowJobResponse]
 
 
 class HealthResponse(BaseModel):

@@ -67,6 +67,49 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
         return await analyze_selected_papers_tool(service, session_id=session_id)
 
     @mcp.tool()
+    async def enqueue_analyze_paper(session_id: str, paper_url: str) -> str:
+        """Queue paper analysis as a workflow job and return the job id."""
+        from mcp_server.tools import enqueue_analyze_paper_tool
+
+        return await enqueue_analyze_paper_tool(
+            service,
+            session_id=session_id,
+            paper_url=paper_url,
+        )
+
+    @mcp.tool()
+    async def enqueue_analyze_selected(session_id: str) -> str:
+        """Queue analysis for selected discovery papers as a workflow job."""
+        from mcp_server.tools import enqueue_analyze_selected_tool
+
+        return await enqueue_analyze_selected_tool(service, session_id=session_id)
+
+    @mcp.tool()
+    async def get_workflow_job(job_id: str) -> str:
+        """Get workflow job status, result, or error payload."""
+        from mcp_server.tools import get_workflow_job_tool
+
+        return await get_workflow_job_tool(service, job_id=job_id)
+
+    @mcp.tool()
+    async def list_workflow_jobs(session_id: str, limit: int = 50) -> str:
+        """List recent workflow jobs for a PaperIntel session."""
+        from mcp_server.tools import list_workflow_jobs_tool
+
+        return await list_workflow_jobs_tool(
+            service,
+            session_id=session_id,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    async def cancel_workflow_job(job_id: str) -> str:
+        """Cancel a queued or running workflow job."""
+        from mcp_server.tools import cancel_workflow_job_tool
+
+        return await cancel_workflow_job_tool(service, job_id=job_id)
+
+    @mcp.tool()
     async def synthesize_papers(session_id: str, prompt: str | None = None) -> str:
         """Synthesize active papers with the dedicated synthesis agent.
 

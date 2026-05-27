@@ -21,6 +21,7 @@ from storage.repositories import (
     PostgresPaperWorkspaceRepository,
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
+    PostgresWorkflowJobRepository,
 )
 
 
@@ -107,6 +108,7 @@ def create_paperintel_service(
         analysis_runner = build_graph().compile()
     candidate_repository = PostgresSearchCandidateRepository(session_factory)
     artifact_repository = PostgresPaperWorkspaceRepository(session_factory)
+    workflow_job_repository = PostgresWorkflowJobRepository(session_factory)
     if discovery_runner is None:
         from graph_discovery import build_discovery_graph
 
@@ -151,4 +153,5 @@ def create_paperintel_service(
         selected_candidate_resolver=selected_candidate_resolver,
         candidate_repository=candidate_repository,
         artifact_repository=artifact_repository,
+        workflow_job_repository=workflow_job_repository,
     )

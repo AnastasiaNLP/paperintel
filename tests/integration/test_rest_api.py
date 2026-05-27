@@ -8,6 +8,7 @@ from models.agent_runs import AgentRun
 from models.api import HealthStatus
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
+from models.jobs import WorkflowJob
 from models.session import HandlerResult, Session, Turn
 from models.synthesis import (
     SynthesisAgentResult,
@@ -22,6 +23,7 @@ from services.paperintel_service import (
     NotEnoughPapersForComparisonError,
     PaperWorkspaceNotFoundError,
     PaperWorkspaceNotReadyError,
+    WorkflowJobNotFoundError,
 )
 from services.selected_candidate_resolver import (
     NoSelectedCandidatesError,
@@ -57,6 +59,19 @@ class FakeService:
         self.analyze_selected_calls = []
         self.synthesize_calls = []
         self.compare_calls = []
+        self.enqueue_analyze_paper_calls = []
+        self.enqueue_analyze_selected_calls = []
+        self.workflow_job_list_calls = []
+        self.workflow_job_cancel_calls = []
+        self.jobs = [
+            WorkflowJob(
+                id="job-1",
+                session_id="session-1",
+                kind="analyze_paper",
+                status="queued",
+                input_json={"paper_url": "https://arxiv.org/abs/1706.03762"},
+            )
+        ]
         self.workspaces = [
             PaperWorkspace(
                 session_id="session-1",
@@ -150,6 +165,43 @@ class FakeService:
             referenced_paper_ids=["2605.1", "2605.3"],
             comparison_markdown="# Paper Comparison\n\n2605.1 vs 2605.3",
         )
+
+    def enqueue_analyze_paper(self, session_id, paper_url):
+        self.get_session(session_id)
+        self.enqueue_analyze_paper_calls.append((session_id, paper_url))
+        return WorkflowJob(
+            id="job-queued-paper",
+            session_id=session_id,
+            kind="analyze_paper",
+            status="queued",
+            input_json={"paper_url": paper_url},
+        )
+
+    def enqueue_analyze_selected(self, session_id):
+        self.get_session(session_id)
+        self.enqueue_analyze_selected_calls.append(session_id)
+        return WorkflowJob(
+            id="job-queued-selected",
+            session_id=session_id,
+            kind="analyze_selected",
+            status="queued",
+            input_json={},
+        )
+
+    def get_workflow_job(self, job_id):
+        for job in self.jobs:
+            if job.id == job_id:
+                return job
+        raise WorkflowJobNotFoundError(job_id)
+
+    def list_workflow_jobs(self, session_id, *, limit=50):
+        self.get_session(session_id)
+        self.workflow_job_list_calls.append((session_id, limit))
+        return self.jobs[:limit]
+
+    def cancel_workflow_job(self, job_id):
+        self.workflow_job_cancel_calls.append(job_id)
+        return self.jobs[0].model_copy(update={"id": job_id, "status": "canceled"})
 
     def synthesize_papers(self, session_id, prompt=None):
         self.get_session(session_id)
@@ -479,6 +531,66 @@ def test_compare_maps_shared_workspace_errors():
 
         assert response.status_code == expected_status
         assert response.json()["error"] == expected_error
+
+
+def test_enqueue_analyze_paper_job_endpoint_returns_202():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/jobs/analyze-paper",
+        json={"paper_url": "https://arxiv.org/abs/1706.03762"},
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["id"] == "job-queued-paper"
+    assert payload["kind"] == "analyze_paper"
+    assert payload["status"] == "queued"
+    assert payload["input_json"] == {"paper_url": "https://arxiv.org/abs/1706.03762"}
+    assert service.enqueue_analyze_paper_calls == [
+        ("session-1", "https://arxiv.org/abs/1706.03762")
+    ]
+
+
+def test_enqueue_analyze_selected_job_endpoint_returns_202():
+    service = FakeService()
+
+    response = _request(service, "POST", "/sessions/session-1/jobs/analyze-selected")
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["id"] == "job-queued-selected"
+    assert payload["kind"] == "analyze_selected"
+    assert payload["status"] == "queued"
+    assert payload["input_json"] == {}
+    assert service.enqueue_analyze_selected_calls == ["session-1"]
+
+
+def test_workflow_job_status_endpoints_get_list_and_cancel():
+    service = FakeService()
+
+    listed = _request(service, "GET", "/sessions/session-1/jobs?limit=10")
+    loaded = _request(service, "GET", "/jobs/job-1")
+    canceled = _request(service, "POST", "/jobs/job-1/cancel")
+
+    assert listed.status_code == 200
+    assert listed.json()["jobs"][0]["id"] == "job-1"
+    assert listed.json()["jobs"][0]["kind"] == "analyze_paper"
+    assert loaded.status_code == 200
+    assert loaded.json()["status"] == "queued"
+    assert canceled.status_code == 200
+    assert canceled.json()["status"] == "canceled"
+    assert service.workflow_job_list_calls == [("session-1", 10)]
+    assert service.workflow_job_cancel_calls == ["job-1"]
+
+
+def test_workflow_job_get_missing_maps_404():
+    response = _request(FakeService(), "GET", "/jobs/missing")
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "workflow_job_not_found"
 
 
 def test_health_returns_service_health():
