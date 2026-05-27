@@ -31,6 +31,7 @@ and implementation implications" without losing grounding in the source text.
   confident claims.
 - Supports persona-aware answers: `engineer`, `researcher`, and `techlead`.
 - Exposes both a REST API and an MCP server.
+- Supports Postgres-backed async analysis jobs with a separate worker process.
 
 ## Quick Start
 
@@ -155,6 +156,7 @@ Full architecture details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - [docs/QUICKSTART.md](docs/QUICKSTART.md) — local setup and first paper.
 - [docs/API.md](docs/API.md) — REST API usage patterns.
 - [docs/MCP_SETUP.md](docs/MCP_SETUP.md) — MCP server setup.
+- [docs/ASYNC_JOBS.md](docs/ASYNC_JOBS.md) — workflow job queue and worker operations.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — common issues.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — implemented architecture.
 - [docs/AGENT_CONTRACT.md](docs/AGENT_CONTRACT.md) — AgentRun and policy contract.
@@ -211,7 +213,8 @@ runs completed without failures.
 
 ## Current Limitations
 
-- REST and MCP analysis/discovery calls are synchronous.
+- REST and MCP still expose synchronous analysis/discovery calls. Async analysis
+  is available through workflow jobs and a separate worker process.
 - Discovery currently searches arXiv only.
 - Discovery plus comparison/synthesis is implemented: discovery, shortlist
   selection, selected-paper analysis, batch comparison artifacts, request-driven
@@ -223,8 +226,8 @@ runs completed without failures.
   request-driven comparisons use `producer="comparison_analyst"`.
 - Artifact persistence is intentionally narrow: Postgres stores finalized
   reports, method extraction, benchmarks, readiness results, and comparison
-  reports. S3/object storage, paper cache versioning, outbox/job processing,
-  and PDF asset storage are separate later work.
+  reports and workflow jobs. S3/object storage, paper cache versioning,
+  advanced job scheduling/retries, and PDF asset storage are separate later work.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
 - Authentication, rate limiting, and deployment hardening are future work.

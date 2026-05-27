@@ -81,9 +81,10 @@ complete successfully and the paper is not available for retrieval-backed QA.
 
 ## Synthesis returns `no_active_papers`
 
-`/synthesize` and the MCP `synthesize_papers` tool require at least one active
-paper in the session. Analyze a paper URL or analyze selected discovery
-candidates first, then retry synthesis.
+`/synthesize` and the MCP `synthesize_papers` tool require at least two
+distinct ready paper workspaces. If the session has no active papers, analyze
+paper URLs or selected discovery candidates first. If there is only one active
+paper, analyze another paper before retrying synthesis.
 
 ## No comparison report appears after analyzing selected papers
 

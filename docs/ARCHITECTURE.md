@@ -25,6 +25,7 @@ discover recent candidate papers for a research topic.
 │  - discover_papers / select_papers                               │
 │  - analyze_selected_papers                                       │
 │  - list/get paper workspaces and latest comparison               │
+│  - enqueue/get/list/cancel workflow jobs                         │
 │  - get_session / list_turns                                      │
 │  - health                                                        │
 └──────────────────────────────┬───────────────────────────────────┘
@@ -205,6 +206,7 @@ Postgres stores durable product state:
 - `search_candidates`
 - `paper_workspaces`
 - `comparison_artifacts`
+- `workflow_jobs`
 
 Qdrant stores chunk vectors. Point IDs are deterministic UUID5 values derived
 from stable chunk IDs, so repeated indexing updates instead of duplicating.
@@ -225,8 +227,19 @@ Artifact persistence is intentionally narrow and Postgres-backed:
 - Re-analysis of the same paper in the same session uses last-write-wins
   upsert semantics.
 
+The workflow job layer is intentionally narrow and Postgres-backed:
+
+- `workflow_jobs` stores queued/running/terminal job records with JSON input,
+  result, and error payloads.
+- Workers claim jobs through repository lifecycle methods and run supported job
+  kinds outside the request/response path.
+- REST and MCP expose enqueue, status, list, and cancel surfaces.
+- The current worker supports URL analysis jobs and selected-paper analysis
+  jobs.
+
 This layer does not include S3/object storage, paper cache versioning,
-outbox/job processing, or PDF/page-image asset storage. Those are separate later
+retry/backoff scheduling, process supervision, job budgets, async comparison or
+synthesis jobs, or PDF/page-image asset storage. Those are separate later
 hardening layers.
 
 ## AgentRun Contract
@@ -253,7 +266,9 @@ See [AGENT_CONTRACT.md](AGENT_CONTRACT.md) for implementation details.
 
 ## Current Limitations
 
-- Analysis and discovery are synchronous through REST and MCP.
+- Synchronous analysis and discovery endpoints remain available. Async analysis
+  is available through workflow job enqueue/status surfaces and a separately
+  running worker.
 - Discovery currently searches arXiv only.
 - Artifact persistence is session-scoped. Global paper reuse without re-analysis
   is deferred to a future PaperCache layer.

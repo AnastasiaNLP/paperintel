@@ -36,6 +36,7 @@ Discovery-to-QA:
 7. Optionally synthesize active papers with the dedicated synthesis agent.
 8. Reload persisted paper workspaces or the latest comparison without
    re-running analysis.
+9. Optionally queue analysis work as workflow jobs and poll job status.
 
 ## Endpoints
 
@@ -55,6 +56,11 @@ Discovery-to-QA:
 | `POST` | `/sessions/{session_id}/select` | Select papers from the latest discovery shortlist by display number. |
 | `POST` | `/sessions/{session_id}/analyze-selected` | Analyze the currently selected discovery candidates. No request body required. |
 | `POST` | `/sessions/{session_id}/synthesize` | Run the dedicated synthesis agent over durable paper workspaces. Optional `prompt` body. Does not persist a synthesis artifact. |
+| `POST` | `/sessions/{session_id}/jobs/analyze-paper` | Queue one paper URL analysis job. Returns `202` with a workflow job. |
+| `POST` | `/sessions/{session_id}/jobs/analyze-selected` | Queue analysis for selected discovery candidates. Returns `202` with a workflow job. |
+| `GET` | `/sessions/{session_id}/jobs` | List recent workflow jobs for a session. |
+| `GET` | `/jobs/{job_id}` | Get one workflow job status, result, or error payload. |
+| `POST` | `/jobs/{job_id}/cancel` | Cancel a queued or running workflow job. |
 
 ## Example
 
@@ -145,9 +151,44 @@ accepts an optional body:
 If the body is omitted or `prompt` is blank, PaperIntel uses a default synthesis
 prompt.
 
+## Async Job Example
+
+The synchronous analysis endpoints remain available. For long-running analysis,
+you can queue a job and run a separate worker process. See
+[ASYNC_JOBS.md](ASYNC_JOBS.md) for worker operations.
+
+Queue one paper analysis job:
+
+```bash
+JOB_ID=$(
+  curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/analyze-paper" \
+    -H 'content-type: application/json' \
+    -d '{"paper_url":"https://arxiv.org/abs/1706.03762"}' \
+  | python -c "import sys,json; print(json.load(sys.stdin)['id'])"
+)
+```
+
+Run a worker in another shell:
+
+```bash
+.venv/bin/python -m dotenv run -- .venv/bin/python -m workers --once
+```
+
+Poll the job:
+
+```bash
+curl -s "http://127.0.0.1:8000/jobs/$JOB_ID"
+```
+
+Queue selected-paper analysis after discovery/selection:
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/analyze-selected"
+```
+
 ## Notes
 
-- `/analyze` is synchronous and can take 50-90 seconds.
+- `/analyze` is synchronous and can take 50-90 seconds. Use `/jobs/analyze-paper` plus a separate worker for async analysis.
 - `/discover` is synchronous and depends on arXiv availability.
 - `/ask` works only after a paper has been successfully analyzed and indexed in
   the same session.
@@ -155,14 +196,16 @@ prompt.
   response. Selection uses the display numbers shown to the user.
 - `/analyze-selected` runs the existing analysis graph on selected candidate
   URLs. With multiple selected papers, the analysis graph uses batch mode and
-  may also produce a comparison report.
+  may also produce a comparison report. Use `/jobs/analyze-selected` plus a
+  separate worker for async selected-paper analysis.
 - `/compare` creates a new `ComparisonArtifact` every time it succeeds. It
   returns `409` if fewer than two papers are available, `404` if a requested
   workspace is missing, and `409` if a requested workspace is failed or
   incomplete.
-- `/synthesize` requires at least one active paper and returns `409` if the
-  session has no active papers. It also returns `404` for missing requested
-  workspaces and `409` for failed or incomplete workspaces.
+- `/synthesize` requires at least two distinct ready paper workspaces. It
+  returns `409` if the session has no active papers or fewer than two distinct
+  active papers. It also returns `404` for missing requested workspaces and
+  `409` for failed or incomplete workspaces.
 - `/analyze-selected` returns `400` if no candidates were selected and `409`
   if selected candidates are not in the correct state for analysis.
 - `/sessions/{session_id}/comparison` returns `404` with
@@ -173,4 +216,5 @@ prompt.
   transport data.
 - Invalid paper URLs return `422`.
 - Missing sessions return `404`.
+- Workflow job enqueue endpoints return `202`. Job lifecycle conflicts return `409`.
 - Unexpected service failures return a safe `500` response.

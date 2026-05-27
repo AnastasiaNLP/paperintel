@@ -18,7 +18,7 @@ docker compose up -d postgres qdrant
 
 ## Tools
 
-The MCP server exposes twelve tools:
+The MCP server exposes seventeen tools:
 
 - `create_session(persona)` creates a PaperIntel session and returns a session ID.
 - `analyze_paper(session_id, paper_url)` analyzes an arXiv or PDF URL. This is synchronous and can take about one minute.
@@ -32,6 +32,11 @@ The MCP server exposes twelve tools:
 - `list_paper_workspaces(session_id)` lists persisted artifact summaries for analyzed papers.
 - `get_paper_workspace(session_id, paper_id)` returns a readable summary of one persisted paper workspace.
 - `get_latest_comparison(session_id)` returns the latest persisted comparison artifact without running an LLM.
+- `enqueue_analyze_paper(session_id, paper_url)` queues one paper URL analysis job.
+- `enqueue_analyze_selected(session_id)` queues analysis for selected discovery candidates.
+- `get_workflow_job(job_id)` returns job status, result, or error payload.
+- `list_workflow_jobs(session_id, limit)` lists recent workflow jobs for a session.
+- `cancel_workflow_job(job_id)` cancels a queued or running workflow job.
 
 The server does not keep an implicit current session. Pass the `session_id` returned by `create_session` to later tool calls.
 
@@ -151,9 +156,18 @@ The full discovery workflow is:
 create_session -> discover_papers -> select_papers -> analyze_selected_papers -> ask_paper / compare_papers / synthesize_papers
 ```
 
+Async analysis workflow:
+
+```text
+create_session -> enqueue_analyze_paper -> get_workflow_job / list_workflow_jobs
+```
+
+A separate worker process must be running to process queued jobs. See
+[ASYNC_JOBS.md](ASYNC_JOBS.md) for worker commands and lifecycle details.
+
 ## Troubleshooting
 
 - Tool does not appear: restart Claude Desktop and verify the config path is absolute.
-- Analysis or discovery takes a long time: this is expected; both are synchronous in the current MCP adapter.
+- Analysis or discovery takes a long time: synchronous tools still run inline. Use `enqueue_analyze_paper` or `enqueue_analyze_selected` with a separate worker for async analysis.
 - Server exits immediately: run `.venv/bin/python -m mcp_server.server` from the repository root to see import/configuration errors.
 - JSON-RPC parse errors: ensure the MCP server is not writing logs to stdout.
