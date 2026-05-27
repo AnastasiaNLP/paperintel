@@ -10,6 +10,7 @@ from models.jobs import WorkflowJob
 from models.session import HandlerResult, Session, Turn
 from services.paperintel_service import (
     ComparisonNotFoundError,
+    InvalidPdfInputError,
     InvalidSessionPhaseError,
     NoActivePapersError,
     NotEnoughPapersForComparisonError,
@@ -355,14 +356,17 @@ def test_service_get_workflow_job_raises_when_missing():
         service.get_workflow_job("missing")
 
 
-def test_service_analyze_pdf_passes_expected_paper_id_to_handler():
+def test_service_analyze_pdf_passes_expected_paper_id_to_handler(tmp_path):
     handler = FakeHandler()
     service = PaperIntelService(handler=handler)
     session = service.create_session()
 
+    pdf_path = tmp_path / "2501.12948.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+
     result = service.analyze_pdf(
         session.id,
-        "/tmp/2501.12948.pdf",
+        str(pdf_path),
         paper_id="2501.12948",
         skip_arxiv_metadata_fetch=True,
     )
@@ -372,12 +376,41 @@ def test_service_analyze_pdf_passes_expected_paper_id_to_handler():
         {
             "session_id": session.id,
             "input_type": "pdf",
-            "input_value": "/tmp/2501.12948.pdf",
+            "input_value": str(pdf_path),
             "user_content": "Analyze local PDF 2501.12948",
             "expected_paper_id": "2501.12948",
             "skip_arxiv_metadata_fetch": True,
         }
     ]
+
+
+def test_service_analyze_pdf_rejects_missing_file():
+    service = PaperIntelService(handler=FakeHandler())
+    session = service.create_session()
+
+    with pytest.raises(InvalidPdfInputError, match="does not exist"):
+        service.analyze_pdf(session.id, "/tmp/missing-paper.pdf")
+
+
+def test_service_analyze_pdf_rejects_non_pdf_magic_bytes(tmp_path):
+    service = PaperIntelService(handler=FakeHandler())
+    session = service.create_session()
+    pdf_path = tmp_path / "not-a-pdf.pdf"
+    pdf_path.write_bytes(b"hello")
+
+    with pytest.raises(InvalidPdfInputError, match="magic bytes"):
+        service.analyze_pdf(session.id, str(pdf_path))
+
+
+def test_service_analyze_pdf_rejects_oversized_pdf(tmp_path, monkeypatch):
+    service = PaperIntelService(handler=FakeHandler())
+    session = service.create_session()
+    pdf_path = tmp_path / "large.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7")
+    monkeypatch.setattr("services.paperintel_service.MAX_LOCAL_PDF_BYTES", 4)
+
+    with pytest.raises(InvalidPdfInputError, match="too large"):
+        service.analyze_pdf(session.id, str(pdf_path))
 
 
 def test_service_ask_question_delegates_to_handler():

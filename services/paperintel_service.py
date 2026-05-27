@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Protocol
 
 from agents.comparison_analyst import compare_workspaces
@@ -12,6 +13,12 @@ from models.synthesis import SynthesisAgentResult
 from services.selected_candidate_resolver import SelectedCandidateResolver
 
 _FAILED_WORKSPACE_STAGES = {"failed", "paper_failure_finalize"}
+MAX_LOCAL_PDF_BYTES = 50 * 1024 * 1024
+
+
+class InvalidPdfInputError(ValueError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
 
 
 class InvalidSessionPhaseError(ValueError):
@@ -87,6 +94,25 @@ class WorkflowJobNotFoundError(ValueError):
 class InvalidWorkflowJobInputError(ValueError):
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+def _validate_local_pdf_path(pdf_path: str) -> str:
+    path = Path(pdf_path).expanduser()
+    if not str(pdf_path).strip():
+        raise InvalidPdfInputError("pdf_path must not be empty")
+    if not path.exists():
+        raise InvalidPdfInputError(f"PDF file does not exist: {pdf_path}")
+    if not path.is_file():
+        raise InvalidPdfInputError(f"PDF path is not a file: {pdf_path}")
+    if path.stat().st_size > MAX_LOCAL_PDF_BYTES:
+        raise InvalidPdfInputError(
+            f"PDF file is too large; max size is {MAX_LOCAL_PDF_BYTES} bytes"
+        )
+    with path.open("rb") as handle:
+        header = handle.read(5)
+    if header != b"%PDF-":
+        raise InvalidPdfInputError("PDF file must start with %PDF- magic bytes")
+    return str(path)
 
 
 class SearchCandidateRepository(Protocol):
@@ -217,11 +243,12 @@ class PaperIntelService:
         paper_id: str | None = None,
         skip_arxiv_metadata_fetch: bool = False,
     ) -> HandlerResult:
-        content = f"Analyze local PDF {paper_id or pdf_path}"
+        resolved_pdf_path = _validate_local_pdf_path(pdf_path)
+        content = f"Analyze local PDF {paper_id or resolved_pdf_path}"
         return self.handler.analyze_paper_input(
             session_id,
             input_type="pdf",
-            input_value=pdf_path,
+            input_value=resolved_pdf_path,
             user_content=content,
             expected_paper_id=paper_id,
             skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
