@@ -17,12 +17,14 @@ from services.selection_parser import SelectionHandler
 from storage.db import make_engine, make_session_factory
 from storage.repositories import (
     PostgresAgentRunPersistence,
+    PostgresArxivMetadataCacheRepository,
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
     PostgresWorkflowJobRepository,
 )
+from tools.arxiv_client import configure_metadata_cache
 
 
 def create_chat_handler(
@@ -35,6 +37,7 @@ def create_chat_handler(
 ) -> ChatHandler:
     engine = make_engine(database_url)
     session_factory = make_session_factory(engine)
+    configure_metadata_cache(PostgresArxivMetadataCacheRepository(session_factory))
     session_store = PostgresSessionStore(session_factory)
     candidate_repository = PostgresSearchCandidateRepository(session_factory)
     artifact_repository = PostgresPaperWorkspaceRepository(session_factory)
@@ -82,6 +85,7 @@ def create_paperintel_service(
     resolved_database_url = database_url or settings.postgres_url
     engine = make_engine(resolved_database_url)
     session_factory = make_session_factory(engine)
+    configure_metadata_cache(PostgresArxivMetadataCacheRepository(session_factory))
 
     vector_store = None
     if retrieval_layer is None:

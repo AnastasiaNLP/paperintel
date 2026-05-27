@@ -811,6 +811,7 @@ def test_postgres_arxiv_metadata_cache_repository_records_error_then_success(
     }
     assert failed_again.has_successful_fetch is False
 
+    first_seen_at = failed_again.created_at
     succeeded = repository.record_success(
         failed_again.model_copy(
             update={
@@ -824,6 +825,7 @@ def test_postgres_arxiv_metadata_cache_repository_records_error_then_success(
         )
     )
 
+    assert succeeded.created_at == first_seen_at
     assert succeeded.error_count == 0
     assert succeeded.last_error_json is None
     assert succeeded.has_successful_fetch is True

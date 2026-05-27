@@ -69,16 +69,35 @@ class PostgresArxivMetadataCacheRepository:
             return orm_to_arxiv_metadata_cache_entry(orm)
 
     def record_success(self, entry: ArxivMetadataCacheEntry) -> ArxivMetadataCacheEntry:
-        now = _utc_now()
-        saved = entry.model_copy(
-            update={
-                "fetched_at": entry.fetched_at or now,
-                "last_error_json": None,
-                "error_count": 0,
-                "updated_at": now,
-            }
-        )
-        return self.save(saved)
+        with self.session_factory() as db:
+            orm = db.get(ArxivMetadataCacheORM, entry.arxiv_id)
+            now = _utc_now()
+            if orm is None:
+                orm = arxiv_metadata_cache_entry_to_orm(
+                    entry.model_copy(
+                        update={
+                            "fetched_at": entry.fetched_at or now,
+                            "last_error_json": None,
+                            "error_count": 0,
+                            "updated_at": now,
+                        }
+                    )
+                )
+                db.add(orm)
+            else:
+                orm.title = entry.title
+                orm.authors_json = entry.authors
+                orm.abstract = entry.abstract
+                orm.published_date = entry.published_date
+                orm.categories_json = entry.categories
+                orm.source_url = entry.source_url
+                orm.fetched_at = entry.fetched_at or now
+                orm.last_error_json = None
+                orm.error_count = 0
+                orm.updated_at = now
+            db.commit()
+            db.refresh(orm)
+            return orm_to_arxiv_metadata_cache_entry(orm)
 
     def record_error(
         self,
