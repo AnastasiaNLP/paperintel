@@ -3,6 +3,7 @@ from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.errors import StructuredError
 from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
+from models.jobs import WorkflowJob
 from models.session import Session, Turn
 from storage.models import (
     AgentRunORM,
@@ -13,6 +14,7 @@ from storage.models import (
     SessionORM,
     StructuredErrorORM,
     TurnORM,
+    WorkflowJobORM,
 )
 
 
@@ -298,6 +300,46 @@ def orm_to_comparison_artifact(
         paper_ids=list(orm.paper_ids or []),
         comparison_report_json=orm.comparison_report_json,
         comparison_markdown=orm.comparison_markdown,
+        created_at=orm.created_at,
+        updated_at=orm.updated_at,
+    )
+
+
+def workflow_job_to_orm(job: WorkflowJob) -> WorkflowJobORM:
+    return WorkflowJobORM(
+        id=job.id,
+        session_id=job.session_id,
+        kind=job.kind,
+        status=job.status,
+        input_json=job.input_json or {},
+        result_json=job.result_json,
+        error_json=job.error_json,
+        attempts=job.attempts,
+        max_attempts=job.max_attempts,
+        locked_by=job.locked_by,
+        locked_at=job.locked_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
+
+
+def orm_to_workflow_job(orm: WorkflowJobORM) -> WorkflowJob:
+    return WorkflowJob(
+        id=orm.id,
+        session_id=orm.session_id,
+        kind=orm.kind,
+        status=orm.status,
+        input_json=orm.input_json or {},
+        result_json=orm.result_json,
+        error_json=orm.error_json,
+        attempts=orm.attempts,
+        max_attempts=orm.max_attempts,
+        locked_by=orm.locked_by,
+        locked_at=orm.locked_at,
+        started_at=orm.started_at,
+        finished_at=orm.finished_at,
         created_at=orm.created_at,
         updated_at=orm.updated_at,
     )

@@ -4,6 +4,7 @@ from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.errors import ErrorCodes, StructuredError, make_error
+from models.jobs import WorkflowJob
 from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
 from models.session import Session, Turn
 from storage.mappers import (
@@ -23,6 +24,8 @@ from storage.mappers import (
     session_to_orm,
     structured_error_to_orm,
     turn_to_orm,
+    workflow_job_to_orm,
+    orm_to_workflow_job,
 )
 
 
@@ -188,3 +191,20 @@ def test_comparison_artifact_mapper_round_trip():
     mapped = orm_to_comparison_artifact(comparison_artifact_to_orm(artifact))
 
     assert mapped == artifact
+
+
+def test_workflow_job_mapper_round_trip():
+    job = WorkflowJob(
+        session_id="session-1",
+        kind="analyze_paper",
+        status="running",
+        input_json={"paper_url": "https://arxiv.org/abs/1706.03762"},
+        result_json={"phase": "qa"},
+        attempts=1,
+        max_attempts=2,
+        locked_by="worker-1",
+    )
+
+    mapped = orm_to_workflow_job(workflow_job_to_orm(job))
+
+    assert mapped == job

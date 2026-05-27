@@ -84,6 +84,10 @@ class SessionORM(TimestampMixin, Base):
         back_populates="session",
         cascade="all, delete-orphan",
     )
+    workflow_jobs: Mapped[list["WorkflowJobORM"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
 
 
 class StructuredErrorORM(Base):
@@ -208,6 +212,63 @@ class AgentRunORM(Base):
     )
 
     session: Mapped[SessionORM | None] = relationship(back_populates="agent_runs")
+
+
+class WorkflowJobORM(TimestampMixin, Base):
+    __tablename__ = "workflow_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "kind in ('analyze_paper', 'analyze_selected', 'discover', 'compare', 'synthesize', 'judge_eval')",
+            name="ck_workflow_jobs_kind",
+        ),
+        CheckConstraint(
+            "status in ('queued', 'running', 'succeeded', 'failed', 'canceled')",
+            name="ck_workflow_jobs_status",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_workflow_jobs_attempts_nonnegative"),
+        CheckConstraint("max_attempts >= 1", name="ck_workflow_jobs_max_attempts_positive"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    input_json: Mapped[dict[str, Any]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(
+        jsonb_type(),
+        nullable=True,
+    )
+    error_json: Mapped[dict[str, Any] | None] = mapped_column(
+        jsonb_type(),
+        nullable=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    session: Mapped[SessionORM] = relationship(back_populates="workflow_jobs")
 
 
 class PaperChunkORM(TimestampMixin, Base):
@@ -372,6 +433,9 @@ class ComparisonArtifactORM(TimestampMixin, Base):
 
 Index("ix_turns_session_created_at", TurnORM.session_id, TurnORM.created_at)
 Index("ix_agent_runs_session_started_at", AgentRunORM.session_id, AgentRunORM.started_at)
+Index("ix_workflow_jobs_session_created_at", WorkflowJobORM.session_id, WorkflowJobORM.created_at)
+Index("ix_workflow_jobs_status_created_at", WorkflowJobORM.status, WorkflowJobORM.created_at)
+Index("ix_workflow_jobs_kind_status", WorkflowJobORM.kind, WorkflowJobORM.status)
 Index("ix_paper_chunks_paper_chunk", PaperChunkORM.paper_id, PaperChunkORM.chunk_index)
 Index("ix_paper_chunks_session_paper", PaperChunkORM.session_id, PaperChunkORM.paper_id)
 Index(

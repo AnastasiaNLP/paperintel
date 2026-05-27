@@ -10,6 +10,7 @@ from storage.models import (
     SessionORM,
     StructuredErrorORM,
     TurnORM,
+    WorkflowJobORM,
 )
 
 
@@ -27,6 +28,7 @@ def test_initial_storage_metadata_contains_foundation_tables():
         "search_candidates",
         "paper_workspaces",
         "comparison_artifacts",
+        "workflow_jobs",
     }.issubset(Base.metadata.tables.keys())
 
 
@@ -196,3 +198,41 @@ def test_comparison_artifact_table_matches_group_artifact_contract_columns():
     assert columns.id.primary_key
     assert isinstance(_postgres_type(columns.paper_ids), postgresql.JSONB)
     assert isinstance(_postgres_type(columns.comparison_report_json), postgresql.JSONB)
+
+
+def test_workflow_job_table_matches_async_job_contract_columns():
+    columns = WorkflowJobORM.__table__.c
+
+    for name in [
+        "session_id",
+        "kind",
+        "status",
+        "input_json",
+        "result_json",
+        "error_json",
+        "attempts",
+        "max_attempts",
+        "locked_by",
+        "locked_at",
+        "started_at",
+        "finished_at",
+        "created_at",
+        "updated_at",
+    ]:
+        assert name in columns
+
+    assert columns.id.primary_key
+    assert isinstance(_postgres_type(columns.input_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.result_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.error_json), postgresql.JSONB)
+    assert {
+        "ck_workflow_jobs_kind",
+        "ck_workflow_jobs_status",
+        "ck_workflow_jobs_attempts_nonnegative",
+        "ck_workflow_jobs_max_attempts_positive",
+    }.issubset({constraint.name for constraint in WorkflowJobORM.__table__.constraints})
+    assert {
+        "ix_workflow_jobs_session_created_at",
+        "ix_workflow_jobs_status_created_at",
+        "ix_workflow_jobs_kind_status",
+    }.issubset({index.name for index in WorkflowJobORM.__table__.indexes})

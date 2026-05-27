@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Sequence, get_args
 
 from sqlalchemy import delete, select
@@ -11,6 +12,7 @@ from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import CandidateStatus, SearchCandidate
 from models.errors import StructuredError
+from models.jobs import JobKind, JobStatus, WorkflowJob
 from models.retrieval import PaperChunk, UpsertChunksResult
 from models.session import Persona, Session, SessionPhase, Turn, TurnRole
 from storage.mappers import (
@@ -19,6 +21,7 @@ from storage.mappers import (
     orm_to_agent_run,
     orm_to_comparison_artifact,
     orm_to_paper_chunk,
+    orm_to_workflow_job,
     orm_to_paper_workspace,
     orm_to_session,
     orm_to_search_candidate,
@@ -30,6 +33,7 @@ from storage.mappers import (
     session_to_orm,
     structured_error_to_orm,
     turn_to_orm,
+    workflow_job_to_orm,
 )
 from storage.models import (
     AgentRunORM,
@@ -40,7 +44,175 @@ from storage.models import (
     SessionORM,
     StructuredErrorORM,
     TurnORM,
+    WorkflowJobORM,
 )
+
+
+class WorkflowJobNotFoundError(ValueError):
+    def __init__(self, job_id: str) -> None:
+        super().__init__(f"Workflow job not found: {job_id}")
+        self.job_id = job_id
+
+
+class InvalidWorkflowJobTransitionError(ValueError):
+    def __init__(self, *, job_id: str, status: str, target_status: str) -> None:
+        super().__init__(
+            f"Cannot transition workflow job {job_id} from {status} "
+            f"to {target_status}."
+        )
+        self.job_id = job_id
+        self.status = status
+        self.target_status = target_status
+
+
+class PostgresWorkflowJobRepository:
+    def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
+        self.session_factory = session_factory
+
+    def create(self, job: WorkflowJob) -> WorkflowJob:
+        with self.session_factory() as db:
+            db.add(workflow_job_to_orm(job))
+            db.commit()
+        return job
+
+    def get(self, job_id: str) -> WorkflowJob | None:
+        with self.session_factory() as db:
+            orm = db.get(WorkflowJobORM, job_id)
+            return orm_to_workflow_job(orm) if orm is not None else None
+
+    def list_for_session(self, session_id: str, limit: int = 50) -> list[WorkflowJob]:
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(WorkflowJobORM)
+                    .where(WorkflowJobORM.session_id == session_id)
+                    .order_by(WorkflowJobORM.created_at.asc())
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+            return [orm_to_workflow_job(row) for row in rows]
+
+    def claim_next(
+        self,
+        *,
+        worker_id: str,
+        kinds: list[JobKind] | None = None,
+    ) -> WorkflowJob | None:
+        with self.session_factory() as db:
+            query = (
+                select(WorkflowJobORM)
+                .where(WorkflowJobORM.status == "queued")
+                .order_by(WorkflowJobORM.created_at.asc())
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+            if kinds is not None:
+                query = query.where(WorkflowJobORM.kind.in_(list(kinds)))
+
+            orm = db.execute(query).scalars().first()
+            if orm is None:
+                return None
+
+            now = _utc_now()
+            orm.status = "running"
+            orm.locked_by = worker_id
+            orm.locked_at = now
+            if orm.started_at is None:
+                orm.started_at = now
+            orm.attempts += 1
+            orm.updated_at = now
+            db.commit()
+            db.refresh(orm)
+            return orm_to_workflow_job(orm)
+
+    def mark_running(self, job_id: str, *, worker_id: str) -> WorkflowJob:
+        with self.session_factory() as db:
+            orm = self._require_orm(db, job_id)
+            now = _utc_now()
+            if orm.status == "running" and orm.locked_by == worker_id:
+                orm.locked_at = now
+                orm.updated_at = now
+                db.commit()
+                db.refresh(orm)
+                return orm_to_workflow_job(orm)
+            self._require_status(orm, {"queued"}, target_status="running")
+            orm.status = "running"
+            orm.locked_by = worker_id
+            orm.locked_at = now
+            if orm.started_at is None:
+                orm.started_at = now
+            orm.attempts += 1
+            orm.updated_at = now
+            db.commit()
+            db.refresh(orm)
+            return orm_to_workflow_job(orm)
+
+    def mark_succeeded(self, job_id: str, *, result_json: dict) -> WorkflowJob:
+        with self.session_factory() as db:
+            orm = self._require_orm(db, job_id)
+            self._require_status(orm, {"running"}, target_status="succeeded")
+            now = _utc_now()
+            orm.status = "succeeded"
+            orm.result_json = result_json
+            orm.error_json = None
+            orm.finished_at = now
+            orm.locked_by = None
+            orm.locked_at = None
+            orm.updated_at = now
+            db.commit()
+            db.refresh(orm)
+            return orm_to_workflow_job(orm)
+
+    def mark_failed(self, job_id: str, *, error_json: dict) -> WorkflowJob:
+        with self.session_factory() as db:
+            orm = self._require_orm(db, job_id)
+            self._require_status(orm, {"running"}, target_status="failed")
+            now = _utc_now()
+            orm.status = "failed"
+            orm.error_json = error_json
+            orm.finished_at = now
+            orm.locked_by = None
+            orm.locked_at = None
+            orm.updated_at = now
+            db.commit()
+            db.refresh(orm)
+            return orm_to_workflow_job(orm)
+
+    def mark_canceled(self, job_id: str) -> WorkflowJob:
+        with self.session_factory() as db:
+            orm = self._require_orm(db, job_id)
+            self._require_status(orm, {"queued", "running"}, target_status="canceled")
+            now = _utc_now()
+            orm.status = "canceled"
+            orm.finished_at = now
+            orm.locked_by = None
+            orm.locked_at = None
+            orm.updated_at = now
+            db.commit()
+            db.refresh(orm)
+            return orm_to_workflow_job(orm)
+
+    def _require_orm(self, db: DbSession, job_id: str) -> WorkflowJobORM:
+        orm = db.get(WorkflowJobORM, job_id)
+        if orm is None:
+            raise WorkflowJobNotFoundError(job_id)
+        return orm
+
+    def _require_status(
+        self,
+        orm: WorkflowJobORM,
+        allowed: set[JobStatus],
+        *,
+        target_status: JobStatus,
+    ) -> None:
+        if orm.status not in allowed:
+            raise InvalidWorkflowJobTransitionError(
+                job_id=orm.id,
+                status=orm.status,
+                target_status=target_status,
+            )
 
 
 class PostgresSessionStore(SessionStore):
@@ -439,6 +611,7 @@ class PostgresPaperWorkspaceRepository:
 
 
 def clear_foundation_tables(db: DbSession) -> None:
+    db.execute(delete(WorkflowJobORM))
     db.execute(delete(ComparisonArtifactORM))
     db.execute(delete(PaperWorkspaceORM))
     db.execute(delete(SearchCandidateORM))
@@ -448,3 +621,7 @@ def clear_foundation_tables(db: DbSession) -> None:
     db.execute(delete(StructuredErrorORM))
     db.execute(delete(SessionORM))
     db.commit()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)

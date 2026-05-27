@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from alembic import command
@@ -9,6 +9,7 @@ from api.in_memory_session_store import SessionNotFoundError
 from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
+from models.jobs import WorkflowJob
 from models.errors import ErrorCodes, make_error
 from models.retrieval import ChunkSource, PaperChunk
 from storage.db import make_engine, make_session_factory
@@ -19,6 +20,8 @@ from storage.repositories import (
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
     PostgresStructuredErrorRepository,
+    InvalidWorkflowJobTransitionError,
+    PostgresWorkflowJobRepository,
     clear_foundation_tables,
 )
 
@@ -483,3 +486,273 @@ def test_postgres_paper_workspace_repository_returns_none_for_missing_artifacts(
 
     assert repository.get_workspace(session.id, "missing") is None
     assert repository.latest_comparison(session.id) is None
+
+
+def test_postgres_workflow_job_repository_lifecycle(session_factory):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = WorkflowJob(
+        session_id=session.id,
+        kind="analyze_paper",
+        input_json={"paper_url": "https://arxiv.org/abs/1706.03762"},
+    )
+
+    created = repository.create(job)
+    loaded = repository.get(job.id)
+    running = repository.mark_running(job.id, worker_id="worker-1")
+    succeeded = repository.mark_succeeded(
+        job.id,
+        result_json={"intent": "analyze_paper", "phase": "qa"},
+    )
+
+    assert created.id == job.id
+    assert loaded is not None
+    assert loaded.input_json == {"paper_url": "https://arxiv.org/abs/1706.03762"}
+    assert running.status == "running"
+    assert running.locked_by == "worker-1"
+    assert running.locked_at is not None
+    assert running.started_at is not None
+    assert running.attempts == 1
+    assert succeeded.status == "succeeded"
+    assert succeeded.result_json == {"intent": "analyze_paper", "phase": "qa"}
+    assert succeeded.error_json is None
+    assert succeeded.finished_at is not None
+    assert succeeded.locked_by is None
+
+
+def test_postgres_workflow_job_repository_failure_and_cancel(session_factory):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    failed_job = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="compare",
+            input_json={"paper_ids": ["1706.03762", "2005.11401"]},
+        )
+    )
+    canceled_job = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="synthesize",
+            input_json={},
+        )
+    )
+
+    running_failed_job = repository.mark_running(failed_job.id, worker_id="worker-1")
+    failed = repository.mark_failed(
+        running_failed_job.id,
+        error_json={"error": "paper_workspace_not_ready"},
+    )
+    canceled = repository.mark_canceled(canceled_job.id)
+
+    assert failed.status == "failed"
+    assert failed.error_json == {"error": "paper_workspace_not_ready"}
+    assert failed.finished_at is not None
+    assert canceled.status == "canceled"
+    assert canceled.finished_at is not None
+
+
+def test_postgres_workflow_job_repository_lists_by_session_in_created_order(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    first_session = store.create_session()
+    second_session = store.create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    base = datetime(2026, 5, 27, tzinfo=timezone.utc)
+    first = WorkflowJob(
+        session_id=first_session.id,
+        kind="discover",
+        input_json={"topic": "rag"},
+        created_at=base,
+    )
+    second = WorkflowJob(
+        session_id=first_session.id,
+        kind="analyze_selected",
+        input_json={},
+        created_at=base + timedelta(seconds=1),
+    )
+    other = WorkflowJob(
+        session_id=second_session.id,
+        kind="discover",
+        input_json={"topic": "agents"},
+        created_at=base + timedelta(seconds=2),
+    )
+
+    repository.create(second)
+    repository.create(other)
+    repository.create(first)
+
+    listed = repository.list_for_session(first_session.id)
+
+    assert [job.id for job in listed] == [first.id, second.id]
+
+
+def test_postgres_workflow_job_repository_claims_oldest_queued_job(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    base = datetime(2026, 5, 27, tzinfo=timezone.utc)
+    older = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={"paper_url": "https://arxiv.org/abs/1706.03762"},
+            created_at=base,
+        )
+    )
+    newer = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="compare",
+            input_json={},
+            created_at=base + timedelta(seconds=1),
+        )
+    )
+
+    claimed = repository.claim_next(worker_id="worker-1")
+    second_claim = repository.claim_next(worker_id="worker-2")
+
+    assert claimed is not None
+    assert claimed.id == older.id
+    assert claimed.status == "running"
+    assert claimed.locked_by == "worker-1"
+    assert claimed.attempts == 1
+    assert second_claim is not None
+    assert second_claim.id == newer.id
+    assert second_claim.locked_by == "worker-2"
+    assert repository.claim_next(worker_id="worker-3") is None
+
+
+def test_postgres_workflow_job_repository_claim_next_filters_by_kind(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    base = datetime(2026, 5, 27, tzinfo=timezone.utc)
+    analyze = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={},
+            created_at=base,
+        )
+    )
+    compare = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="compare",
+            input_json={},
+            created_at=base + timedelta(seconds=1),
+        )
+    )
+
+    claimed = repository.claim_next(worker_id="worker-1", kinds=["compare"])
+
+    assert claimed is not None
+    assert claimed.id == compare.id
+    assert repository.get(analyze.id).status == "queued"
+
+
+def test_postgres_workflow_job_mark_running_is_idempotent_for_same_worker(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={},
+        )
+    )
+
+    first = repository.mark_running(job.id, worker_id="worker-1")
+    second = repository.mark_running(job.id, worker_id="worker-1")
+
+    assert first.status == "running"
+    assert second.status == "running"
+    assert first.attempts == 1
+    assert second.attempts == 1
+
+
+def test_postgres_workflow_job_mark_running_rejects_running_job_for_other_worker(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={},
+        )
+    )
+    repository.mark_running(job.id, worker_id="worker-1")
+
+    with pytest.raises(InvalidWorkflowJobTransitionError):
+        repository.mark_running(job.id, worker_id="worker-2")
+
+
+def test_postgres_workflow_job_terminal_transitions_require_running_job(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    queued = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="compare",
+            input_json={},
+        )
+    )
+
+    with pytest.raises(InvalidWorkflowJobTransitionError):
+        repository.mark_succeeded(queued.id, result_json={})
+    with pytest.raises(InvalidWorkflowJobTransitionError):
+        repository.mark_failed(queued.id, error_json={})
+
+    running = repository.mark_running(queued.id, worker_id="worker-1")
+    succeeded = repository.mark_succeeded(running.id, result_json={"ok": True})
+
+    with pytest.raises(InvalidWorkflowJobTransitionError):
+        repository.mark_failed(succeeded.id, error_json={"error": "late"})
+    with pytest.raises(InvalidWorkflowJobTransitionError):
+        repository.mark_canceled(succeeded.id)
+
+
+def test_postgres_workflow_job_cancel_allows_queued_or_running_only(session_factory):
+    store = PostgresSessionStore(session_factory)
+    session = store.create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    queued = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="synthesize",
+            input_json={},
+        )
+    )
+    running = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="compare",
+            input_json={},
+        )
+    )
+
+    canceled_queued = repository.mark_canceled(queued.id)
+    running = repository.mark_running(running.id, worker_id="worker-1")
+    canceled_running = repository.mark_canceled(running.id)
+
+    assert canceled_queued.status == "canceled"
+    assert canceled_running.status == "canceled"
+    with pytest.raises(InvalidWorkflowJobTransitionError):
+        repository.mark_canceled(canceled_queued.id)
