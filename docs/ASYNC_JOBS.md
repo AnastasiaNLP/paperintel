@@ -176,7 +176,8 @@ options.
 - Canceling a running job marks the job record canceled; it does not interrupt
   an already running LLM, embedding, HTTP, or vector-store call.
 - No async comparison or synthesis jobs yet.
-- Local PDF analysis is still synchronous unless called directly through the
-  service; the current async worker supports URL analysis jobs.
+- Local PDF analysis is synchronous through REST multipart upload, MCP local
+  path analysis, or direct service calls. The current async worker supports URL
+  analysis jobs; async PDF upload jobs require shared PDF/object storage.
 - Job results are stored in Postgres as JSON transport snapshots, not as a
   separate event stream.

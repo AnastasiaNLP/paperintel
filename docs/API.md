@@ -51,6 +51,7 @@ Discovery-to-QA:
 | `GET` | `/sessions/{session_id}/comparison` | Get the latest persisted comparison artifact for the session. Read-only; does not run an LLM. Returns `404` if none exists. |
 | `POST` | `/sessions/{session_id}/compare` | Create a new request-driven comparison artifact from durable paper workspaces. Optional `paper_ids` and `prompt` body. |
 | `POST` | `/sessions/{session_id}/analyze` | Analyze a paper URL. URL validation happens at the API boundary. |
+| `POST` | `/sessions/{session_id}/analyze-pdf` | Analyze an uploaded PDF via multipart form data. The upload is synchronous and ephemeral. |
 | `POST` | `/sessions/{session_id}/ask` | Ask a question about active papers in the session. |
 | `POST` | `/sessions/{session_id}/discover` | Find candidate papers for a research topic and enter selection phase. |
 | `POST` | `/sessions/{session_id}/select` | Select papers from the latest discovery shortlist by display number. |
@@ -81,6 +82,12 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/ask" \
   -d '{"question":"What is the main contribution?"}'
 
 curl -s "http://127.0.0.1:8000/sessions/$SESSION_ID/workspaces"
+
+# Local PDF upload path. The PDF is parsed during the request and is not persisted.
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze-pdf" \
+  -F "file=@/absolute/path/to/paper.pdf;type=application/pdf" \
+  -F "paper_id=local-paper-1" \
+  -F "skip_arxiv_metadata_fetch=true"
 ```
 
 ## Discovery Example
@@ -151,6 +158,40 @@ accepts an optional body:
 If the body is omitted or `prompt` is blank, PaperIntel uses a default synthesis
 prompt.
 
+## Local PDF Uploads
+
+`/sessions/{session_id}/analyze-pdf` accepts multipart form data and runs
+the same analysis pipeline as URL analysis over an uploaded PDF. This REST
+path does not accept server-local filesystem paths. Use the MCP
+`analyze_pdf` tool for trusted local paths on the MCP server machine.
+
+Form fields:
+
+- `file`: required PDF upload. The API accepts `application/pdf` and also
+  validates the `%PDF-` magic bytes before analysis.
+- `paper_id`: optional identifier. Pass an arXiv ID or stable local ID if
+  you know one. If omitted, PaperIntel uses any arXiv ID found in the PDF;
+  otherwise the generated identifier may be less stable.
+- `skip_arxiv_metadata_fetch`: optional boolean. Set this to `true` for
+  fully local/reproducible PDF runs when metadata should come from the
+  PDF instead of arXiv enrichment.
+
+Uploaded PDFs are ephemeral. The API writes the bytes to a temporary file
+only for the duration of analysis, deletes that file afterwards, and
+persists only the resulting `PaperWorkspace`, chunks, and artifacts. PDF
+asset storage is separate later work.
+
+Limits and errors:
+
+- Maximum upload size is 50 MB. Larger files return `413` with
+  `pdf_too_large`.
+- Unsupported media types or bad magic bytes return `415` with
+  `unsupported_media_type`.
+- Service-level PDF validation failures return `400` with
+  `invalid_pdf_input`.
+- The endpoint is synchronous in v1 and can take about a minute. Async PDF
+  upload jobs require shared PDF/object storage and are deferred.
+
 ## Async Job Example
 
 The synchronous analysis endpoints remain available. For long-running analysis,
@@ -188,7 +229,10 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/analyze-selecte
 
 ## Notes
 
-- `/analyze` is synchronous and can take 50-90 seconds. Use `/jobs/analyze-paper` plus a separate worker for async analysis.
+- `/analyze` is synchronous and can take 50-90 seconds. Use `/jobs/analyze-paper` plus a separate worker for async URL analysis.
+- `/analyze-pdf` is synchronous, accepts multipart PDF uploads only, and
+  deletes the temporary uploaded file after analysis. It does not enqueue
+  async jobs in v1.
 - `/discover` is synchronous and depends on arXiv availability.
 - `/ask` works only after a paper has been successfully analyzed and indexed in
   the same session.

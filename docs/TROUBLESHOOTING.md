@@ -60,6 +60,27 @@ The live discovery tests skip when every arXiv search query is rate-limited.
 Wait a few minutes and retry. Partial rate limits are tolerated: if another
 query returns candidates, the workflow continues.
 
+## Local PDF analysis fails
+
+REST local PDF analysis uses multipart upload at
+`POST /sessions/{id}/analyze-pdf`. It does not accept server-local file
+paths. MCP local PDF analysis uses `analyze_pdf` and reads a trusted path
+from the MCP server machine.
+
+Common failures:
+
+- `pdf_too_large`: the upload is larger than 50 MB. Use a smaller PDF or
+  split the document before analysis.
+- `unsupported_media_type`: the upload is not `application/pdf` or does
+  not start with `%PDF-`.
+- `invalid_pdf_input`: the service rejected the local path or file after
+  validation. For MCP, verify the path is absolute, exists on the MCP
+  server machine, is a file, is under 50 MB, and starts with `%PDF-`.
+
+PDF bytes are temporary. PaperIntel deletes REST upload temp files after
+analysis and persists only workspaces, chunks, and artifacts. Async PDF
+upload jobs are deferred until shared PDF/object storage exists.
+
 ## Analyze selected papers returns no active papers
 
 Selected-paper analysis depends on retrieving usable PDF/text for the chosen

@@ -18,10 +18,14 @@ docker compose up -d postgres qdrant
 
 ## Tools
 
-The MCP server exposes seventeen tools:
+The MCP server exposes eighteen tools:
 
 - `create_session(persona)` creates a PaperIntel session and returns a session ID.
-- `analyze_paper(session_id, paper_url)` analyzes an arXiv or PDF URL. This is synchronous and can take about one minute.
+- `analyze_paper(session_id, paper_url)` analyzes an arXiv or PDF URL.
+  This is synchronous and can take about one minute.
+- `analyze_pdf(session_id, pdf_path, paper_id, skip_arxiv_metadata_fetch)`
+  analyzes a trusted local PDF path on the MCP server machine. `paper_id`
+  and `skip_arxiv_metadata_fetch` are optional.
 - `ask_paper(session_id, question)` asks a question about papers analyzed in that session.
 - `discover_papers(session_id, topic)` searches for candidate papers on arXiv and returns a shortlist.
 - `select_papers(session_id, selection)` selects papers from the current discovery shortlist by display number.
@@ -88,6 +92,18 @@ What is the main contribution of that paper?
 ```
 
 Claude should call `ask_paper` with the same `session_id`.
+
+Local PDF flow:
+
+```text
+Analyze /absolute/path/to/paper.pdf in this session. Use paper id local-paper-1.
+```
+
+Claude should call `analyze_pdf` with `pdf_path` set to the absolute path.
+This tool reads a file from the MCP server machine, so use it only for
+trusted local files. REST clients should use multipart PDF upload instead
+of server-local paths. Uploaded/local PDF bytes are not persisted; only the
+resulting workspaces and chunks are stored.
 
 Discovery flow:
 
@@ -156,6 +172,12 @@ The full discovery workflow is:
 create_session -> discover_papers -> select_papers -> analyze_selected_papers -> ask_paper / compare_papers / synthesize_papers
 ```
 
+Local PDF workflow:
+
+```text
+create_session -> analyze_pdf -> ask_paper / compare_papers / synthesize_papers
+```
+
 Async analysis workflow:
 
 ```text
@@ -168,6 +190,9 @@ A separate worker process must be running to process queued jobs. See
 ## Troubleshooting
 
 - Tool does not appear: restart Claude Desktop and verify the config path is absolute.
-- Analysis or discovery takes a long time: synchronous tools still run inline. Use `enqueue_analyze_paper` or `enqueue_analyze_selected` with a separate worker for async analysis.
+- Analysis or discovery takes a long time: synchronous tools still run
+  inline. Use `enqueue_analyze_paper` or `enqueue_analyze_selected` with a
+  separate worker for async URL/selected-paper analysis. Local PDF analysis
+  is synchronous in v1.
 - Server exits immediately: run `.venv/bin/python -m mcp_server.server` from the repository root to see import/configuration errors.
 - JSON-RPC parse errors: ensure the MCP server is not writing logs to stdout.

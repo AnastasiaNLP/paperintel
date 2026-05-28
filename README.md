@@ -10,7 +10,7 @@ and implementation implications" without losing grounding in the source text.
 
 ## What It Does
 
-- Analyzes arXiv papers and PDFs.
+- Analyzes arXiv papers, uploaded PDFs through REST, and trusted local PDFs through MCP.
 - Extracts method, benchmarks, implementation readiness, and engineering notes.
 - Chunks and indexes analyzed papers into Postgres + Qdrant.
 - Answers questions about analyzed papers with citations.
@@ -80,6 +80,15 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/ask" \
   -d '{"question":"What is the main contribution of this paper?"}'
 
 curl -s "http://127.0.0.1:8000/sessions/$SESSION_ID/workspaces"
+```
+
+Local PDF upload through REST:
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze-pdf" \
+  -F "file=@/absolute/path/to/paper.pdf;type=application/pdf" \
+  -F "paper_id=local-paper-1" \
+  -F "skip_arxiv_metadata_fetch=true"
 ```
 
 Discovery workflow:
@@ -216,8 +225,9 @@ runs completed without failures.
 
 ## Current Limitations
 
-- REST and MCP still expose synchronous analysis/discovery calls. Async analysis
-  is available through workflow jobs and a separate worker process.
+- REST and MCP still expose synchronous analysis/discovery calls. Async URL
+  analysis is available through workflow jobs and a separate worker process.
+  Local PDF analysis is synchronous in v1.
 - Discovery currently searches arXiv only.
 - Discovery plus comparison/synthesis is implemented: discovery, shortlist
   selection, selected-paper analysis, batch comparison artifacts, request-driven
