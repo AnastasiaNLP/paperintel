@@ -95,6 +95,64 @@ LIVE_CA_POSTGRES_CLEANUP=success
 `fallback_used` is treated as a test failure. The smoke is intended to verify the
 happy path, not only deterministic fallback behavior.
 
+## PDF Live Smoke
+
+`tests/live/test_pdf_live_smoke.py` verifies local PDF product surfaces on the
+real stack:
+
+- REST multipart upload: `POST /sessions/{id}/analyze-pdf` analyzes an uploaded
+  PDF with `skip_arxiv_metadata_fetch=true`.
+- MCP local path: `analyze_pdf` analyzes a trusted local PDF path on the MCP
+  server machine.
+- Persistence: each path produces one ready `PaperWorkspace` with report and
+  method artifacts.
+- Cleanup: temporary Qdrant collection and Postgres foundation tables.
+
+The test is skipped unless `PAPERINTEL_RUN_LIVE_PDF_SMOKE=1` is set.
+
+Required local PDF:
+
+```text
+~/Desktop/pdfs/1706.03762.pdf
+```
+
+### Run Without LangSmith Trace
+
+```bash
+PAPERINTEL_RUN_LIVE_PDF_SMOKE=1 \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+.venv/bin/python -m dotenv run -- \
+.venv/bin/python -m pytest -s tests/live/test_pdf_live_smoke.py
+```
+
+### Run With LangSmith Trace
+
+```bash
+PAPERINTEL_RUN_LIVE_PDF_SMOKE=1 \
+PAPERINTEL_LIVE_TRACE=1 \
+LANGCHAIN_TRACING_V2=true \
+LANGSMITH_TRACING=true \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+.venv/bin/python -m dotenv run -- \
+.venv/bin/python -m pytest -s tests/live/test_pdf_live_smoke.py
+```
+
+### Expected Success Markers
+
+```text
+LIVE_PDF_RUN_ID=<run_id>
+LIVE_PDF_REST_SESSION_ID=<uuid>
+LIVE_PDF_REST_STATUS=200
+LIVE_PDF_REST_WORKSPACE_IDS=local-rest-1706
+LIVE_PDF_MCP_SESSION_ID=<uuid>
+LIVE_PDF_MCP_OUTPUT_CHARS=<n>
+LIVE_PDF_MCP_WORKSPACE_IDS=local-mcp-1706
+LIVE_PDF_QDRANT_CLEANUP=success
+LIVE_PDF_POSTGRES_CLEANUP=success
+1 passed
+```
+
+
 ## Async Jobs Live Smoke
 
 `tests/live/test_async_jobs_live_smoke.py` verifies the async job path
@@ -171,6 +229,7 @@ Missing local PDFs:
 
 ```text
 Local PDFs are required for CA live smoke
+Local PDF is required for PDF live smoke
 ```
 
 Place the expected PDFs in `~/Desktop/pdfs` or update the test fixture before
