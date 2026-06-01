@@ -1,22 +1,29 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Barrier
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import delete
 
 from api.in_memory_session_store import SessionNotFoundError
 from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
+from models.blob_storage import StoredBlobObject
 from models.discovery import SearchCandidate
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.jobs import WorkflowJob
 from models.errors import ErrorCodes, make_error
 from models.retrieval import ChunkSource, PaperChunk
 from storage.db import make_engine, make_session_factory
+from storage.models import BlobArtifactORM, BlobReferenceORM
 from storage.repositories import (
+    BlobArtifactNotFoundError,
     PostgresAgentRunPersistence,
     PostgresArxivMetadataCacheRepository,
+    PostgresBlobArtifactRepository,
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
     PostgresSearchCandidateRepository,
@@ -829,3 +836,155 @@ def test_postgres_arxiv_metadata_cache_repository_records_error_then_success(
     assert succeeded.error_count == 0
     assert succeeded.last_error_json is None
     assert succeeded.has_successful_fetch is True
+
+
+def _stored_pdf(*, content_hash: str = "a" * 64) -> StoredBlobObject:
+    return StoredBlobObject(
+        kind="pdf",
+        object_key=f"papers/sha256/{content_hash[:2]}/{content_hash}.pdf",
+        bucket_name="paperintel",
+        content_hash=content_hash,
+        content_type="application/pdf",
+        size_bytes=128,
+    )
+
+
+def test_postgres_blob_artifact_repository_upserts_and_preserves_created_at(
+    session_factory,
+):
+    repository = PostgresBlobArtifactRepository(session_factory)
+    first = repository.upsert_artifact(_stored_pdf())
+    second = repository.upsert_artifact(
+        _stored_pdf().model_copy(update={"size_bytes": 256})
+    )
+
+    assert second.id == first.id
+    assert second.created_at == first.created_at
+    assert second.size_bytes == 256
+    assert repository.get_artifact(first.id) == second
+    assert repository.get_by_kind_and_hash("pdf", "a" * 64) == second
+    assert repository.get_by_object_key(second.object_key) == second
+
+
+def test_postgres_blob_artifact_repository_references_are_idempotent(session_factory):
+    repository = PostgresBlobArtifactRepository(session_factory)
+    artifact = repository.upsert_artifact(_stored_pdf())
+
+    first = repository.add_reference(
+        artifact.id,
+        ref_kind="session",
+        ref_id="session-1",
+        metadata={"source": "upload"},
+    )
+    second = repository.add_reference(
+        artifact.id,
+        ref_kind="session",
+        ref_id="session-1",
+        metadata={"source": "duplicate"},
+    )
+    workspace = repository.add_reference(
+        artifact.id,
+        ref_kind="paper_workspace",
+        ref_id="workspace-1",
+    )
+
+    assert second == first
+    assert workspace.id != first.id
+    assert repository.list_references(artifact.id) == [first, workspace]
+    assert repository.list_artifacts_for_reference(
+        ref_kind="session",
+        ref_id="session-1",
+    ) == [artifact]
+
+    repository.delete_reference(
+        artifact.id,
+        ref_kind="session",
+        ref_id="session-1",
+    )
+    assert repository.list_references(artifact.id) == [workspace]
+
+
+def test_postgres_blob_artifact_repository_marks_material_access(session_factory):
+    repository = PostgresBlobArtifactRepository(session_factory)
+    artifact = repository.upsert_artifact(_stored_pdf())
+
+    accessed = repository.mark_accessed(artifact.id)
+
+    assert artifact.last_accessed_at is None
+    assert accessed.last_accessed_at is not None
+    assert accessed.updated_at == artifact.updated_at
+    assert repository.get_artifact(artifact.id).last_accessed_at == accessed.last_accessed_at
+
+
+def test_postgres_blob_artifact_repository_rejects_reference_for_missing_blob(
+    session_factory,
+):
+    repository = PostgresBlobArtifactRepository(session_factory)
+
+    with pytest.raises(BlobArtifactNotFoundError):
+        repository.add_reference(
+            "missing",
+            ref_kind="session",
+            ref_id="session-1",
+        )
+
+    with pytest.raises(BlobArtifactNotFoundError):
+        repository.mark_accessed("missing")
+
+
+def test_postgres_blob_reference_cascades_when_artifact_is_deleted(session_factory):
+    repository = PostgresBlobArtifactRepository(session_factory)
+    artifact = repository.upsert_artifact(_stored_pdf())
+    reference = repository.add_reference(
+        artifact.id,
+        ref_kind="workflow_job",
+        ref_id="job-1",
+    )
+
+    with session_factory() as db:
+        db.execute(delete(BlobArtifactORM).where(BlobArtifactORM.id == artifact.id))
+        db.commit()
+
+    with session_factory() as db:
+        assert db.get(BlobReferenceORM, reference.id) is None
+
+
+def test_postgres_blob_artifact_repository_concurrent_upsert_is_idempotent(
+    session_factory,
+):
+    barrier = Barrier(2)
+
+    def upsert_once():
+        repository = PostgresBlobArtifactRepository(session_factory)
+        barrier.wait()
+        return repository.upsert_artifact(_stored_pdf())
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        artifacts = list(pool.map(lambda _: upsert_once(), range(2)))
+
+    repository = PostgresBlobArtifactRepository(session_factory)
+    assert len({artifact.id for artifact in artifacts}) == 1
+    assert repository.get_by_kind_and_hash("pdf", "a" * 64) == artifacts[0]
+
+
+def test_postgres_blob_artifact_repository_concurrent_reference_is_idempotent(
+    session_factory,
+):
+    repository = PostgresBlobArtifactRepository(session_factory)
+    artifact = repository.upsert_artifact(_stored_pdf())
+    barrier = Barrier(2)
+
+    def add_once():
+        thread_repository = PostgresBlobArtifactRepository(session_factory)
+        barrier.wait()
+        return thread_repository.add_reference(
+            artifact.id,
+            ref_kind="session",
+            ref_id="session-1",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        references = list(pool.map(lambda _: add_once(), range(2)))
+
+    assert len({reference.id for reference in references}) == 1
+    assert repository.list_references(artifact.id) == [references[0]]

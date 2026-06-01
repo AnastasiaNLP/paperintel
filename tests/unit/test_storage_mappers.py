@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
+from models.blob_artifacts import BlobArtifact, BlobReference
 from models.discovery import SearchCandidate
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.errors import ErrorCodes, StructuredError, make_error
@@ -11,9 +12,13 @@ from models.session import Session, Turn
 from storage.mappers import (
     agent_run_to_orm,
     arxiv_metadata_cache_entry_to_orm,
+    blob_artifact_to_orm,
+    blob_reference_to_orm,
     comparison_artifact_to_orm,
     orm_to_agent_run,
     orm_to_arxiv_metadata_cache_entry,
+    orm_to_blob_artifact,
+    orm_to_blob_reference,
     orm_to_comparison_artifact,
     orm_to_paper_chunk,
     orm_to_paper_workspace,
@@ -234,3 +239,31 @@ def test_arxiv_metadata_cache_mapper_round_trip():
 
     assert mapped == entry
     assert mapped.has_successful_fetch is True
+
+
+def test_blob_artifact_mapper_round_trip():
+    artifact = BlobArtifact(
+        kind="pdf",
+        object_key="papers/sha256/aa/" + "a" * 64 + ".pdf",
+        bucket_name="paperintel",
+        content_hash="a" * 64,
+        content_type="application/pdf",
+        size_bytes=128,
+    )
+
+    mapped = orm_to_blob_artifact(blob_artifact_to_orm(artifact))
+
+    assert mapped == artifact
+
+
+def test_blob_reference_mapper_round_trip():
+    reference = BlobReference(
+        blob_id="blob-1",
+        ref_kind="session",
+        ref_id="session-1",
+        metadata={"source": "upload"},
+    )
+
+    mapped = orm_to_blob_reference(blob_reference_to_orm(reference))
+
+    assert mapped == reference

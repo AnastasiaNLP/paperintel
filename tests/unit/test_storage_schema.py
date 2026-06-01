@@ -4,6 +4,8 @@ from storage.models import (
     AgentRunORM,
     ArxivMetadataCacheORM,
     Base,
+    BlobArtifactORM,
+    BlobReferenceORM,
     ComparisonArtifactORM,
     PaperChunkORM,
     PaperWorkspaceORM,
@@ -31,6 +33,8 @@ def test_initial_storage_metadata_contains_foundation_tables():
         "comparison_artifacts",
         "workflow_jobs",
         "arxiv_metadata_cache",
+        "blob_artifacts",
+        "blob_references",
     }.issubset(Base.metadata.tables.keys())
 
 
@@ -269,4 +273,52 @@ def test_arxiv_metadata_cache_table_matches_resilience_contract_columns():
     }
     assert "ix_arxiv_metadata_cache_fetched_at" in {
         index.name for index in ArxivMetadataCacheORM.__table__.indexes
+    }
+
+
+def test_blob_artifact_table_matches_registry_contract_columns():
+    columns = BlobArtifactORM.__table__.c
+
+    for name in [
+        "id",
+        "kind",
+        "object_key",
+        "bucket_name",
+        "content_hash",
+        "content_type",
+        "size_bytes",
+        "storage_backend",
+        "retention_policy",
+        "expires_at",
+        "last_accessed_at",
+        "created_at",
+        "updated_at",
+    ]:
+        assert name in columns
+
+    assert columns.id.primary_key
+    assert {
+        "uq_blob_artifacts_kind_content_hash",
+        "ck_blob_artifacts_kind",
+        "ck_blob_artifacts_retention_policy",
+        "ck_blob_artifacts_retention_expiry",
+        "ck_blob_artifacts_size_nonnegative",
+    }.issubset({constraint.name for constraint in BlobArtifactORM.__table__.constraints})
+
+
+def test_blob_reference_table_matches_polymorphic_reference_contract():
+    columns = BlobReferenceORM.__table__.c
+
+    for name in ["id", "blob_id", "ref_kind", "ref_id", "metadata_json", "created_at"]:
+        assert name in columns
+
+    foreign_keys = {fk.target_fullname for fk in BlobReferenceORM.__table__.foreign_keys}
+    assert foreign_keys == {"blob_artifacts.id"}
+    assert isinstance(_postgres_type(columns.metadata_json), postgresql.JSONB)
+    assert {
+        "uq_blob_references_blob_kind_ref",
+        "ck_blob_references_ref_kind",
+    }.issubset({constraint.name for constraint in BlobReferenceORM.__table__.constraints})
+    assert "ix_blob_references_kind_ref" in {
+        index.name for index in BlobReferenceORM.__table__.indexes
     }

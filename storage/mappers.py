@@ -1,5 +1,6 @@
 from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
+from models.blob_artifacts import BlobArtifact, BlobReference
 from models.discovery import SearchCandidate
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.errors import StructuredError
@@ -9,6 +10,8 @@ from models.session import Session, Turn
 from storage.models import (
     AgentRunORM,
     ArxivMetadataCacheORM,
+    BlobArtifactORM,
+    BlobReferenceORM,
     ComparisonArtifactORM,
     PaperChunkORM,
     PaperWorkspaceORM,
@@ -342,6 +345,64 @@ def orm_to_arxiv_metadata_cache_entry(
         error_count=orm.error_count,
         created_at=orm.created_at,
         updated_at=orm.updated_at,
+    )
+
+
+def blob_artifact_to_orm(artifact: BlobArtifact) -> BlobArtifactORM:
+    return BlobArtifactORM(
+        id=artifact.id,
+        kind=artifact.kind,
+        object_key=artifact.object_key,
+        bucket_name=artifact.bucket_name,
+        content_hash=artifact.content_hash,
+        content_type=artifact.content_type,
+        size_bytes=artifact.size_bytes,
+        storage_backend=artifact.storage_backend,
+        retention_policy=artifact.retention_policy,
+        expires_at=artifact.expires_at,
+        last_accessed_at=artifact.last_accessed_at,
+        created_at=artifact.created_at,
+        updated_at=artifact.updated_at,
+    )
+
+
+def orm_to_blob_artifact(orm: BlobArtifactORM) -> BlobArtifact:
+    return BlobArtifact(
+        id=orm.id,
+        kind=orm.kind,
+        object_key=orm.object_key,
+        bucket_name=orm.bucket_name,
+        content_hash=orm.content_hash,
+        content_type=orm.content_type,
+        size_bytes=orm.size_bytes,
+        storage_backend=orm.storage_backend,
+        retention_policy=orm.retention_policy,
+        expires_at=orm.expires_at,
+        last_accessed_at=orm.last_accessed_at,
+        created_at=orm.created_at,
+        updated_at=orm.updated_at,
+    )
+
+
+def blob_reference_to_orm(reference: BlobReference) -> BlobReferenceORM:
+    return BlobReferenceORM(
+        id=reference.id,
+        blob_id=reference.blob_id,
+        ref_kind=reference.ref_kind,
+        ref_id=reference.ref_id,
+        metadata_json=reference.metadata,
+        created_at=reference.created_at,
+    )
+
+
+def orm_to_blob_reference(orm: BlobReferenceORM) -> BlobReference:
+    return BlobReference(
+        id=orm.id,
+        blob_id=orm.blob_id,
+        ref_kind=orm.ref_kind,
+        ref_id=orm.ref_id,
+        metadata=orm.metadata_json or {},
+        created_at=orm.created_at,
     )
 
 

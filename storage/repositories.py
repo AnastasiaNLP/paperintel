@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 from typing import Sequence, get_args
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy.orm import sessionmaker
 
@@ -10,6 +11,13 @@ from api.in_memory_session_store import SessionNotFoundError
 from api.session_store import SessionStore
 from models.agent_runs import AgentRun
 from models.artifacts import ComparisonArtifact, PaperWorkspace
+from models.blob_artifacts import (
+    BlobArtifact,
+    BlobReference,
+    BlobReferenceKind,
+    BlobRetentionPolicy,
+)
+from models.blob_storage import StoredBlobObject
 from models.discovery import CandidateStatus, SearchCandidate
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.errors import StructuredError
@@ -19,9 +27,13 @@ from models.session import Persona, Session, SessionPhase, Turn, TurnRole
 from storage.mappers import (
     agent_run_to_orm,
     arxiv_metadata_cache_entry_to_orm,
+    blob_artifact_to_orm,
+    blob_reference_to_orm,
     comparison_artifact_to_orm,
     orm_to_agent_run,
     orm_to_arxiv_metadata_cache_entry,
+    orm_to_blob_artifact,
+    orm_to_blob_reference,
     orm_to_comparison_artifact,
     orm_to_paper_chunk,
     orm_to_workflow_job,
@@ -41,6 +53,8 @@ from storage.mappers import (
 from storage.models import (
     AgentRunORM,
     ArxivMetadataCacheORM,
+    BlobArtifactORM,
+    BlobReferenceORM,
     ComparisonArtifactORM,
     PaperChunkORM,
     PaperWorkspaceORM,
@@ -123,6 +137,236 @@ class PostgresArxivMetadataCacheRepository:
             db.commit()
             db.refresh(orm)
             return orm_to_arxiv_metadata_cache_entry(orm)
+
+
+class BlobArtifactNotFoundError(ValueError):
+    def __init__(self, blob_id: str) -> None:
+        super().__init__(f"Blob artifact not found: {blob_id}")
+        self.blob_id = blob_id
+
+
+class PostgresBlobArtifactRepository:
+    def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
+        self.session_factory = session_factory
+
+    def upsert_artifact(
+        self,
+        stored: StoredBlobObject,
+        *,
+        retention_policy: BlobRetentionPolicy = "durable",
+        expires_at: datetime | None = None,
+    ) -> BlobArtifact:
+        candidate = BlobArtifact(
+            kind=stored.kind,
+            object_key=stored.object_key,
+            bucket_name=stored.bucket_name,
+            content_hash=stored.content_hash,
+            content_type=stored.content_type,
+            size_bytes=stored.size_bytes,
+            storage_backend=stored.storage_backend,
+            retention_policy=retention_policy,
+            expires_at=expires_at,
+        )
+        with self.session_factory() as db:
+            db.execute(
+                pg_insert(BlobArtifactORM)
+                .values(
+                    id=candidate.id,
+                    kind=candidate.kind,
+                    object_key=candidate.object_key,
+                    bucket_name=candidate.bucket_name,
+                    content_hash=candidate.content_hash,
+                    content_type=candidate.content_type,
+                    size_bytes=candidate.size_bytes,
+                    storage_backend=candidate.storage_backend,
+                    retention_policy=candidate.retention_policy,
+                    expires_at=candidate.expires_at,
+                    last_accessed_at=candidate.last_accessed_at,
+                    created_at=candidate.created_at,
+                    updated_at=candidate.updated_at,
+                )
+                .on_conflict_do_nothing(
+                    constraint="uq_blob_artifacts_kind_content_hash"
+                )
+            )
+            orm = (
+                db.execute(
+                    select(BlobArtifactORM)
+                    .where(BlobArtifactORM.kind == stored.kind)
+                    .where(BlobArtifactORM.content_hash == stored.content_hash)
+                )
+                .scalars()
+                .one()
+            )
+            artifact = BlobArtifact.model_validate(
+                {
+                    **orm_to_blob_artifact(orm).model_dump(),
+                    "object_key": stored.object_key,
+                    "bucket_name": stored.bucket_name,
+                    "content_type": stored.content_type,
+                    "size_bytes": stored.size_bytes,
+                    "storage_backend": stored.storage_backend,
+                    "retention_policy": retention_policy,
+                    "expires_at": expires_at,
+                    "updated_at": _utc_now(),
+                }
+            )
+            orm.object_key = artifact.object_key
+            orm.bucket_name = artifact.bucket_name
+            orm.content_type = artifact.content_type
+            orm.size_bytes = artifact.size_bytes
+            orm.storage_backend = artifact.storage_backend
+            orm.retention_policy = artifact.retention_policy
+            orm.expires_at = artifact.expires_at
+            orm.updated_at = artifact.updated_at
+            db.commit()
+            db.refresh(orm)
+            return orm_to_blob_artifact(orm)
+
+    def get_artifact(self, blob_id: str) -> BlobArtifact | None:
+        with self.session_factory() as db:
+            orm = db.get(BlobArtifactORM, blob_id)
+            return orm_to_blob_artifact(orm) if orm is not None else None
+
+    def get_by_kind_and_hash(self, kind: str, content_hash: str) -> BlobArtifact | None:
+        with self.session_factory() as db:
+            orm = (
+                db.execute(
+                    select(BlobArtifactORM)
+                    .where(BlobArtifactORM.kind == kind)
+                    .where(BlobArtifactORM.content_hash == content_hash)
+                )
+                .scalars()
+                .first()
+            )
+            return orm_to_blob_artifact(orm) if orm is not None else None
+
+    def get_by_object_key(self, object_key: str) -> BlobArtifact | None:
+        with self.session_factory() as db:
+            orm = (
+                db.execute(
+                    select(BlobArtifactORM).where(
+                        BlobArtifactORM.object_key == object_key
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            return orm_to_blob_artifact(orm) if orm is not None else None
+
+    def add_reference(
+        self,
+        blob_id: str,
+        *,
+        ref_kind: BlobReferenceKind,
+        ref_id: str,
+        metadata: dict | None = None,
+    ) -> BlobReference:
+        reference = BlobReference(
+            blob_id=blob_id,
+            ref_kind=ref_kind,
+            ref_id=ref_id,
+            metadata=metadata or {},
+        )
+        with self.session_factory() as db:
+            self._require_orm(db, blob_id)
+            db.execute(
+                pg_insert(BlobReferenceORM)
+                .values(
+                    id=reference.id,
+                    blob_id=reference.blob_id,
+                    ref_kind=reference.ref_kind,
+                    ref_id=reference.ref_id,
+                    metadata_json=reference.metadata,
+                    created_at=reference.created_at,
+                )
+                .on_conflict_do_nothing(
+                    constraint="uq_blob_references_blob_kind_ref"
+                )
+            )
+            orm = (
+                db.execute(
+                    select(BlobReferenceORM)
+                    .where(BlobReferenceORM.blob_id == blob_id)
+                    .where(BlobReferenceORM.ref_kind == ref_kind)
+                    .where(BlobReferenceORM.ref_id == ref_id)
+                )
+                .scalars()
+                .one()
+            )
+            db.commit()
+            return orm_to_blob_reference(orm)
+
+    def list_references(self, blob_id: str) -> list[BlobReference]:
+        with self.session_factory() as db:
+            self._require_orm(db, blob_id)
+            rows = (
+                db.execute(
+                    select(BlobReferenceORM)
+                    .where(BlobReferenceORM.blob_id == blob_id)
+                    .order_by(BlobReferenceORM.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [orm_to_blob_reference(row) for row in rows]
+
+    def list_artifacts_for_reference(
+        self,
+        *,
+        ref_kind: BlobReferenceKind,
+        ref_id: str,
+    ) -> list[BlobArtifact]:
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(BlobArtifactORM)
+                    .join(BlobReferenceORM)
+                    .where(BlobReferenceORM.ref_kind == ref_kind)
+                    .where(BlobReferenceORM.ref_id == ref_id)
+                    .order_by(BlobReferenceORM.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [orm_to_blob_artifact(row) for row in rows]
+
+    def mark_accessed(self, blob_id: str) -> BlobArtifact:
+        with self.session_factory() as db:
+            self._require_orm(db, blob_id)
+            db.execute(
+                update(BlobArtifactORM)
+                .where(BlobArtifactORM.id == blob_id)
+                .values(
+                    last_accessed_at=_utc_now(),
+                    updated_at=BlobArtifactORM.updated_at,
+                )
+            )
+            db.commit()
+            orm = self._require_orm(db, blob_id)
+            return orm_to_blob_artifact(orm)
+
+    def delete_reference(
+        self,
+        blob_id: str,
+        *,
+        ref_kind: BlobReferenceKind,
+        ref_id: str,
+    ) -> None:
+        with self.session_factory() as db:
+            db.execute(
+                delete(BlobReferenceORM)
+                .where(BlobReferenceORM.blob_id == blob_id)
+                .where(BlobReferenceORM.ref_kind == ref_kind)
+                .where(BlobReferenceORM.ref_id == ref_id)
+            )
+            db.commit()
+
+    def _require_orm(self, db: DbSession, blob_id: str) -> BlobArtifactORM:
+        orm = db.get(BlobArtifactORM, blob_id)
+        if orm is None:
+            raise BlobArtifactNotFoundError(blob_id)
+        return orm
 
 
 class WorkflowJobNotFoundError(ValueError):
@@ -688,6 +932,8 @@ class PostgresPaperWorkspaceRepository:
 
 
 def clear_foundation_tables(db: DbSession) -> None:
+    db.execute(delete(BlobReferenceORM))
+    db.execute(delete(BlobArtifactORM))
     db.execute(delete(WorkflowJobORM))
     db.execute(delete(ArxivMetadataCacheORM))
     db.execute(delete(ComparisonArtifactORM))

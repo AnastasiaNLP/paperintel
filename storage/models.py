@@ -252,6 +252,97 @@ class ArxivMetadataCacheORM(TimestampMixin, Base):
     error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
+class BlobArtifactORM(TimestampMixin, Base):
+    __tablename__ = "blob_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "kind",
+            "content_hash",
+            name="uq_blob_artifacts_kind_content_hash",
+        ),
+        CheckConstraint(
+            "kind in ('pdf', 'page_image', 'generated_artifact')",
+            name="ck_blob_artifacts_kind",
+        ),
+        CheckConstraint(
+            "retention_policy in ('durable', 'ttl')",
+            name="ck_blob_artifacts_retention_policy",
+        ),
+        CheckConstraint(
+            "(retention_policy = 'durable' and expires_at is null) "
+            "or (retention_policy = 'ttl' and expires_at is not null)",
+            name="ck_blob_artifacts_retention_expiry",
+        ),
+        CheckConstraint(
+            "size_bytes >= 0",
+            name="ck_blob_artifacts_size_nonnegative",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    bucket_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage_backend: Mapped[str] = mapped_column(String(32), nullable=False)
+    retention_policy: Mapped[str] = mapped_column(String(32), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    last_accessed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+
+    references: Mapped[list["BlobReferenceORM"]] = relationship(
+        back_populates="blob",
+        cascade="all, delete-orphan",
+    )
+
+
+class BlobReferenceORM(Base):
+    __tablename__ = "blob_references"
+    __table_args__ = (
+        UniqueConstraint(
+            "blob_id",
+            "ref_kind",
+            "ref_id",
+            name="uq_blob_references_blob_kind_ref",
+        ),
+        CheckConstraint(
+            "ref_kind in ('session', 'paper_workspace', 'workflow_job')",
+            name="ck_blob_references_ref_kind",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    blob_id: Mapped[str] = mapped_column(
+        ForeignKey("blob_artifacts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    ref_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    ref_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    blob: Mapped[BlobArtifactORM] = relationship(back_populates="references")
+
+
 class WorkflowJobORM(TimestampMixin, Base):
     __tablename__ = "workflow_jobs"
     __table_args__ = (
@@ -474,6 +565,7 @@ Index("ix_agent_runs_session_started_at", AgentRunORM.session_id, AgentRunORM.st
 Index("ix_workflow_jobs_session_created_at", WorkflowJobORM.session_id, WorkflowJobORM.created_at)
 Index("ix_workflow_jobs_status_created_at", WorkflowJobORM.status, WorkflowJobORM.created_at)
 Index("ix_workflow_jobs_kind_status", WorkflowJobORM.kind, WorkflowJobORM.status)
+Index("ix_blob_references_kind_ref", BlobReferenceORM.ref_kind, BlobReferenceORM.ref_id)
 Index("ix_paper_chunks_paper_chunk", PaperChunkORM.paper_id, PaperChunkORM.chunk_index)
 Index("ix_paper_chunks_session_paper", PaperChunkORM.session_id, PaperChunkORM.paper_id)
 Index(
