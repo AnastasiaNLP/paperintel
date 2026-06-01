@@ -9,6 +9,7 @@
   requires-python = ">=3.11"
   dependencies = [
       "anthropic==0.95.0",
+      "boto3==1.43.18",
       "langgraph==1.1.6",
       "langsmith==0.7.32",
       "pydantic==2.13.1",
@@ -31,6 +32,7 @@
 
   [project.optional-dependencies]
   dev = [
+      "moto==5.2.1",
       "pytest==9.0.3",
   ]
 
