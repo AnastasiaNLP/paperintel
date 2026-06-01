@@ -6,10 +6,13 @@ from agents.synthesis_agent import synthesize_workspaces
 from api.chat_handler import ChatHandler
 from models.api import HealthStatus
 from models.artifacts import ComparisonArtifact, PaperWorkspace
+from models.blob_artifacts import BlobArtifact, BlobReference, BlobReferenceKind
+from models.blob_storage import StoredBlobObject
 from models.discovery import CandidateStatus, SearchCandidate
 from models.jobs import WorkflowJob
 from models.session import HandlerResult, Persona, Session, Turn
 from models.synthesis import SynthesisAgentResult
+from services.blob_store import BlobStore
 from services.selected_candidate_resolver import SelectedCandidateResolver
 
 _FAILED_WORKSPACE_STAGES = {"failed", "paper_failure_finalize"}
@@ -80,6 +83,13 @@ class NotEnoughPapersForComparisonError(ValueError):
         self.paper_ids = paper_ids
 
 
+class BlobStorageNotConfiguredError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Blob storage requires both blob_store and blob_artifact_repository."
+        )
+
+
 class WorkflowJobNotConfiguredError(RuntimeError):
     def __init__(self) -> None:
         super().__init__("Workflow job repository is not configured.")
@@ -142,6 +152,24 @@ class PaperWorkspaceRepository(Protocol):
         ...
 
 
+class BlobArtifactRepository(Protocol):
+    def upsert_artifact(self, stored: StoredBlobObject, **kwargs) -> BlobArtifact:
+        ...
+
+    def add_reference(
+        self,
+        blob_id: str,
+        *,
+        ref_kind: BlobReferenceKind,
+        ref_id: str,
+        metadata: dict | None = None,
+    ) -> BlobReference:
+        ...
+
+    def mark_accessed(self, blob_id: str) -> BlobArtifact:
+        ...
+
+
 class WorkflowJobRepository(Protocol):
     def create(self, job: WorkflowJob) -> WorkflowJob:
         ...
@@ -173,6 +201,8 @@ class PaperIntelService:
         candidate_repository: SearchCandidateRepository | None = None,
         artifact_repository: PaperWorkspaceRepository | None = None,
         workflow_job_repository: WorkflowJobRepository | None = None,
+        blob_store: BlobStore | None = None,
+        blob_artifact_repository: BlobArtifactRepository | None = None,
     ) -> None:
         self.handler = handler
         self.health_checker = health_checker
@@ -180,6 +210,8 @@ class PaperIntelService:
         self.candidate_repository = candidate_repository
         self.artifact_repository = artifact_repository
         self.workflow_job_repository = workflow_job_repository
+        self.blob_store = blob_store
+        self.blob_artifact_repository = blob_artifact_repository
 
     def create_session(
         self,
@@ -243,16 +275,121 @@ class PaperIntelService:
         paper_id: str | None = None,
         skip_arxiv_metadata_fetch: bool = False,
     ) -> HandlerResult:
+        self.handler.store.require_session(session_id)
         resolved_pdf_path = _validate_local_pdf_path(pdf_path)
-        content = f"Analyze local PDF {paper_id or resolved_pdf_path}"
+        if self.blob_store is None and self.blob_artifact_repository is None:
+            return self._analyze_pdf_path(
+                session_id,
+                resolved_pdf_path,
+                user_content=f"Analyze local PDF {paper_id or resolved_pdf_path}",
+                paper_id=paper_id,
+                skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+            )
+        if self.blob_store is None or self.blob_artifact_repository is None:
+            raise BlobStorageNotConfiguredError()
+        return self._analyze_pdf_via_blob_store(
+            session_id,
+            resolved_pdf_path,
+            paper_id=paper_id,
+            skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+        )
+
+    def _analyze_pdf_via_blob_store(
+        self,
+        session_id: str,
+        source_pdf_path: str,
+        *,
+        paper_id: str | None,
+        skip_arxiv_metadata_fetch: bool,
+    ) -> HandlerResult:
+        assert self.blob_store is not None
+        assert self.blob_artifact_repository is not None
+        before_workspace_ids = self._workspace_ids(session_id)
+        self.blob_store.ensure_bucket()
+        stored = self.blob_store.put(
+            Path(source_pdf_path).read_bytes(),
+            kind="pdf",
+            content_type="application/pdf",
+        )
+        artifact = self.blob_artifact_repository.upsert_artifact(
+            stored,
+            retention_policy="durable",
+        )
+        self.blob_artifact_repository.add_reference(
+            artifact.id,
+            ref_kind="session",
+            ref_id=session_id,
+            metadata={"source": "pdf_ingestion"},
+        )
+        with self.blob_store.materialize(
+            artifact.object_key,
+            expected_sha256=artifact.content_hash,
+        ) as materialized_path:
+            self.blob_artifact_repository.mark_accessed(artifact.id)
+            result = self._analyze_pdf_path(
+                session_id,
+                materialized_path,
+                user_content=f"Analyze local PDF {paper_id or source_pdf_path}",
+                paper_id=paper_id,
+                skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+            )
+        workspace = self._resolve_pdf_workspace(
+            session_id,
+            paper_id=paper_id,
+            before_workspace_ids=before_workspace_ids,
+        )
+        if workspace is not None:
+            self.blob_artifact_repository.add_reference(
+                artifact.id,
+                ref_kind="paper_workspace",
+                ref_id=workspace.id,
+                metadata={"paper_id": workspace.paper_id},
+            )
+        return result
+
+    def _analyze_pdf_path(
+        self,
+        session_id: str,
+        pdf_path: str,
+        *,
+        user_content: str,
+        paper_id: str | None,
+        skip_arxiv_metadata_fetch: bool,
+    ) -> HandlerResult:
         return self.handler.analyze_paper_input(
             session_id,
             input_type="pdf",
-            input_value=resolved_pdf_path,
-            user_content=content,
+            input_value=pdf_path,
+            user_content=user_content,
             expected_paper_id=paper_id,
             skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
         )
+
+    def _workspace_ids(self, session_id: str) -> set[str]:
+        if self.artifact_repository is None:
+            return set()
+        return {
+            workspace.id
+            for workspace in self.artifact_repository.list_workspaces(session_id)
+        }
+
+    def _resolve_pdf_workspace(
+        self,
+        session_id: str,
+        *,
+        paper_id: str | None,
+        before_workspace_ids: set[str],
+    ) -> PaperWorkspace | None:
+        if self.artifact_repository is None:
+            return None
+        if paper_id is not None:
+            return self.artifact_repository.get_workspace(session_id, paper_id)
+        new_workspaces = [
+            workspace
+            for workspace in self.artifact_repository.list_workspaces(session_id)
+            if workspace.id not in before_workspace_ids
+        ]
+        return new_workspaces[0] if len(new_workspaces) == 1 else None
 
     def ask_question(self, session_id: str, question: str) -> HandlerResult:
         return self.handler.handle_message(session_id, question)

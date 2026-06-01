@@ -1,14 +1,23 @@
+import hashlib
+from contextlib import contextmanager
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
 import pytest
 
 from agents.agent_run_recorder import InMemoryAgentRunPersistence
 from api.in_memory_session_store import SessionNotFoundError
 from models.artifacts import ComparisonArtifact, PaperWorkspace
+from models.blob_artifacts import BlobArtifact, BlobReference
+from models.blob_storage import StoredBlobObject
 from models.discovery import SearchCandidate
 from models.api import HealthStatus
 from models.errors import ErrorCodes, make_error
 from models.jobs import WorkflowJob
 from models.session import HandlerResult, Session, Turn
+from services.blob_store import BlobStoreUnavailableError
 from services.paperintel_service import (
+    BlobStorageNotConfiguredError,
     ComparisonNotFoundError,
     InvalidPdfInputError,
     InvalidSessionPhaseError,
@@ -204,6 +213,98 @@ class FakeArtifactRepository:
         return artifact
 
 
+class FakeBlobStore:
+    def __init__(self) -> None:
+        self.ensure_calls = 0
+        self.put_calls = []
+        self.materialized_paths = []
+        self.deleted_materialized_paths = []
+
+    def ensure_bucket(self):
+        self.ensure_calls += 1
+
+    def put(self, content, *, kind, content_type=None):
+        self.put_calls.append(
+            {"content": content, "kind": kind, "content_type": content_type}
+        )
+        content_hash = hashlib.sha256(content).hexdigest()
+        return StoredBlobObject(
+            kind=kind,
+            object_key=f"papers/sha256/{content_hash[:2]}/{content_hash}.pdf",
+            bucket_name="paperintel-test",
+            content_hash=content_hash,
+            content_type=content_type or "application/pdf",
+            size_bytes=len(content),
+        )
+
+    @contextmanager
+    def materialize(self, object_key, *, expected_sha256=None):
+        with NamedTemporaryFile(
+            mode="wb",
+            suffix=".pdf",
+            prefix="paperintel_test_blob_",
+            delete=False,
+        ) as temp_file:
+            temp_file.write(b"%PDF-1.7\nmaterialized")
+            temp_path = temp_file.name
+        self.materialized_paths.append(temp_path)
+        try:
+            yield temp_path
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+            self.deleted_materialized_paths.append(temp_path)
+
+
+class FakeBlobArtifactRepository:
+    def __init__(self) -> None:
+        self.artifacts = {}
+        self.references = []
+        self.accessed = []
+
+    def upsert_artifact(self, stored, **kwargs):
+        key = (stored.kind, stored.content_hash)
+        if key not in self.artifacts:
+            self.artifacts[key] = BlobArtifact(
+                kind=stored.kind,
+                object_key=stored.object_key,
+                bucket_name=stored.bucket_name,
+                content_hash=stored.content_hash,
+                content_type=stored.content_type,
+                size_bytes=stored.size_bytes,
+                storage_backend=stored.storage_backend,
+                retention_policy=kwargs.get("retention_policy", "durable"),
+            )
+        return self.artifacts[key]
+
+    def add_reference(self, blob_id, *, ref_kind, ref_id, metadata=None):
+        existing = next(
+            (
+                reference
+                for reference in self.references
+                if (reference.blob_id, reference.ref_kind, reference.ref_id)
+                == (blob_id, ref_kind, ref_id)
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        reference = BlobReference(
+            blob_id=blob_id,
+            ref_kind=ref_kind,
+            ref_id=ref_id,
+            metadata=metadata or {},
+        )
+        self.references.append(reference)
+        return reference
+
+    def mark_accessed(self, blob_id):
+        self.accessed.append(blob_id)
+        artifact = next(
+            artifact for artifact in self.artifacts.values() if artifact.id == blob_id
+        )
+        return artifact
+
+
 class FakeWorkflowJobRepository:
     def __init__(self) -> None:
         self.jobs = {}
@@ -382,6 +483,205 @@ def test_service_analyze_pdf_passes_expected_paper_id_to_handler(tmp_path):
             "skip_arxiv_metadata_fetch": True,
         }
     ]
+
+
+def test_service_analyze_pdf_uses_durable_blob_materialization(tmp_path):
+    handler = FakeHandler()
+    blob_store = FakeBlobStore()
+    blob_repository = FakeBlobArtifactRepository()
+    artifact_repository = FakeArtifactRepository()
+    session = handler.create_session()
+    workspace = PaperWorkspace(
+        session_id=session.id,
+        paper_id="2501.12948",
+        source_url="local:2501.12948",
+        pipeline_stage="completed",
+    )
+    artifact_repository.workspaces.append(workspace)
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
+    )
+    pdf_path = tmp_path / "2501.12948.pdf"
+    pdf_bytes = b"%PDF-1.7\nbody"
+    pdf_path.write_bytes(pdf_bytes)
+
+    result = service.analyze_pdf(session.id, str(pdf_path), paper_id="2501.12948")
+
+    assert result.response_text == "pdf analysis complete"
+    assert blob_store.ensure_calls == 1
+    assert blob_store.put_calls == [
+        {"content": pdf_bytes, "kind": "pdf", "content_type": "application/pdf"}
+    ]
+    assert len(blob_repository.artifacts) == 1
+    blob_id = next(iter(blob_repository.artifacts.values())).id
+    assert blob_repository.accessed == [blob_id]
+    assert [(ref.ref_kind, ref.ref_id) for ref in blob_repository.references] == [
+        ("session", session.id),
+        ("paper_workspace", workspace.id),
+    ]
+    analyzed_path = handler.analysis_input_calls[0]["input_value"]
+    assert analyzed_path == blob_store.materialized_paths[0]
+    assert analyzed_path != str(pdf_path)
+    assert not Path(analyzed_path).exists()
+    assert blob_store.deleted_materialized_paths == [analyzed_path]
+
+
+def test_service_analyze_pdf_reuses_durable_blob_and_references(tmp_path):
+    handler = FakeHandler()
+    blob_store = FakeBlobStore()
+    blob_repository = FakeBlobArtifactRepository()
+    service = PaperIntelService(
+        handler=handler,
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
+    )
+    session = service.create_session()
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+
+    service.analyze_pdf(session.id, str(pdf_path))
+    service.analyze_pdf(session.id, str(pdf_path))
+
+    assert len(blob_repository.artifacts) == 1
+    assert len(blob_repository.references) == 1
+    assert blob_repository.references[0].ref_kind == "session"
+    assert len(blob_repository.accessed) == 2
+
+
+def test_service_analyze_pdf_skips_ambiguous_workspace_reference(tmp_path):
+    class AddingHandler(FakeHandler):
+        def __init__(self, artifact_repository):
+            super().__init__()
+            self.artifact_repository = artifact_repository
+
+        def analyze_paper_input(self, session_id, **kwargs):
+            self.artifact_repository.workspaces.extend(
+                [
+                    PaperWorkspace(
+                        session_id=session_id,
+                        paper_id="paper-a",
+                        source_url="local:paper-a",
+                        pipeline_stage="completed",
+                    ),
+                    PaperWorkspace(
+                        session_id=session_id,
+                        paper_id="paper-b",
+                        source_url="local:paper-b",
+                        pipeline_stage="completed",
+                    ),
+                ]
+            )
+            return super().analyze_paper_input(session_id, **kwargs)
+
+    artifact_repository = FakeArtifactRepository()
+    handler = AddingHandler(artifact_repository)
+    blob_repository = FakeBlobArtifactRepository()
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        blob_store=FakeBlobStore(),
+        blob_artifact_repository=blob_repository,
+    )
+    session = service.create_session()
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+
+    result = service.analyze_pdf(session.id, str(pdf_path))
+
+    assert result.response_text == "pdf analysis complete"
+    assert [reference.ref_kind for reference in blob_repository.references] == [
+        "session"
+    ]
+
+
+def test_service_analyze_pdf_links_unique_generated_workspace(tmp_path):
+    class AddingHandler(FakeHandler):
+        def __init__(self, artifact_repository):
+            super().__init__()
+            self.artifact_repository = artifact_repository
+            self.workspace = None
+
+        def analyze_paper_input(self, session_id, **kwargs):
+            self.workspace = PaperWorkspace(
+                session_id=session_id,
+                paper_id="generated-paper",
+                source_url="local:generated-paper",
+                pipeline_stage="completed",
+            )
+            self.artifact_repository.workspaces.append(self.workspace)
+            return super().analyze_paper_input(session_id, **kwargs)
+
+    artifact_repository = FakeArtifactRepository()
+    handler = AddingHandler(artifact_repository)
+    blob_repository = FakeBlobArtifactRepository()
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        blob_store=FakeBlobStore(),
+        blob_artifact_repository=blob_repository,
+    )
+    session = service.create_session()
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+
+    service.analyze_pdf(session.id, str(pdf_path))
+
+    assert handler.workspace is not None
+    assert [(reference.ref_kind, reference.ref_id) for reference in blob_repository.references] == [
+        ("session", session.id),
+        ("paper_workspace", handler.workspace.id),
+    ]
+
+
+def test_service_analyze_pdf_propagates_blob_store_outage(tmp_path):
+    class UnavailableBlobStore(FakeBlobStore):
+        def ensure_bucket(self):
+            raise BlobStoreUnavailableError("provider down")
+
+    service = PaperIntelService(
+        handler=FakeHandler(),
+        blob_store=UnavailableBlobStore(),
+        blob_artifact_repository=FakeBlobArtifactRepository(),
+    )
+    session = service.create_session()
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+
+    with pytest.raises(BlobStoreUnavailableError, match="provider down"):
+        service.analyze_pdf(session.id, str(pdf_path))
+
+
+def test_service_analyze_pdf_rejects_missing_session_before_blob_side_effects(tmp_path):
+    blob_store = FakeBlobStore()
+    blob_repository = FakeBlobArtifactRepository()
+    service = PaperIntelService(
+        handler=FakeHandler(),
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
+    )
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+
+    with pytest.raises(SessionNotFoundError):
+        service.analyze_pdf("missing-session", str(pdf_path))
+
+    assert blob_store.ensure_calls == 0
+    assert blob_store.put_calls == []
+    assert blob_repository.artifacts == {}
+    assert blob_repository.references == []
+
+
+def test_service_analyze_pdf_rejects_partial_blob_storage_configuration(tmp_path):
+    service = PaperIntelService(handler=FakeHandler(), blob_store=FakeBlobStore())
+    session = service.create_session()
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+
+    with pytest.raises(BlobStorageNotConfiguredError):
+        service.analyze_pdf(session.id, str(pdf_path))
 
 
 def test_service_analyze_pdf_rejects_missing_file():

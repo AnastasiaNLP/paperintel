@@ -82,6 +82,7 @@ def test_app_factory_creates_paperintel_service_with_injected_dependencies():
     conversation_runner = FakeRunner({"response_text": "conversation"})
     analysis_runner = FakeRunner({"response_text": "analysis"})
     retrieval_layer = FakeRetrievalLayer()
+    blob_store = object()
 
     service = create_paperintel_service(
         database_url="sqlite:///:memory:",
@@ -89,6 +90,7 @@ def test_app_factory_creates_paperintel_service_with_injected_dependencies():
         analysis_runner=analysis_runner,
         retrieval_layer=retrieval_layer,
         enable_health_checks=False,
+        blob_store=blob_store,
     )
 
     assert service.handler.conversation_runner is conversation_runner
@@ -96,4 +98,6 @@ def test_app_factory_creates_paperintel_service_with_injected_dependencies():
     assert service.handler.retrieval_layer is retrieval_layer
     assert service.selected_candidate_resolver is not None
     assert service.candidate_repository is not None
+    assert service.blob_store is blob_store
+    assert service.blob_artifact_repository is not None
     assert service.health().checks == {"basic": "ok"}

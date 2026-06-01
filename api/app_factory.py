@@ -6,6 +6,7 @@ from api.chat_handler import (
 )
 from services.arxiv_search_provider import ArxivSearchProvider
 from services.embeddings import OpenAIEmbeddingProvider
+from services.blob_store import BlobStore
 from services.health import HealthChecker
 from services.paperintel_service import PaperIntelService
 from services.qdrant_store import QdrantChunkStore
@@ -18,6 +19,7 @@ from storage.db import make_engine, make_session_factory
 from storage.repositories import (
     PostgresAgentRunPersistence,
     PostgresArxivMetadataCacheRepository,
+    PostgresBlobArtifactRepository,
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
     PostgresSearchCandidateRepository,
@@ -75,6 +77,7 @@ def create_paperintel_service(
     qdrant_url: str | None = None,
     qdrant_collection: str | None = None,
     enable_health_checks: bool = True,
+    blob_store: BlobStore | None = None,
 ) -> PaperIntelService:
     settings = None
     if database_url is None or retrieval_layer is None or enable_health_checks:
@@ -113,6 +116,7 @@ def create_paperintel_service(
     candidate_repository = PostgresSearchCandidateRepository(session_factory)
     artifact_repository = PostgresPaperWorkspaceRepository(session_factory)
     workflow_job_repository = PostgresWorkflowJobRepository(session_factory)
+    blob_artifact_repository = PostgresBlobArtifactRepository(session_factory)
     if discovery_runner is None:
         from graph_discovery import build_discovery_graph
 
@@ -158,4 +162,8 @@ def create_paperintel_service(
         candidate_repository=candidate_repository,
         artifact_repository=artifact_repository,
         workflow_job_repository=workflow_job_repository,
+        blob_store=blob_store,
+        blob_artifact_repository=(
+            blob_artifact_repository if blob_store is not None else None
+        ),
     )
