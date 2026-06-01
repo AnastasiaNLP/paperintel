@@ -12,10 +12,14 @@ class HealthChecker:
         session_factory: Any | None = None,
         qdrant_store: Any | None = None,
         settings: Any | None = None,
+        blob_store: Any | None = None,
+        blob_storage_required: bool = False,
     ) -> None:
         self.session_factory = session_factory
         self.qdrant_store = qdrant_store
         self.settings = settings
+        self.blob_store = blob_store
+        self.blob_storage_required = blob_storage_required
 
     def check(self) -> HealthStatus:
         checks = {
@@ -23,12 +27,20 @@ class HealthChecker:
             "qdrant": self._check_qdrant(),
             "llm_provider": self._check_llm_provider(),
             "openai_embeddings": self._check_openai_embeddings(),
+            "blob_store": self._check_blob_store(),
         }
         healthy = (
             checks["postgres"] == "ok"
             and checks["qdrant"] == "ok"
             and checks["llm_provider"] == "configured"
             and checks["openai_embeddings"] == "configured"
+            and (
+                checks["blob_store"] == "ok"
+                or (
+                    not self.blob_storage_required
+                    and checks["blob_store"] == "not_configured"
+                )
+            )
         )
         return HealthStatus(healthy=healthy, checks=checks)
 
@@ -47,6 +59,15 @@ class HealthChecker:
             return "not_configured"
         try:
             self.qdrant_store.check_connection()
+            return "ok"
+        except Exception as exc:
+            return f"error:{type(exc).__name__}"
+
+    def _check_blob_store(self) -> str:
+        if self.blob_store is None:
+            return "not_configured"
+        try:
+            self.blob_store.ensure_bucket()
             return "ok"
         except Exception as exc:
             return f"error:{type(exc).__name__}"

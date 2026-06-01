@@ -32,6 +32,17 @@ class FakeQdrantClient:
         return []
 
 
+class FakeBlobStore:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls = 0
+
+    def ensure_bucket(self) -> None:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+
+
 class FakeQdrantStore:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.client = FakeQdrantClient(error=error)
@@ -64,6 +75,7 @@ def test_health_checker_reports_all_checks_ok():
         "qdrant": "ok",
         "llm_provider": "configured",
         "openai_embeddings": "configured",
+        "blob_store": "not_configured",
     }
     assert qdrant.client.calls == 1
 
@@ -106,6 +118,7 @@ def test_health_checker_reports_missing_llm_key():
     assert status.healthy is False
     assert status.checks["llm_provider"] == "missing_api_key"
     assert status.checks["openai_embeddings"] == "missing_api_key"
+    assert status.checks["blob_store"] == "not_configured"
 
 
 def test_health_checker_reports_missing_optional_dependencies_as_not_configured():
@@ -118,3 +131,49 @@ def test_health_checker_reports_missing_optional_dependencies_as_not_configured(
     assert status.checks["qdrant"] == "not_configured"
     assert status.checks["llm_provider"] == "not_configured"
     assert status.checks["openai_embeddings"] == "not_configured"
+    assert status.checks["blob_store"] == "not_configured"
+
+
+def test_health_checker_rejects_missing_required_blob_store():
+    checker = HealthChecker(
+        session_factory=lambda: FakeDbSession(),
+        qdrant_store=FakeQdrantStore(),
+        settings=_settings(),
+        blob_storage_required=True,
+    )
+
+    status = checker.check()
+
+    assert status.healthy is False
+    assert status.checks["blob_store"] == "not_configured"
+
+
+
+def test_health_checker_reports_configured_blob_store_ok():
+    blob_store = FakeBlobStore()
+    checker = HealthChecker(
+        session_factory=lambda: FakeDbSession(),
+        qdrant_store=FakeQdrantStore(),
+        settings=_settings(),
+        blob_store=blob_store,
+    )
+
+    status = checker.check()
+
+    assert status.healthy is True
+    assert status.checks["blob_store"] == "ok"
+    assert blob_store.calls == 1
+
+
+def test_health_checker_reports_blob_store_error():
+    checker = HealthChecker(
+        session_factory=lambda: FakeDbSession(),
+        qdrant_store=FakeQdrantStore(),
+        settings=_settings(),
+        blob_store=FakeBlobStore(error=RuntimeError("minio down")),
+    )
+
+    status = checker.check()
+
+    assert status.healthy is False
+    assert status.checks["blob_store"] == "error:RuntimeError"

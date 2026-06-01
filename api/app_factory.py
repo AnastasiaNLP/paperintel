@@ -6,7 +6,7 @@ from api.chat_handler import (
 )
 from services.arxiv_search_provider import ArxivSearchProvider
 from services.embeddings import OpenAIEmbeddingProvider
-from services.blob_store import BlobStore
+from services.blob_store import BlobStore, S3BlobStore
 from services.health import HealthChecker
 from services.paperintel_service import PaperIntelService
 from services.qdrant_store import QdrantChunkStore
@@ -78,9 +78,15 @@ def create_paperintel_service(
     qdrant_collection: str | None = None,
     enable_health_checks: bool = True,
     blob_store: BlobStore | None = None,
+    enable_blob_storage: bool | None = None,
 ) -> PaperIntelService:
     settings = None
-    if database_url is None or retrieval_layer is None or enable_health_checks:
+    if (
+        database_url is None
+        or retrieval_layer is None
+        or enable_health_checks
+        or (blob_store is None and enable_blob_storage is not False)
+    ):
         from config.settings import settings as loaded_settings
 
         settings = loaded_settings
@@ -89,6 +95,16 @@ def create_paperintel_service(
     engine = make_engine(resolved_database_url)
     session_factory = make_session_factory(engine)
     configure_metadata_cache(PostgresArxivMetadataCacheRepository(session_factory))
+    blob_storage_required = _blob_storage_required(
+        blob_store=blob_store,
+        enable_blob_storage=enable_blob_storage,
+        settings=settings,
+    )
+    resolved_blob_store = _resolve_blob_store(
+        blob_store=blob_store,
+        enable_blob_storage=enable_blob_storage,
+        settings=settings,
+    )
 
     vector_store = None
     if retrieval_layer is None:
@@ -149,6 +165,8 @@ def create_paperintel_service(
             session_factory=session_factory,
             qdrant_store=vector_store,
             settings=settings,
+            blob_store=resolved_blob_store,
+            blob_storage_required=blob_storage_required,
         )
 
     selected_candidate_resolver = SelectedCandidateResolver(
@@ -162,8 +180,48 @@ def create_paperintel_service(
         candidate_repository=candidate_repository,
         artifact_repository=artifact_repository,
         workflow_job_repository=workflow_job_repository,
-        blob_store=blob_store,
+        blob_store=resolved_blob_store,
         blob_artifact_repository=(
-            blob_artifact_repository if blob_store is not None else None
+            blob_artifact_repository if resolved_blob_store is not None else None
         ),
     )
+
+
+def _blob_storage_required(
+    *,
+    blob_store: BlobStore | None,
+    enable_blob_storage: bool | None,
+    settings,
+) -> bool:
+    if blob_store is not None:
+        return True
+    if enable_blob_storage is not None:
+        return enable_blob_storage
+    return bool(settings is not None and settings.blob_storage_enabled)
+
+
+
+def _resolve_blob_store(
+    *,
+    blob_store: BlobStore | None,
+    enable_blob_storage: bool | None,
+    settings,
+) -> BlobStore | None:
+    if blob_store is not None:
+        blob_store.ensure_bucket()
+        return blob_store
+    if enable_blob_storage is False:
+        return None
+    if settings is None:
+        return None
+    if enable_blob_storage is None and not settings.blob_storage_enabled:
+        return None
+    resolved = S3BlobStore.from_config(
+        bucket_name=settings.blob_s3_bucket,
+        endpoint_url=settings.blob_s3_endpoint_url,
+        region_name=settings.blob_s3_region,
+        access_key_id=settings.blob_s3_access_key_id,
+        secret_access_key=settings.blob_s3_secret_access_key,
+    )
+    resolved.ensure_bucket()
+    return resolved

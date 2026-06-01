@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "paper_chunks"
     qdrant_timeout: float = 10.0
+    blob_storage_enabled: bool = True
+    blob_s3_endpoint_url: str = "http://localhost:9000"
+    blob_s3_region: str = "us-east-1"
+    blob_s3_bucket: str = "paperintel"
+    blob_s3_access_key_id: str = "paperintel"
+    blob_s3_secret_access_key: str = "paperintel_dev_password"
     haiku_model: str = "claude-haiku-4-5-20251001"
     sonnet_model: str = "claude-sonnet-4-6"
     openai_model: str = "gpt-4o-mini"

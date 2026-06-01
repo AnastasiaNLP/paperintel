@@ -1,5 +1,7 @@
 from agents.agent_run_recorder import InMemoryAgentRunPersistence
-from api.app_factory import create_paperintel_service
+from types import SimpleNamespace
+
+from api.app_factory import _resolve_blob_store, create_paperintel_service
 from api.chat_handler import ChatHandler
 from api.in_memory_session_store import InMemorySessionStore
 from models.qa import AnswerDraft
@@ -18,6 +20,14 @@ class FakeRunner:
 
 class FakeRetrievalLayer:
     pass
+
+
+class FakeBlobStore:
+    def __init__(self) -> None:
+        self.ensure_calls = 0
+
+    def ensure_bucket(self):
+        self.ensure_calls += 1
 
 
 def _service(*, conversation_result=None, analysis_result=None):
@@ -82,7 +92,7 @@ def test_app_factory_creates_paperintel_service_with_injected_dependencies():
     conversation_runner = FakeRunner({"response_text": "conversation"})
     analysis_runner = FakeRunner({"response_text": "analysis"})
     retrieval_layer = FakeRetrievalLayer()
-    blob_store = object()
+    blob_store = FakeBlobStore()
 
     service = create_paperintel_service(
         database_url="sqlite:///:memory:",
@@ -100,4 +110,112 @@ def test_app_factory_creates_paperintel_service_with_injected_dependencies():
     assert service.candidate_repository is not None
     assert service.blob_store is blob_store
     assert service.blob_artifact_repository is not None
+    assert blob_store.ensure_calls == 1
     assert service.health().checks == {"basic": "ok"}
+
+
+def test_app_factory_default_blob_storage_builds_from_settings(monkeypatch):
+    created = FakeBlobStore()
+    monkeypatch.setattr(
+        "api.app_factory.S3BlobStore.from_config",
+        lambda **kwargs: created,
+    )
+
+    service = create_paperintel_service(
+        database_url="sqlite:///:memory:",
+        conversation_runner=FakeRunner({"response_text": "conversation"}),
+        analysis_runner=FakeRunner({"response_text": "analysis"}),
+        discovery_runner=FakeRunner({"response_text": "discovery"}),
+        retrieval_layer=FakeRetrievalLayer(),
+        enable_health_checks=False,
+    )
+
+    assert service.blob_store is created
+    assert service.blob_artifact_repository is not None
+    assert created.ensure_calls == 1
+
+
+
+def test_resolve_blob_store_supports_explicit_opt_out():
+    assert _resolve_blob_store(
+        blob_store=None,
+        enable_blob_storage=False,
+        settings=None,
+    ) is None
+
+
+def test_resolve_blob_store_builds_from_settings_and_bootstraps_bucket(monkeypatch):
+    created = FakeBlobStore()
+    calls = []
+
+    def from_config(**kwargs):
+        calls.append(kwargs)
+        return created
+
+    monkeypatch.setattr("api.app_factory.S3BlobStore.from_config", from_config)
+    settings = SimpleNamespace(
+        blob_storage_enabled=True,
+        blob_s3_bucket="paperintel",
+        blob_s3_endpoint_url="http://localhost:9000",
+        blob_s3_region="us-east-1",
+        blob_s3_access_key_id="paperintel",
+        blob_s3_secret_access_key="secret",
+    )
+
+    resolved = _resolve_blob_store(
+        blob_store=None,
+        enable_blob_storage=None,
+        settings=settings,
+    )
+
+    assert resolved is created
+    assert created.ensure_calls == 1
+    assert calls == [
+        {
+            "bucket_name": "paperintel",
+            "endpoint_url": "http://localhost:9000",
+            "region_name": "us-east-1",
+            "access_key_id": "paperintel",
+            "secret_access_key": "secret",
+        }
+    ]
+
+
+def test_resolve_blob_store_explicit_enable_overrides_disabled_setting(monkeypatch):
+    created = FakeBlobStore()
+    monkeypatch.setattr(
+        "api.app_factory.S3BlobStore.from_config",
+        lambda **kwargs: created,
+    )
+    settings = SimpleNamespace(
+        blob_storage_enabled=False,
+        blob_s3_bucket="paperintel",
+        blob_s3_endpoint_url="http://localhost:9000",
+        blob_s3_region="us-east-1",
+        blob_s3_access_key_id="paperintel",
+        blob_s3_secret_access_key="secret",
+    )
+
+    resolved = _resolve_blob_store(
+        blob_store=None,
+        enable_blob_storage=True,
+        settings=settings,
+    )
+
+    assert resolved is created
+    assert created.ensure_calls == 1
+
+
+def test_resolve_blob_store_propagates_bootstrap_failure():
+    class FailingBlobStore:
+        def ensure_bucket(self):
+            raise RuntimeError("minio down")
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="minio down"):
+        _resolve_blob_store(
+            blob_store=FailingBlobStore(),
+            enable_blob_storage=None,
+            settings=None,
+        )
