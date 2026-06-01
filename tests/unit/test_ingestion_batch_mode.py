@@ -4,6 +4,15 @@ import types
 
 
 def _load_ingestion_with_stubs():
+    module_names = (
+        "config.settings",
+        "tools.arxiv_client",
+        "tools.pdf_parser",
+        "tools.semantic_scholar_client",
+        "agents.ingestion",
+    )
+    previous_modules = {name: sys.modules.get(name) for name in module_names}
+
     settings_module = types.ModuleType("config.settings")
     settings_module.settings = types.SimpleNamespace()
     sys.modules["config.settings"] = settings_module
@@ -34,7 +43,14 @@ def _load_ingestion_with_stubs():
     sys.modules["tools.semantic_scholar_client"] = semantic_scholar
 
     sys.modules.pop("agents.ingestion", None)
-    return importlib.import_module("agents.ingestion")
+    try:
+        return importlib.import_module("agents.ingestion")
+    finally:
+        for name, previous in previous_modules.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
 
 
 def test_single_url_still_uses_input_value():
@@ -217,6 +233,36 @@ def test_pdf_ingestion_can_skip_arxiv_metadata_with_injected_fallback(monkeypatc
     assert result["processing_stage"] == "extraction"
     assert result["metadata"].title == "Golden title"
     assert result["ingestion_provenance"]["metadata_source"] == "injected_fallback"
+
+
+def test_pdf_ingestion_skip_arxiv_uses_parsed_pdf_fallback_without_injected_metadata(
+    monkeypatch,
+):
+    ingestion = _load_ingestion_with_stubs()
+
+    def fail_if_called(arxiv_id):
+        raise AssertionError("arXiv metadata should not be fetched")
+
+    monkeypatch.setattr(ingestion, "get_metadata", fail_if_called)
+
+    result = ingestion.ingestion_agent(
+        {
+            "input_type": "pdf",
+            "input_value": "/tmp/local.pdf",
+            "batch_urls": None,
+            "expected_paper_id": "local-paper",
+            "current_paper_index": 0,
+            "total_papers": 1,
+            "skip_arxiv_metadata_fetch": True,
+            "metadata_fallback_by_arxiv_id": {},
+        }
+    )
+
+    assert result["processing_stage"] == "extraction"
+    assert result["metadata"].title == "Stub title"
+    assert result["metadata"].arxiv_id == "local-paper"
+    assert result["ingestion_provenance"]["metadata_source"] == "pdf_fallback"
+
 
 
 def test_pdf_ingestion_uses_expected_paper_id_when_parser_has_no_arxiv_id(

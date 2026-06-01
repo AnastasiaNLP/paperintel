@@ -33,6 +33,7 @@ and implementation implications" without losing grounding in the source text.
 - Exposes both a REST API and an MCP server.
 - Supports Postgres-backed async analysis jobs with a separate worker process.
 - Caches arXiv metadata and degrades gracefully when paper metadata enrichment fails.
+- Persists analyzed PDFs in S3-compatible object storage with content-hash deduplication.
 
 ## Quick Start
 
@@ -48,7 +49,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Add ANTHROPIC_API_KEY and OPENAI_API_KEY to .env
 
-docker compose up -d postgres qdrant
+docker compose up -d postgres qdrant minio
 .venv/bin/python -m alembic upgrade head
 
 .venv/bin/python -m dotenv run -- \
@@ -169,6 +170,8 @@ Full architecture details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - [docs/ASYNC_JOBS.md](docs/ASYNC_JOBS.md) — workflow job queue and worker operations.
 - [docs/RESILIENCE.md](docs/RESILIENCE.md) — arXiv/Semantic Scholar cache,
   limits, breakers, and fallback behavior.
+- [docs/BLOB_STORAGE.md](docs/BLOB_STORAGE.md) — MinIO/S3 PDF storage, deduplication,
+  retention, and current limits.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — common issues.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — implemented architecture.
 - [docs/AGENT_CONTRACT.md](docs/AGENT_CONTRACT.md) — AgentRun and policy contract.
@@ -237,10 +240,10 @@ runs completed without failures.
 - `agents/comparator.py` remains as the legacy batch-analysis comparator and
   writes comparison artifacts with `producer="batch_comparator"`;
   request-driven comparisons use `producer="comparison_analyst"`.
-- Artifact persistence is intentionally narrow: Postgres stores finalized
-  reports, method extraction, benchmarks, readiness results, and comparison
-  reports and workflow jobs. S3/object storage, paper cache versioning,
-  advanced job scheduling/retries, and PDF asset storage are separate later work.
+- Postgres stores finalized reports, method extraction, benchmarks, readiness
+  results, comparison reports, workflow jobs, and blob metadata. S3-compatible
+  storage persists PDFs with content-hash deduplication. Paper cache versioning,
+  advanced job scheduling/retries, and automated blob cleanup remain later work.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
 - Authentication, distributed rate limiting, and deployment hardening are future work.

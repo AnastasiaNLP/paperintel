@@ -177,7 +177,8 @@ options.
   an already running LLM, embedding, HTTP, or vector-store call.
 - No async comparison or synthesis jobs yet.
 - Local PDF analysis is synchronous through REST multipart upload, MCP local
-  path analysis, or direct service calls. The current async worker supports URL
-  analysis jobs; async PDF upload jobs require shared PDF/object storage.
+  path analysis, or direct service calls. Durable PDF object storage exists, but
+  the current async worker supports URL analysis jobs only; async PDF jobs need
+  a dedicated blob-reference job kind.
 - Job results are stored in Postgres as JSON transport snapshots, not as a
   separate event stream.

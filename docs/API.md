@@ -42,7 +42,7 @@ Discovery-to-QA:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Check Postgres, Qdrant, and LLM configuration. Returns `503` when degraded. |
+| `GET` | `/health` | Check Postgres, Qdrant, blob storage, and LLM configuration. Returns `503` when degraded. |
 | `POST` | `/sessions` | Create a session with persona `engineer`, `researcher`, or `techlead`. |
 | `GET` | `/sessions/{session_id}` | Get session state. |
 | `GET` | `/sessions/{session_id}/turns` | Get recent conversation turns. |
@@ -51,7 +51,7 @@ Discovery-to-QA:
 | `GET` | `/sessions/{session_id}/comparison` | Get the latest persisted comparison artifact for the session. Read-only; does not run an LLM. Returns `404` if none exists. |
 | `POST` | `/sessions/{session_id}/compare` | Create a new request-driven comparison artifact from durable paper workspaces. Optional `paper_ids` and `prompt` body. |
 | `POST` | `/sessions/{session_id}/analyze` | Analyze a paper URL. URL validation happens at the API boundary. |
-| `POST` | `/sessions/{session_id}/analyze-pdf` | Analyze an uploaded PDF via multipart form data. The upload is synchronous and ephemeral. |
+| `POST` | `/sessions/{session_id}/analyze-pdf` | Analyze an uploaded PDF via multipart form data. The request is synchronous; PDF content is persisted to blob storage. |
 | `POST` | `/sessions/{session_id}/ask` | Ask a question about active papers in the session. |
 | `POST` | `/sessions/{session_id}/discover` | Find candidate papers for a research topic and enter selection phase. |
 | `POST` | `/sessions/{session_id}/select` | Select papers from the latest discovery shortlist by display number. |
@@ -83,7 +83,7 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/ask" \
 
 curl -s "http://127.0.0.1:8000/sessions/$SESSION_ID/workspaces"
 
-# Local PDF upload path. The PDF is parsed during the request and is not persisted.
+# Local PDF upload path. The PDF is persisted to configured blob storage.
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/analyze-pdf" \
   -F "file=@/absolute/path/to/paper.pdf;type=application/pdf" \
   -F "paper_id=local-paper-1" \
@@ -176,10 +176,11 @@ Form fields:
   fully local/reproducible PDF runs when metadata should come from the
   PDF instead of arXiv enrichment.
 
-Uploaded PDFs are ephemeral. The API writes the bytes to a temporary file
-only for the duration of analysis, deletes that file afterwards, and
-persists only the resulting `PaperWorkspace`, chunks, and artifacts. PDF
-asset storage is separate later work.
+The REST transport file is ephemeral: the API writes uploaded bytes to a
+temporary file only for the duration of the request and deletes that local
+file afterwards. The PDF content itself is persisted to configured S3-compatible
+blob storage before analysis. Postgres stores one deduplicated `blob_artifacts`
+registry row plus references from sessions and paper workspaces.
 
 Limits and errors:
 
@@ -189,8 +190,9 @@ Limits and errors:
   `unsupported_media_type`.
 - Service-level PDF validation failures return `400` with
   `invalid_pdf_input`.
-- The endpoint is synchronous in v1 and can take about a minute. Async PDF
-  upload jobs require shared PDF/object storage and are deferred.
+- The endpoint is synchronous and can take about a minute. Durable object
+  storage now exists, but async PDF jobs still require a dedicated workflow job
+  kind and are deferred.
 
 ## Async Job Example
 
@@ -230,9 +232,9 @@ curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/analyze-selecte
 ## Notes
 
 - `/analyze` is synchronous and can take 50-90 seconds. Use `/jobs/analyze-paper` plus a separate worker for async URL analysis.
-- `/analyze-pdf` is synchronous, accepts multipart PDF uploads only, and
-  deletes the temporary uploaded file after analysis. It does not enqueue
-  async jobs in v1.
+- `/analyze-pdf` is synchronous, accepts multipart PDF uploads only, deletes
+  the temporary transport file after analysis, and persists PDF content to blob
+  storage. It does not enqueue async jobs.
 - `/discover` is synchronous and depends on arXiv availability.
 - `/ask` works only after a paper has been successfully analyzed and indexed in
   the same session.

@@ -35,7 +35,7 @@ class ChunkSource(BaseModel):
     """
     Stable paper identity and ingestion context for a retrievable chunk.
 
-    For Stage C, paper_id is the canonical paper identifier, normally the arXiv
+    paper_id is the canonical paper identifier, normally the arXiv
     id such as "2310.06825", not a session-scoped workspace UUID.
     """
 

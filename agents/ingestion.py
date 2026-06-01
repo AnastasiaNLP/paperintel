@@ -367,12 +367,22 @@ def _route_pdf(state: PaperIntelState) -> dict:
         s2_data = _enrich_s2(arxiv_id)
         enrichment = "s2_ok" if s2_data else "s2_failed"
         fallback_metadata = _fallback_metadata_for_arxiv_id(state, arxiv_id)
-        metadata, meta_error, metadata_source = _resolve_metadata(
-            arxiv_id,
-            s2_data,
-            fallback_metadata,
-            skip_arxiv_fetch=bool(state.get("skip_arxiv_metadata_fetch")),
-        )
+        if state.get("skip_arxiv_metadata_fetch"):
+            metadata = fallback_metadata or _pdf_fallback_metadata(
+                arxiv_id=arxiv_id,
+                parsed=parsed,
+                s2_data=s2_data,
+            )
+            meta_error = None
+            metadata_source = (
+                "injected_fallback" if fallback_metadata is not None else "pdf_fallback"
+            )
+        else:
+            metadata, meta_error, metadata_source = _resolve_metadata(
+                arxiv_id,
+                s2_data,
+                fallback_metadata,
+            )
 
         if metadata:
             return _success_extraction(

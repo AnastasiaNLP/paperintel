@@ -1,7 +1,7 @@
 # Quickstart
 
-This guide starts PaperIntel locally with Postgres, Qdrant, the REST API, and a
-first paper analysis.
+This guide starts PaperIntel locally with Postgres, Qdrant, MinIO, the REST
+API, and a first paper analysis.
 
 ## 1. Install
 
@@ -25,12 +25,12 @@ OPENAI_API_KEY=...
 ```
 
 OpenAI is used for embeddings. Anthropic is the default LLM provider for agent
-reasoning.
+reasoning. The `.env.example` MinIO defaults work with `docker-compose.yml`.
 
 ## 3. Start Local Services
 
 ```bash
-docker compose up -d postgres qdrant
+docker compose up -d postgres qdrant minio
 ```
 
 Run migrations:

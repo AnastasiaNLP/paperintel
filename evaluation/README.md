@@ -67,9 +67,9 @@ non-deterministic and non-gating:
 No live judge calls are made by default for CA checks. Use G-Eval rubrics only
 as a manual or scheduled quality gauge, not as a CI pass/fail gate.
 
-## Eval Stage Closeout
+## Evaluation Foundation
 
-Closed in this stage:
+Implemented foundation:
 
 - `seed_5.jsonl` remains the fast local seed for loader, runner, and fixture
   tests.
@@ -302,7 +302,7 @@ Manual benchmark extraction review over the 30-paper seed:
 - corrupt/noisy benchmark extraction: `2/30`
 
 Interpretation: benchmark extraction is the weakest measured component in
-v0.1. This is a useful result of the evaluation stage, not a hidden caveat. The
+v0.1. This is a useful evaluation result, not a hidden caveat. The
 system now has a reproducible way to expose and track this weakness.
 
 ## Deterministic Checks

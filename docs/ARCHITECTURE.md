@@ -241,10 +241,11 @@ The workflow job layer is intentionally narrow and Postgres-backed:
 - The current worker supports URL analysis jobs and selected-paper analysis
   jobs.
 
-This layer does not include S3/object storage, paper cache versioning,
-retry/backoff scheduling, process supervision, job budgets, async comparison or
-synthesis jobs, or PDF/page-image asset storage. Those are separate later
-hardening layers.
+The blob storage layer persists PDF assets in S3-compatible storage and tracks
+usage through `blob_artifacts` and `blob_references`. It does not yet include
+paper cache versioning, automated cleanup, retry/backoff scheduling, process
+supervision, job budgets, async comparison or synthesis jobs, async PDF jobs,
+or page-image asset generation. Those are separate later hardening layers.
 
 ## External Dependency Resilience
 

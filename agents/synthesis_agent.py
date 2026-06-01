@@ -107,7 +107,7 @@ def _call_llm(
     """
     Single-pass synthesis call.
 
-    CA.2 intentionally skips a JSON repair call. Invalid or unavailable LLM
+    This path intentionally skips a JSON repair call. Invalid or unavailable LLM
     output falls back to the deterministic durable-artifact summary, keeping the
     service-level synthesis path bounded to one LLM call.
     """

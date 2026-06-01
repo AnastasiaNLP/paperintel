@@ -25,7 +25,7 @@ The test is skipped unless `PAPERINTEL_RUN_LIVE_CA_SMOKE=1` is set.
 Start local services:
 
 ```bash
-docker compose up -d postgres qdrant
+docker compose up -d postgres qdrant minio
 ```
 
 Required environment variables, usually loaded from `.env`:
@@ -149,6 +149,71 @@ LIVE_PDF_MCP_OUTPUT_CHARS=<n>
 LIVE_PDF_MCP_WORKSPACE_IDS=local-mcp-1706
 LIVE_PDF_QDRANT_CLEANUP=success
 LIVE_PDF_POSTGRES_CLEANUP=success
+1 passed
+```
+
+
+## Blob Storage Live Smoke
+
+`tests/live/test_blob_live_smoke.py` verifies durable PDF object storage on the
+real stack through the default application factory:
+
+- REST multipart upload persists one PDF through the configured MinIO backend.
+- MCP local path analysis uploads the same PDF from a second session.
+- Content-hash deduplication keeps one S3 object and one `blob_artifacts` row.
+- Postgres stores two session references and two paper-workspace references.
+- `/health` reports `blob_store=ok`.
+- Cleanup removes the temporary Qdrant collection, MinIO bucket, and Postgres
+  foundation rows.
+
+The test is skipped unless `PAPERINTEL_RUN_LIVE_BLOB_SMOKE=1` is set. It also
+requires the standard database, Qdrant, and provider variables plus:
+
+```text
+PAPERINTEL_MINIO_TEST_URL
+PAPERINTEL_MINIO_TEST_ACCESS_KEY_ID
+PAPERINTEL_MINIO_TEST_SECRET_ACCESS_KEY
+```
+
+Required local PDF:
+
+```text
+~/Desktop/pdfs/1706.03762.pdf
+```
+
+### Run Without LangSmith Trace
+
+```bash
+PAPERINTEL_RUN_LIVE_BLOB_SMOKE=1 \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+.venv/bin/python -m dotenv run -- \
+.venv/bin/python -m pytest -s tests/live/test_blob_live_smoke.py
+```
+
+### Run With LangSmith Trace
+
+```bash
+PAPERINTEL_RUN_LIVE_BLOB_SMOKE=1 \
+PAPERINTEL_LIVE_TRACE=1 \
+LANGCHAIN_TRACING_V2=true \
+LANGSMITH_TRACING=true \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+.venv/bin/python -m dotenv run -- \
+.venv/bin/python -m pytest -s tests/live/test_blob_live_smoke.py
+```
+
+### Expected Success Markers
+
+```text
+LIVE_BLOB_RUN_ID=<run_id>
+LIVE_BLOB_REST_STATUS=200
+LIVE_BLOB_ARTIFACT_COUNT=1
+LIVE_BLOB_REFERENCE_COUNT=4
+LIVE_BLOB_OBJECT_COUNT=1
+LIVE_BLOB_HEALTH_STORE=ok
+LIVE_BLOB_QDRANT_CLEANUP=success
+LIVE_BLOB_MINIO_CLEANUP=success
+LIVE_BLOB_POSTGRES_CLEANUP=success
 1 passed
 ```
 

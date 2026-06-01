@@ -77,9 +77,11 @@ Common failures:
   validation. For MCP, verify the path is absolute, exists on the MCP
   server machine, is a file, is under 50 MB, and starts with `%PDF-`.
 
-PDF bytes are temporary. PaperIntel deletes REST upload temp files after
-analysis and persists only workspaces, chunks, and artifacts. Async PDF
-upload jobs are deferred until shared PDF/object storage exists.
+REST upload temp files are temporary and deleted after analysis. PDF content
+is persisted to configured S3-compatible blob storage with content-hash
+deduplication. Async PDF jobs remain deferred until a dedicated workflow job
+kind is implemented. For MinIO setup and retention notes, see
+[BLOB_STORAGE.md](BLOB_STORAGE.md).
 
 ## Analyze selected papers returns no active papers
 
