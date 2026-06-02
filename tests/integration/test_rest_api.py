@@ -1,7 +1,9 @@
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 
 from api.in_memory_session_store import SessionNotFoundError
 from api.rest.app import create_rest_app
@@ -10,7 +12,16 @@ from models.api import HealthStatus
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SearchCandidate
 from models.jobs import WorkflowJob
-from models.session import HandlerResult, Session, Turn
+from models.pdf_upload_errors import (
+    PdfUploadChecksumMismatchError,
+    PdfUploadExpiredError,
+    PdfUploadInvalidContentError,
+    PdfUploadNotFoundError,
+    PdfUploadSizeMismatchError,
+    PdfUploadStateError,
+)
+from models.pdf_uploads import PdfUpload, PdfUploadInitiation
+from models.session import HandlerResult, Session, Turn, utc_now
 from models.synthesis import (
     SynthesisAgentResult,
     SynthesisCitation,
@@ -26,6 +37,11 @@ from services.paperintel_service import (
     PaperWorkspaceNotFoundError,
     PaperWorkspaceNotReadyError,
     WorkflowJobNotFoundError,
+)
+from services.blob_store import (
+    BlobNotFoundError,
+    BlobSizeLimitError,
+    BlobStoreUnavailableError,
 )
 from services.selected_candidate_resolver import (
     NoSelectedCandidatesError,
@@ -64,6 +80,10 @@ class FakeService:
         self.compare_calls = []
         self.enqueue_analyze_paper_calls = []
         self.enqueue_analyze_selected_calls = []
+        self.initiate_pdf_upload_calls = []
+        self.finalize_pdf_upload_calls = []
+        self.store_pdf_upload_calls = []
+        self.enqueue_analyze_pdf_blob_calls = []
         self.workflow_job_list_calls = []
         self.workflow_job_cancel_calls = []
         self.jobs = [
@@ -211,6 +231,121 @@ class FakeService:
             input_json={},
         )
 
+    def initiate_pdf_upload(
+        self,
+        session_id,
+        *,
+        expected_sha256,
+        size_bytes,
+        content_type="application/pdf",
+        expires_seconds=900,
+    ):
+        self.get_session(session_id)
+        self.initiate_pdf_upload_calls.append(
+            {
+                "session_id": session_id,
+                "expected_sha256": expected_sha256,
+                "size_bytes": size_bytes,
+                "content_type": content_type,
+                "expires_seconds": expires_seconds,
+            }
+        )
+        upload = self._pdf_upload(
+            session_id=session_id,
+            expected_sha256=expected_sha256,
+            size_bytes=size_bytes,
+        )
+        return PdfUploadInitiation(
+            upload=upload,
+            upload_url="https://blob.example.test/presigned-upload",
+            upload_headers={"Content-Type": content_type},
+        )
+
+    def finalize_pdf_upload(self, session_id, upload_id):
+        self.get_session(session_id)
+        self.finalize_pdf_upload_calls.append((session_id, upload_id))
+        return self._pdf_upload(
+            session_id=session_id,
+            upload_id=upload_id,
+            status="finalized",
+            blob_id="blob-1",
+            expected_sha256="a" * 64,
+            actual_sha256="a" * 64,
+            size_bytes=128,
+        )
+
+    def store_pdf_upload(self, session_id, content):
+        self.get_session(session_id)
+        self.store_pdf_upload_calls.append((session_id, content))
+        return self._pdf_upload(
+            session_id=session_id,
+            upload_id="upload-stored",
+            status="finalized",
+            blob_id="blob-stored",
+            expected_sha256="a" * 64,
+            actual_sha256="a" * 64,
+            size_bytes=len(content),
+        )
+
+    def enqueue_analyze_pdf_blob(
+        self,
+        session_id,
+        upload_id,
+        *,
+        paper_id=None,
+        skip_arxiv_metadata_fetch=False,
+        pipeline_version="v1",
+    ):
+        self.get_session(session_id)
+        self.enqueue_analyze_pdf_blob_calls.append(
+            {
+                "session_id": session_id,
+                "upload_id": upload_id,
+                "paper_id": paper_id.strip() if paper_id else None,
+                "skip_arxiv_metadata_fetch": skip_arxiv_metadata_fetch,
+                "pipeline_version": pipeline_version.strip(),
+            }
+        )
+        return WorkflowJob(
+            id=f"job-{upload_id}",
+            session_id=session_id,
+            kind="analyze_pdf_blob",
+            status="queued",
+            input_json={
+                "blob_id": "blob-1",
+                "upload_id": upload_id,
+                "paper_id": paper_id.strip() if paper_id else None,
+                "skip_arxiv_metadata_fetch": skip_arxiv_metadata_fetch,
+                "pipeline_version": pipeline_version.strip(),
+            },
+            pipeline_version=pipeline_version.strip(),
+        )
+
+    @staticmethod
+    def _pdf_upload(
+        *,
+        session_id,
+        upload_id="upload-1",
+        status="initiated",
+        blob_id=None,
+        expected_sha256=None,
+        actual_sha256=None,
+        size_bytes=None,
+    ):
+        finalized_at = utc_now() if status in {"finalized", "enqueued"} else None
+        return PdfUpload(
+            id=upload_id,
+            session_id=session_id,
+            blob_id=blob_id,
+            object_key=f"uploads/{session_id}/{upload_id}.pdf",
+            expected_sha256=expected_sha256,
+            actual_sha256=actual_sha256,
+            size_bytes=size_bytes,
+            status=status,
+            finalized_at=finalized_at,
+            expires_at=utc_now() + timedelta(minutes=15),
+        )
+
     def get_workflow_job(self, job_id):
         for job in self.jobs:
             if job.id == job_id:
@@ -299,6 +434,15 @@ class FakeService:
 class InvalidPdfService(FakeService):
     def analyze_pdf(self, session_id, pdf_path, **kwargs):
         raise InvalidPdfInputError("bad pdf")
+
+
+class PdfUploadErrorService(FakeService):
+    def __init__(self, error) -> None:
+        super().__init__()
+        self.error = error
+
+    def finalize_pdf_upload(self, session_id, upload_id):
+        raise self.error
 
 
 class ExplodingService(FakeService):
@@ -619,6 +763,261 @@ def test_workflow_job_get_missing_maps_404():
 
     assert response.status_code == 404
     assert response.json()["error"] == "workflow_job_not_found"
+
+
+def test_initiate_pdf_upload_returns_presigned_contract():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/pdf-uploads",
+        json={
+            "expected_sha256": "a" * 64,
+            "size_bytes": 128,
+            "content_type": "application/pdf",
+            "expires_seconds": 600,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["upload"]["id"] == "upload-1"
+    assert response.json()["upload_url"] == "https://blob.example.test/presigned-upload"
+    assert response.json()["upload_headers"] == {"Content-Type": "application/pdf"}
+    assert service.initiate_pdf_upload_calls == [
+        {
+            "session_id": "session-1",
+            "expected_sha256": "a" * 64,
+            "size_bytes": 128,
+            "content_type": "application/pdf",
+            "expires_seconds": 600,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"expected_sha256": "not-a-digest", "size_bytes": 128},
+        {"expected_sha256": "a" * 64, "size_bytes": 50 * 1024 * 1024 + 1},
+        {"expected_sha256": "a" * 64, "size_bytes": 128, "expires_seconds": 59},
+        {"expected_sha256": "a" * 64, "size_bytes": 128, "expires_seconds": 3601},
+        {"expected_sha256": "a" * 64, "size_bytes": 128, "content_type": "x" * 101},
+    ],
+)
+def test_initiate_pdf_upload_validates_direct_upload_contract(payload):
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/pdf-uploads",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert service.initiate_pdf_upload_calls == []
+
+
+def test_finalize_pdf_upload_returns_durable_upload():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/pdf-uploads/upload-1/finalize",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "finalized"
+    assert response.json()["blob_id"] == "blob-1"
+    assert service.finalize_pdf_upload_calls == [("session-1", "upload-1")]
+
+
+def test_enqueue_pdf_upload_job_returns_202_and_analysis_options():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/pdf-uploads/upload-1/jobs/analyze",
+        json={
+            "paper_id": "  local-paper  ",
+            "skip_arxiv_metadata_fetch": True,
+            "pipeline_version": "  pipeline-v2  ",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["id"] == "job-upload-1"
+    assert response.json()["kind"] == "analyze_pdf_blob"
+    assert response.json()["pipeline_version"] == "pipeline-v2"
+    assert response.json()["next_attempt_at"] is None
+    assert response.json()["cancel_requested_at"] is None
+    assert service.enqueue_analyze_pdf_blob_calls == [
+        {
+            "session_id": "session-1",
+            "upload_id": "upload-1",
+            "paper_id": "local-paper",
+            "skip_arxiv_metadata_fetch": True,
+            "pipeline_version": "pipeline-v2",
+        }
+    ]
+
+
+def test_enqueue_pdf_upload_job_duplicate_returns_same_job():
+    service = FakeService()
+
+    first = _request(
+        service,
+        "POST",
+        "/sessions/session-1/pdf-uploads/upload-1/jobs/analyze",
+    )
+    second = _request(
+        service,
+        "POST",
+        "/sessions/session-1/pdf-uploads/upload-1/jobs/analyze",
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["id"] == second.json()["id"] == "job-upload-1"
+
+
+def test_enqueue_pdf_upload_job_rejects_oversized_analysis_metadata():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/pdf-uploads/upload-1/jobs/analyze",
+        json={"paper_id": "x" * 501, "pipeline_version": "y" * 101},
+    )
+
+    assert response.status_code == 422
+    assert service.enqueue_analyze_pdf_blob_calls == []
+
+
+def test_enqueue_pdf_multipart_stores_upload_and_returns_job_without_sync_analysis():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/jobs/analyze-pdf",
+        files={"file": ("paper.pdf", b"%PDF-1.7\nbody", "application/pdf")},
+        data={
+            "paper_id": "  local-paper  ",
+            "skip_arxiv_metadata_fetch": "true",
+            "pipeline_version": "  pipeline-v2  ",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["id"] == "job-upload-stored"
+    assert service.store_pdf_upload_calls == [("session-1", b"%PDF-1.7\nbody")]
+    assert service.enqueue_analyze_pdf_blob_calls[0] == {
+        "session_id": "session-1",
+        "upload_id": "upload-stored",
+        "paper_id": "local-paper",
+        "skip_arxiv_metadata_fetch": True,
+        "pipeline_version": "pipeline-v2",
+    }
+    assert service.analyze_pdf_calls == []
+
+
+def test_enqueue_pdf_multipart_rejects_non_pdf_content_type():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/jobs/analyze-pdf",
+        files={"file": ("paper.txt", b"%PDF-1.7\nbody", "text/plain")},
+    )
+
+    assert response.status_code == 415
+    assert response.json()["error"] == "unsupported_media_type"
+    assert service.store_pdf_upload_calls == []
+
+
+def test_enqueue_pdf_multipart_rejects_bad_magic_bytes():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/jobs/analyze-pdf",
+        files={"file": ("paper.pdf", b"not pdf", "application/pdf")},
+    )
+
+    assert response.status_code == 415
+    assert response.json()["error"] == "unsupported_media_type"
+    assert service.store_pdf_upload_calls == []
+
+
+def test_enqueue_pdf_multipart_rejects_oversized_file(monkeypatch):
+    monkeypatch.setattr("api.rest.app.MAX_UPLOAD_PDF_BYTES", 4)
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/jobs/analyze-pdf",
+        files={"file": ("paper.pdf", b"%PDF-1.7\nbody", "application/pdf")},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"] == "pdf_too_large"
+    assert service.store_pdf_upload_calls == []
+
+
+def test_enqueue_pdf_multipart_rejects_oversized_analysis_metadata():
+    service = FakeService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/jobs/analyze-pdf",
+        files={"file": ("paper.pdf", b"%PDF-1.7\nbody", "application/pdf")},
+        data={"paper_id": "x" * 501, "pipeline_version": "y" * 101},
+    )
+
+    assert response.status_code == 422
+    assert service.store_pdf_upload_calls == []
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "error_code"),
+    [
+        (PdfUploadNotFoundError("upload-1"), 404, "pdf_upload_not_found"),
+        (PdfUploadExpiredError("upload-1"), 410, "pdf_upload_expired"),
+        (
+            PdfUploadStateError(
+                upload_id="upload-1", status="failed", target_status="finalized"
+            ),
+            409,
+            "pdf_upload_invalid_state",
+        ),
+        (PdfUploadChecksumMismatchError("bad checksum"), 422, "pdf_upload_checksum_mismatch"),
+        (PdfUploadSizeMismatchError("bad size"), 422, "pdf_upload_size_mismatch"),
+        (PdfUploadInvalidContentError("bad pdf"), 415, "unsupported_media_type"),
+        (BlobStoreUnavailableError("blob down"), 503, "blob_store_unavailable"),
+        (BlobNotFoundError("staging object missing"), 404, "blob_not_found"),
+        (BlobSizeLimitError("staging object too large"), 422, "pdf_upload_size_mismatch"),
+    ],
+)
+def test_pdf_upload_domain_errors_map_to_stable_http_contract(
+    error, status_code, error_code
+):
+    response = _request(
+        PdfUploadErrorService(error),
+        "POST",
+        "/sessions/session-1/pdf-uploads/upload-1/finalize",
+    )
+
+    assert response.status_code == status_code
+    assert response.json()["error"] == error_code
 
 
 def test_health_returns_service_health():

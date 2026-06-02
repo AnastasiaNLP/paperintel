@@ -13,13 +13,17 @@ from api.rest.schemas import (
     ComparisonArtifactResponse,
     CreateSessionRequest,
     DiscoverRequest,
+    EnqueuePdfUploadRequest,
     EnqueueAnalyzePaperRequest,
     ErrorResponse,
     HealthResponse,
+    InitiatePdfUploadRequest,
     MessageResponse,
     PaperWorkspaceResponse,
     PaperWorkspacesResponse,
     PaperWorkspaceSummaryResponse,
+    PdfUploadInitiationResponse,
+    PdfUploadResponse,
     SelectPapersRequest,
     SessionResponse,
     SynthesizeRequest,
@@ -27,6 +31,19 @@ from api.rest.schemas import (
     TurnResponse,
     WorkflowJobResponse,
     WorkflowJobsResponse,
+)
+from models.pdf_upload_errors import (
+    PdfUploadChecksumMismatchError,
+    PdfUploadExpiredError,
+    PdfUploadInvalidContentError,
+    PdfUploadNotFoundError,
+    PdfUploadSizeMismatchError,
+    PdfUploadStateError,
+)
+from services.blob_store import (
+    BlobNotFoundError,
+    BlobSizeLimitError,
+    BlobStoreUnavailableError,
 )
 from services.paperintel_service import (
     ComparisonNotFoundError,
@@ -128,6 +145,42 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     async def invalid_workflow_job_transition_handler(request, exc):  # noqa: ANN001
         error = ErrorResponse(error="invalid_workflow_job_transition", detail=str(exc))
         return JSONResponse(status_code=409, content=error.model_dump(mode="json"))
+
+    @app.exception_handler(PdfUploadNotFoundError)
+    async def pdf_upload_not_found_handler(request, exc):  # noqa: ANN001
+        return _pdf_upload_error(404, "pdf_upload_not_found", str(exc))
+
+    @app.exception_handler(PdfUploadExpiredError)
+    async def pdf_upload_expired_handler(request, exc):  # noqa: ANN001
+        return _pdf_upload_error(410, "pdf_upload_expired", str(exc))
+
+    @app.exception_handler(PdfUploadStateError)
+    async def pdf_upload_state_handler(request, exc):  # noqa: ANN001
+        return _pdf_upload_error(409, "pdf_upload_invalid_state", str(exc))
+
+    @app.exception_handler(PdfUploadChecksumMismatchError)
+    async def pdf_upload_checksum_handler(request, exc):  # noqa: ANN001
+        return _pdf_upload_error(422, "pdf_upload_checksum_mismatch", str(exc))
+
+    @app.exception_handler(PdfUploadSizeMismatchError)
+    async def pdf_upload_size_handler(request, exc):  # noqa: ANN001
+        return _pdf_upload_error(422, "pdf_upload_size_mismatch", str(exc))
+
+    @app.exception_handler(PdfUploadInvalidContentError)
+    async def pdf_upload_content_handler(request, exc):  # noqa: ANN001
+        return _pdf_upload_error(415, "unsupported_media_type", str(exc))
+
+    @app.exception_handler(BlobStoreUnavailableError)
+    async def blob_store_unavailable_handler(request, exc):  # noqa: ANN001
+        return _pdf_upload_error(503, "blob_store_unavailable", str(exc))
+
+    @app.exception_handler(BlobNotFoundError)
+    async def blob_not_found_handler(request, exc):  # noqa: ANN001
+        return _pdf_upload_error(404, "blob_not_found", str(exc))
+
+    @app.exception_handler(BlobSizeLimitError)
+    async def blob_size_limit_handler(request, exc):  # noqa: ANN001
+        return _pdf_upload_error(422, "pdf_upload_size_mismatch", str(exc))
 
     @app.exception_handler(Exception)
     async def internal_error_handler(request, exc):  # noqa: ANN001
@@ -267,6 +320,91 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
         finally:
             if temp_path is not None:
                 Path(temp_path).unlink(missing_ok=True)
+
+    @app.post(
+        "/sessions/{session_id}/pdf-uploads",
+        response_model=PdfUploadInitiationResponse,
+        status_code=201,
+    )
+    async def initiate_pdf_upload(session_id: str, payload: InitiatePdfUploadRequest):
+        initiation = service.initiate_pdf_upload(
+            session_id,
+            expected_sha256=payload.expected_sha256,
+            size_bytes=payload.size_bytes,
+            content_type=payload.content_type,
+            expires_seconds=payload.expires_seconds,
+        )
+        return PdfUploadInitiationResponse.from_initiation(initiation)
+
+    @app.post(
+        "/sessions/{session_id}/pdf-uploads/{upload_id}/finalize",
+        response_model=PdfUploadResponse,
+    )
+    async def finalize_pdf_upload(session_id: str, upload_id: str):
+        upload = service.finalize_pdf_upload(session_id, upload_id)
+        return PdfUploadResponse.from_upload(upload)
+
+    @app.post(
+        "/sessions/{session_id}/pdf-uploads/{upload_id}/jobs/analyze",
+        response_model=WorkflowJobResponse,
+        status_code=202,
+    )
+    async def enqueue_pdf_upload_job(
+        session_id: str,
+        upload_id: str,
+        payload: EnqueuePdfUploadRequest | None = None,
+    ):
+        payload = payload or EnqueuePdfUploadRequest()
+        job = service.enqueue_analyze_pdf_blob(
+            session_id,
+            upload_id,
+            paper_id=payload.paper_id,
+            skip_arxiv_metadata_fetch=payload.skip_arxiv_metadata_fetch,
+            pipeline_version=payload.pipeline_version,
+        )
+        return WorkflowJobResponse.from_job(job)
+
+    @app.post(
+        "/sessions/{session_id}/jobs/analyze-pdf",
+        response_model=WorkflowJobResponse,
+        status_code=202,
+    )
+    async def enqueue_pdf_upload(
+        session_id: str,
+        file: UploadFile = File(...),
+        paper_id: str | None = Form(default=None, max_length=500),
+        skip_arxiv_metadata_fetch: bool = Form(default=False),
+        pipeline_version: str = Form(default="v1", min_length=1, max_length=100),
+    ):
+        content_type = (file.content_type or "").lower()
+        if content_type and content_type != "application/pdf":
+            return _pdf_upload_error(
+                415,
+                "unsupported_media_type",
+                "PDF upload must use content type application/pdf.",
+            )
+        data = await file.read(MAX_UPLOAD_PDF_BYTES + 1)
+        if len(data) > MAX_UPLOAD_PDF_BYTES:
+            return _pdf_upload_error(
+                413,
+                "pdf_too_large",
+                f"PDF upload exceeds {MAX_UPLOAD_PDF_BYTES} bytes.",
+            )
+        if not data.startswith(b"%PDF-"):
+            return _pdf_upload_error(
+                415,
+                "unsupported_media_type",
+                "PDF upload must start with %PDF- magic bytes.",
+            )
+        upload = service.store_pdf_upload(session_id, data)
+        job = service.enqueue_analyze_pdf_blob(
+            session_id,
+            upload.id,
+            paper_id=paper_id,
+            skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+            pipeline_version=pipeline_version,
+        )
+        return WorkflowJobResponse.from_job(job)
 
     @app.post("/sessions/{session_id}/analyze", response_model=MessageResponse)
     async def analyze_paper(session_id: str, payload: AnalyzeRequest):

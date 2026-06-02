@@ -1,13 +1,17 @@
+import asyncio
+import hashlib
 import os
 from pathlib import Path
 
 import boto3
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
 from moto import mock_aws
 from sqlalchemy import func, select
 
+from api.rest.app import create_rest_app
 from models.artifacts import PaperWorkspace
 from models.session import HandlerResult
 from services.blob_store import S3BlobStore
@@ -32,6 +36,21 @@ PDF_BYTES = b"%PDF-1.7\npaperintel durable ingestion\n"
 
 def _database_url() -> str | None:
     return os.environ.get("PAPERINTEL_TEST_DATABASE_URL")
+
+
+def _request(service, method: str, path: str, **kwargs):
+    async def run():
+        transport = httpx.ASGITransport(
+            app=create_rest_app(service=service),
+            raise_app_exceptions=False,
+        )
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    return asyncio.run(run())
 
 
 @pytest.fixture()
@@ -250,3 +269,74 @@ def test_pdf_blob_worker_analyzes_finalized_upload_without_second_upload(stack):
     assert references[1].released_at is not None
     assert len(handler.materialized_paths) == 1
     assert not Path(handler.materialized_paths[0]).exists()
+
+
+@mock_aws
+def test_rest_pdf_upload_lifecycle_enqueues_and_worker_analyzes_blob(stack):
+    session_store, workspace_repository, blob_repository, session_factory = stack
+    client = boto3.client("s3", region_name="us-east-1")
+    blob_store = S3BlobStore(client=client, bucket_name=BUCKET)
+    upload_repository = PostgresPdfUploadRepository(session_factory)
+    job_repository = PostgresWorkflowJobRepository(session_factory)
+    handler = PersistingPdfHandler(
+        session_store=session_store, workspace_repository=workspace_repository
+    )
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=workspace_repository,
+        workflow_job_repository=job_repository,
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
+        pdf_upload_repository=upload_repository,
+    )
+    session = service.create_session()
+
+    initiated = _request(
+        service,
+        "POST",
+        f"/sessions/{session.id}/pdf-uploads",
+        json={
+            "expected_sha256": hashlib.sha256(PDF_BYTES).hexdigest(),
+            "size_bytes": len(PDF_BYTES),
+        },
+    )
+
+    assert initiated.status_code == 201
+    upload = initiated.json()["upload"]
+    assert initiated.json()["upload_headers"] == {"Content-Type": "application/pdf"}
+    assert initiated.json()["upload_url"]
+    client.put_object(
+        Bucket=BUCKET,
+        Key=upload["object_key"],
+        Body=PDF_BYTES,
+        ContentType="application/pdf",
+    )
+
+    finalized = _request(
+        service,
+        "POST",
+        f"/sessions/{session.id}/pdf-uploads/{upload['id']}/finalize",
+    )
+    enqueued = _request(
+        service,
+        "POST",
+        f"/sessions/{session.id}/pdf-uploads/{upload['id']}/jobs/analyze",
+        json={"paper_id": "rest-upload-paper", "pipeline_version": "pipeline-rest"},
+    )
+    result = WorkflowWorker(
+        repository=job_repository,
+        executor=WorkflowJobExecutor(service),
+        worker_id="worker-rest",
+        kinds=["analyze_pdf_blob"],
+    ).run_once()
+
+    assert finalized.status_code == 200
+    assert finalized.json()["status"] == "finalized"
+    assert enqueued.status_code == 202
+    assert enqueued.json()["kind"] == "analyze_pdf_blob"
+    assert result is not None
+    assert result.status == "succeeded"
+    assert (
+        workspace_repository.get_workspace(session.id, "rest-upload-paper").pipeline_version
+        == "pipeline-rest"
+    )

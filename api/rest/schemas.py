@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, HttpUrl
 from models.api import HealthStatus
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.jobs import WorkflowJob
+from models.pdf_uploads import PdfUpload, PdfUploadInitiation
 from models.session import HandlerResult, Persona, Session, Turn
 from models.synthesis import SynthesisAgentResult
 
@@ -20,6 +21,19 @@ class AnalyzeRequest(BaseModel):
 
 class EnqueueAnalyzePaperRequest(BaseModel):
     paper_url: HttpUrl
+
+
+class InitiatePdfUploadRequest(BaseModel):
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(gt=0, le=50 * 1024 * 1024)
+    content_type: str = Field(default="application/pdf", min_length=1, max_length=100)
+    expires_seconds: int = Field(default=900, ge=60, le=3600)
+
+
+class EnqueuePdfUploadRequest(BaseModel):
+    paper_id: str | None = Field(default=None, max_length=500)
+    skip_arxiv_metadata_fetch: bool = False
+    pipeline_version: str = Field(default="v1", min_length=1, max_length=100)
 
 
 class AskRequest(BaseModel):
@@ -247,8 +261,13 @@ class WorkflowJobResponse(BaseModel):
     error_json: dict | None = None
     attempts: int
     max_attempts: int
+    pipeline_version: str
+    next_attempt_at: datetime | None = None
     locked_by: str | None = None
     locked_at: datetime | None = None
+    lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     created_at: datetime
@@ -261,6 +280,43 @@ class WorkflowJobResponse(BaseModel):
 
 class WorkflowJobsResponse(BaseModel):
     jobs: list[WorkflowJobResponse]
+
+
+class PdfUploadResponse(BaseModel):
+    id: str
+    session_id: str
+    blob_id: str | None = None
+    object_key: str
+    expected_sha256: str | None = None
+    actual_sha256: str | None = None
+    size_bytes: int | None = None
+    content_type: str
+    status: str
+    expires_at: datetime
+    finalized_at: datetime | None = None
+    error_json: dict | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_upload(cls, upload: PdfUpload) -> "PdfUploadResponse":
+        return cls(**upload.model_dump(mode="json"))
+
+
+class PdfUploadInitiationResponse(BaseModel):
+    upload: PdfUploadResponse
+    upload_url: str
+    upload_headers: dict[str, str] = Field(default_factory=dict)
+
+    @classmethod
+    def from_initiation(
+        cls, initiation: PdfUploadInitiation
+    ) -> "PdfUploadInitiationResponse":
+        return cls(
+            upload=PdfUploadResponse.from_upload(initiation.upload),
+            upload_url=initiation.upload_url,
+            upload_headers=initiation.upload_headers,
+        )
 
 
 class HealthResponse(BaseModel):
