@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import contextmanager
+from threading import Event, Thread
 from typing import Protocol
 
+import httpx
+
+from agents.cancellation import WorkflowCancellationRequested
 from models.jobs import JobKind, WorkflowJob
 from models.pdf_upload_errors import PdfUploadStateError
 from models.registered_pdf_errors import (
@@ -11,10 +16,19 @@ from models.registered_pdf_errors import (
     RegisteredPdfBlobNotFoundError,
 )
 from models.session import HandlerResult
-from services.blob_store import BlobIntegrityError, BlobNotFoundError, BlobSizeLimitError
+from services.blob_store import (
+    BlobIntegrityError,
+    BlobNotFoundError,
+    BlobSizeLimitError,
+    BlobStoreUnavailableError,
+)
 from services.paperintel_service import PaperIntelService
+from services.qdrant_store import QdrantDependencyError
+from storage.repositories import WorkflowJobLeaseLostError
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_LEASE_SECONDS = 90
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
 SUPPORTED_JOB_KINDS: set[JobKind] = {
     "analyze_paper",
     "analyze_selected",
@@ -23,18 +37,42 @@ SUPPORTED_JOB_KINDS: set[JobKind] = {
 
 
 class WorkflowJobRepository(Protocol):
+    def get(self, job_id: str) -> WorkflowJob | None:
+        ...
+
     def claim_next(
         self,
         *,
         worker_id: str,
         kinds: list[JobKind] | None = None,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
     ) -> WorkflowJob | None:
         ...
 
-    def mark_succeeded(self, job_id: str, *, result_json: dict) -> WorkflowJob:
+    def mark_succeeded(
+        self, job_id: str, *, worker_id: str, result_json: dict
+    ) -> WorkflowJob:
         ...
 
-    def mark_failed(self, job_id: str, *, error_json: dict) -> WorkflowJob:
+    def record_failure(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        error_json: dict,
+        retryable: bool,
+    ) -> WorkflowJob:
+        ...
+
+    def heartbeat(
+        self, job_id: str, *, worker_id: str, lease_seconds: int
+    ) -> WorkflowJob:
+        ...
+
+    def is_cancel_requested(self, job_id: str, *, worker_id: str) -> bool:
+        ...
+
+    def complete_canceled(self, job_id: str, *, worker_id: str) -> WorkflowJob:
         ...
 
 
@@ -52,13 +90,15 @@ class WorkflowJobExecutor:
     def __init__(self, service: PaperIntelService) -> None:
         self.service = service
 
-    def execute(self, job: WorkflowJob) -> dict:
+    def execute(self, job: WorkflowJob, *, cancellation_callback=None) -> dict:
         if job.kind == "analyze_paper":
             return self._execute_analyze_paper(job)
         if job.kind == "analyze_selected":
             return self._execute_analyze_selected(job)
         if job.kind == "analyze_pdf_blob":
-            return self._execute_analyze_pdf_blob(job)
+            return self._execute_analyze_pdf_blob(
+                job, cancellation_callback=cancellation_callback
+            )
         raise UnsupportedWorkflowJobKindError(job.kind)
 
     def _execute_analyze_paper(self, job: WorkflowJob) -> dict:
@@ -74,7 +114,7 @@ class WorkflowJobExecutor:
         result = self.service.analyze_selected_papers(job.session_id)
         return serialize_handler_result(result)
 
-    def _execute_analyze_pdf_blob(self, job: WorkflowJob) -> dict:
+    def _execute_analyze_pdf_blob(self, job: WorkflowJob, *, cancellation_callback=None) -> dict:
         blob_id = job.input_json.get("blob_id")
         upload_id = job.input_json.get("upload_id")
         paper_id = job.input_json.get("paper_id")
@@ -113,6 +153,7 @@ class WorkflowJobExecutor:
             paper_id=paper_id.strip() if paper_id is not None else None,
             skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
             pipeline_version=job.pipeline_version,
+            cancellation_callback=cancellation_callback,
         )
         return serialize_handler_result(result)
 
@@ -126,17 +167,33 @@ class WorkflowWorker:
         worker_id: str,
         poll_interval: float = 2.0,
         kinds: list[JobKind] | None = None,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
+        heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     ) -> None:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive.")
+        if heartbeat_interval_seconds <= 0:
+            raise ValueError("heartbeat_interval_seconds must be positive.")
+        if heartbeat_interval_seconds >= lease_seconds:
+            raise ValueError("heartbeat_interval_seconds must be less than lease_seconds.")
         self.repository = repository
         self.executor = executor
         self.worker_id = worker_id
         self.poll_interval = poll_interval
         self.kinds = kinds
+        self.lease_seconds = lease_seconds
+        self.heartbeat_interval_seconds = heartbeat_interval_seconds
 
     def run_once(self) -> WorkflowJob | None:
-        job = self.repository.claim_next(worker_id=self.worker_id, kinds=self.kinds)
+        job = self.repository.claim_next(
+            worker_id=self.worker_id,
+            kinds=self.kinds,
+            lease_seconds=self.lease_seconds,
+        )
         if job is None:
             return None
+        if job.status != "running":
+            return job
 
         LOGGER.info(
             "Workflow job claimed: id=%s kind=%s worker_id=%s",
@@ -144,13 +201,48 @@ class WorkflowWorker:
             job.kind,
             self.worker_id,
         )
+        cancellation_callback = lambda: self._raise_if_canceled(job.id)
         try:
-            result_json = self.executor.execute(job)
-        except Exception as exc:
-            failed = self.repository.mark_failed(
+            cancellation_callback()
+            with _heartbeat_runner(
+                repository=self.repository,
+                job_id=job.id,
+                worker_id=self.worker_id,
+                lease_seconds=self.lease_seconds,
+                interval_seconds=self.heartbeat_interval_seconds,
+            ) as heartbeat_errors:
+                result_json = self.executor.execute(
+                    job, cancellation_callback=cancellation_callback
+                )
+                cancellation_callback()
+                if heartbeat_errors:
+                    raise heartbeat_errors[0]
+        except WorkflowJobCanceledError:
+            try:
+                canceled = self.repository.complete_canceled(
+                    job.id, worker_id=self.worker_id
+                )
+            except WorkflowJobLeaseLostError as exc:
+                return self._load_after_lease_loss(job, exc)
+            LOGGER.info(
+                "Workflow job canceled: id=%s kind=%s worker_id=%s",
                 job.id,
-                error_json=serialize_exception(exc, job=job),
+                job.kind,
+                self.worker_id,
             )
+            return canceled
+        except WorkflowJobLeaseLostError as exc:
+            return self._load_after_lease_loss(job, exc)
+        except Exception as exc:
+            try:
+                failed = self.repository.record_failure(
+                    job.id,
+                    worker_id=self.worker_id,
+                    error_json=serialize_exception(exc, job=job),
+                    retryable=is_retryable_failure(exc),
+                )
+            except WorkflowJobLeaseLostError as lease_exc:
+                return self._load_after_lease_loss(job, lease_exc)
             LOGGER.exception(
                 "Workflow job failed: id=%s kind=%s worker_id=%s",
                 job.id,
@@ -159,7 +251,20 @@ class WorkflowWorker:
             )
             return failed
 
-        succeeded = self.repository.mark_succeeded(job.id, result_json=result_json)
+        try:
+            succeeded = self.repository.mark_succeeded(
+                job.id, worker_id=self.worker_id, result_json=result_json
+            )
+        except WorkflowJobLeaseLostError as exc:
+            return self._load_after_lease_loss(job, exc)
+        if succeeded.status == "canceled":
+            LOGGER.info(
+                "Workflow job canceled before success commit: id=%s kind=%s worker_id=%s",
+                job.id,
+                job.kind,
+                self.worker_id,
+            )
+            return succeeded
         LOGGER.info(
             "Workflow job succeeded: id=%s kind=%s worker_id=%s",
             job.id,
@@ -182,6 +287,59 @@ class WorkflowWorker:
             job = self.run_once()
             if job is None:
                 time.sleep(self.poll_interval)
+
+    def _raise_if_canceled(self, job_id: str) -> None:
+        if self.repository.is_cancel_requested(job_id, worker_id=self.worker_id):
+            raise WorkflowJobCanceledError(job_id)
+
+    def _load_after_lease_loss(
+        self, job: WorkflowJob, exc: WorkflowJobLeaseLostError
+    ) -> WorkflowJob | None:
+        LOGGER.warning(
+            "Workflow job lease lost: id=%s kind=%s worker_id=%s error=%s",
+            job.id,
+            job.kind,
+            self.worker_id,
+            exc,
+        )
+        return self.repository.get(job.id)
+
+
+class WorkflowJobCanceledError(WorkflowCancellationRequested):
+    def __init__(self, job_id: str) -> None:
+        super().__init__(f"Workflow job cancellation requested: {job_id}")
+        self.job_id = job_id
+
+
+@contextmanager
+def _heartbeat_runner(
+    *,
+    repository: WorkflowJobRepository,
+    job_id: str,
+    worker_id: str,
+    lease_seconds: int,
+    interval_seconds: float,
+):
+    stop = Event()
+    errors: list[Exception] = []
+
+    def heartbeat_loop() -> None:
+        while not stop.wait(interval_seconds):
+            try:
+                repository.heartbeat(
+                    job_id, worker_id=worker_id, lease_seconds=lease_seconds
+                )
+            except Exception as exc:
+                errors.append(exc)
+                return
+
+    thread = Thread(target=heartbeat_loop, daemon=True)
+    thread.start()
+    try:
+        yield errors
+    finally:
+        stop.set()
+        thread.join()
 
 
 def serialize_handler_result(result: HandlerResult) -> dict:
@@ -226,3 +384,14 @@ def serialize_exception(exc: Exception, *, job: WorkflowJob) -> dict:
         "job_id": job.id,
         "session_id": job.session_id,
     }
+
+
+def is_retryable_failure(exc: Exception) -> bool:
+    if isinstance(exc, (BlobStoreUnavailableError, httpx.TimeoutException, httpx.TransportError)):
+        return True
+    if isinstance(exc, QdrantDependencyError):
+        return True
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and exc.response.status_code in {429, 500, 502, 503, 504}
+    )

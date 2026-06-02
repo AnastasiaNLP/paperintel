@@ -530,6 +530,7 @@ class PaperIntelService:
         skip_arxiv_metadata_fetch: bool = False,
         pipeline_version: str = "v1",
         user_content: str | None = None,
+        cancellation_callback=None,
     ) -> HandlerResult:
         self.handler.store.require_session(session_id)
         blob_store, artifact_repository = self._blob_dependencies()
@@ -568,6 +569,7 @@ class PaperIntelService:
                 paper_id=paper_id,
                 skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
                 pipeline_version=pipeline_version,
+                cancellation_callback=cancellation_callback,
             )
         workspace = self._resolve_pdf_workspace(
             session_id, paper_id=paper_id, before_workspace_ids=before_workspace_ids
@@ -680,16 +682,19 @@ class PaperIntelService:
         paper_id: str | None,
         skip_arxiv_metadata_fetch: bool,
         pipeline_version: str = "v1",
+        cancellation_callback=None,
     ) -> HandlerResult:
-        return self.handler.analyze_paper_input(
-            session_id,
-            input_type="pdf",
-            input_value=pdf_path,
-            user_content=user_content,
-            expected_paper_id=paper_id,
-            skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
-            pipeline_version=pipeline_version,
-        )
+        kwargs = {
+            "input_type": "pdf",
+            "input_value": pdf_path,
+            "user_content": user_content,
+            "expected_paper_id": paper_id,
+            "skip_arxiv_metadata_fetch": skip_arxiv_metadata_fetch,
+            "pipeline_version": pipeline_version,
+        }
+        if cancellation_callback is not None:
+            kwargs["cancellation_callback"] = cancellation_callback
+        return self.handler.analyze_paper_input(session_id, **kwargs)
 
     def _workspace_ids(self, session_id: str) -> set[str]:
         if self.artifact_repository is None:

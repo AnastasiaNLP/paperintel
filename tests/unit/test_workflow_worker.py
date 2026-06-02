@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import time
 
 import pytest
 
@@ -8,6 +9,8 @@ from models.registered_pdf_errors import (
     RegisteredPdfBlobNotFoundError,
 )
 from models.session import HandlerResult
+from services.blob_store import BlobStoreUnavailableError
+from storage.repositories import WorkflowJobLeaseLostError
 from workers.workflow_worker import (
     UnsupportedWorkflowJobKindError,
     WorkflowJobExecutionError,
@@ -25,9 +28,15 @@ class FakeService:
         self.analyze_registered_pdf_blob_calls = []
         self.registered_pdf_blob_error = None
         self.fail_analyze = False
+        self.analyze_error = None
+        self.analyze_delay_seconds = 0
 
     def analyze_paper(self, session_id, paper_url):
         self.analyze_calls.append((session_id, paper_url))
+        if self.analyze_error is not None:
+            raise self.analyze_error
+        if self.analyze_delay_seconds:
+            time.sleep(self.analyze_delay_seconds)
         if self.fail_analyze:
             raise RuntimeError("analysis down")
         return HandlerResult(
@@ -66,6 +75,7 @@ class FakeService:
         paper_id=None,
         skip_arxiv_metadata_fetch=False,
         pipeline_version="v1",
+        cancellation_callback=None,
     ):
         if self.registered_pdf_blob_error is not None:
             raise self.registered_pdf_blob_error
@@ -94,11 +104,21 @@ class FakeRepository:
     jobs: list[WorkflowJob] = field(default_factory=list)
     succeeded: list[tuple[str, dict]] = field(default_factory=list)
     failed: list[tuple[str, dict]] = field(default_factory=list)
+    retries: list[tuple[str, dict]] = field(default_factory=list)
     claim_calls: list[dict] = field(default_factory=list)
+    heartbeat_calls: list[dict] = field(default_factory=list)
     mark_running_calls: list[tuple[str, str]] = field(default_factory=list)
+    cancel_requested: bool = False
+    loaded_job: WorkflowJob | None = None
+    lose_lease_on_success: bool = False
 
-    def claim_next(self, *, worker_id, kinds=None):
-        self.claim_calls.append({"worker_id": worker_id, "kinds": kinds})
+    def get(self, job_id):
+        return self.loaded_job
+
+    def claim_next(self, *, worker_id, kinds=None, lease_seconds=90):
+        self.claim_calls.append(
+            {"worker_id": worker_id, "kinds": kinds, "lease_seconds": lease_seconds}
+        )
         for index, job in enumerate(self.jobs):
             if kinds is None or job.kind in kinds:
                 claimed = self.jobs.pop(index)
@@ -111,7 +131,11 @@ class FakeRepository:
                 )
         return None
 
-    def mark_succeeded(self, job_id, *, result_json):
+    def mark_succeeded(self, job_id, *, worker_id, result_json):
+        if self.lose_lease_on_success:
+            raise WorkflowJobLeaseLostError(
+                job_id=job_id, status="running", target_status="succeeded"
+            )
         self.succeeded.append((job_id, result_json))
         return WorkflowJob(
             id=job_id,
@@ -123,8 +147,9 @@ class FakeRepository:
             attempts=1,
         )
 
-    def mark_failed(self, job_id, *, error_json):
-        self.failed.append((job_id, error_json))
+    def record_failure(self, job_id, *, worker_id, error_json, retryable):
+        target = self.retries if retryable else self.failed
+        target.append((job_id, error_json))
         return WorkflowJob(
             id=job_id,
             session_id="session-1",
@@ -132,6 +157,24 @@ class FakeRepository:
             status="failed",
             input_json={},
             error_json=error_json,
+            attempts=1,
+        )
+
+    def heartbeat(self, job_id, *, worker_id, lease_seconds):
+        self.heartbeat_calls.append(
+            {"job_id": job_id, "worker_id": worker_id, "lease_seconds": lease_seconds}
+        )
+
+    def is_cancel_requested(self, job_id, *, worker_id):
+        return self.cancel_requested
+
+    def complete_canceled(self, job_id, *, worker_id):
+        return WorkflowJob(
+            id=job_id,
+            session_id="session-1",
+            kind="analyze_paper",
+            status="canceled",
+            input_json={},
             attempts=1,
         )
 
@@ -273,7 +316,33 @@ def test_worker_run_once_returns_none_when_idle():
     )
 
     assert worker.run_once() is None
-    assert repository.claim_calls == [{"worker_id": "worker-1", "kinds": None}]
+    assert repository.claim_calls == [
+        {"worker_id": "worker-1", "kinds": None, "lease_seconds": 90}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"lease_seconds": 0}, "lease_seconds must be positive"),
+        (
+            {"heartbeat_interval_seconds": 0},
+            "heartbeat_interval_seconds must be positive",
+        ),
+        (
+            {"lease_seconds": 30, "heartbeat_interval_seconds": 30},
+            "heartbeat_interval_seconds must be less than lease_seconds",
+        ),
+    ],
+)
+def test_worker_rejects_invalid_reliability_configuration(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        WorkflowWorker(
+            repository=FakeRepository(),
+            executor=WorkflowJobExecutor(FakeService()),
+            worker_id="worker-1",
+            **kwargs,
+        )
 
 
 def test_worker_run_once_claims_executes_and_marks_success():
@@ -291,7 +360,7 @@ def test_worker_run_once_claims_executes_and_marks_success():
     assert result is not None
     assert result.status == "succeeded"
     assert repository.claim_calls == [
-        {"worker_id": "worker-1", "kinds": ["analyze_paper"]}
+        {"worker_id": "worker-1", "kinds": ["analyze_paper"], "lease_seconds": 90}
     ]
     assert repository.succeeded[0][1]["response_text"] == "analysis complete"
     assert repository.failed == []
@@ -385,6 +454,85 @@ def test_worker_run_once_records_structured_pdf_blob_failure():
     assert result is not None
     assert result.status == "failed"
     assert repository.failed[0][1]["error"] == "registered_blob_not_authorized"
+
+
+def test_worker_run_once_completes_requested_cancel_before_execution():
+    repository = FakeRepository(jobs=[_job()], cancel_requested=True)
+    service = FakeService()
+
+    result = WorkflowWorker(
+        repository=repository,
+        executor=WorkflowJobExecutor(service),
+        worker_id="worker-1",
+    ).run_once()
+
+    assert result.status == "canceled"
+    assert service.analyze_calls == []
+    assert repository.succeeded == []
+    assert repository.failed == []
+
+
+def test_worker_run_once_records_retryable_blob_store_failure():
+    service = FakeService()
+    service.analyze_error = BlobStoreUnavailableError("blob store down")
+    repository = FakeRepository(jobs=[_job()])
+
+    WorkflowWorker(
+        repository=repository,
+        executor=WorkflowJobExecutor(service),
+        worker_id="worker-1",
+    ).run_once()
+
+    assert repository.retries[0][1]["message"] == "blob store down"
+    assert repository.failed == []
+
+
+def test_worker_run_once_heartbeats_during_execution():
+    service = FakeService()
+    service.analyze_delay_seconds = 0.03
+    repository = FakeRepository(jobs=[_job()])
+
+    WorkflowWorker(
+        repository=repository,
+        executor=WorkflowJobExecutor(service),
+        worker_id="worker-1",
+        heartbeat_interval_seconds=0.005,
+    ).run_once()
+
+    assert repository.heartbeat_calls
+
+
+def test_worker_run_once_returns_current_job_after_stale_success_write():
+    current = WorkflowJob(
+        id="job-1",
+        session_id="session-1",
+        kind="analyze_paper",
+        status="running",
+        input_json={"paper_url": "https://arxiv.org/abs/1706.03762"},
+        locked_by="worker-2",
+        attempts=2,
+    )
+    repository = FakeRepository(
+        jobs=[
+            WorkflowJob(
+                id=current.id,
+                session_id=current.session_id,
+                kind=current.kind,
+                input_json=current.input_json,
+            )
+        ],
+        loaded_job=current,
+        lose_lease_on_success=True,
+    )
+
+    result = WorkflowWorker(
+        repository=repository,
+        executor=WorkflowJobExecutor(FakeService()),
+        worker_id="worker-1",
+    ).run_once()
+
+    assert result == current
+    assert repository.succeeded == []
 
 
 def test_worker_run_until_idle_processes_until_no_jobs():

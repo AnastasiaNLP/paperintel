@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Sequence, get_args
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy.orm import sessionmaker
@@ -509,6 +509,10 @@ class InvalidWorkflowJobTransitionError(ValueError):
         self.target_status = target_status
 
 
+class WorkflowJobLeaseLostError(InvalidWorkflowJobTransitionError):
+    pass
+
+
 class PostgresWorkflowJobRepository:
     def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
         self.session_factory = session_factory
@@ -564,6 +568,11 @@ class PostgresWorkflowJobRepository:
                     pipeline_version=pipeline_version,
                 ),
                 pipeline_version=pipeline_version,
+                max_attempts=3,
+                retry_policy_json={
+                    "base_delay_seconds": 5,
+                    "max_delay_seconds": 300,
+                },
             )
 
             existing = (
@@ -646,11 +655,32 @@ class PostgresWorkflowJobRepository:
         *,
         worker_id: str,
         kinds: list[JobKind] | None = None,
+        lease_seconds: int = 90,
     ) -> WorkflowJob | None:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive.")
         with self.session_factory() as db:
+            now = _utc_now()
             query = (
                 select(WorkflowJobORM)
-                .where(WorkflowJobORM.status == "queued")
+                .where(
+                    or_(
+                        (
+                            (WorkflowJobORM.status == "queued")
+                            & (
+                                (WorkflowJobORM.next_attempt_at.is_(None))
+                                | (WorkflowJobORM.next_attempt_at <= now)
+                            )
+                        ),
+                        (
+                            (WorkflowJobORM.status == "running")
+                            & (
+                                (WorkflowJobORM.lease_expires_at.is_(None))
+                                | (WorkflowJobORM.lease_expires_at <= now)
+                            )
+                        ),
+                    )
+                )
                 .order_by(WorkflowJobORM.created_at.asc())
                 .limit(1)
                 .with_for_update(skip_locked=True)
@@ -662,24 +692,174 @@ class PostgresWorkflowJobRepository:
             if orm is None:
                 return None
 
-            now = _utc_now()
+            reclaimed = orm.status == "running"
             orm.status = "running"
             orm.locked_by = worker_id
             orm.locked_at = now
+            orm.heartbeat_at = now
+            orm.lease_expires_at = now + timedelta(seconds=lease_seconds)
+            orm.next_attempt_at = None
             if orm.started_at is None:
                 orm.started_at = now
             orm.attempts += 1
+            orm.updated_at = now
+            if reclaimed and orm.cancel_requested_at is not None:
+                _finish_workflow_job(
+                    db,
+                    orm,
+                    status="canceled",
+                    now=now,
+                    error_json=_job_canceled_error(),
+                )
+            elif reclaimed and orm.attempts >= orm.max_attempts:
+                _finish_workflow_job(
+                    db,
+                    orm,
+                    status="failed",
+                    now=now,
+                    error_json={
+                        "error": "retry_exhausted",
+                        "message": "Workflow job retry budget exhausted during lease reclaim.",
+                    },
+                )
+            db.commit()
+            db.refresh(orm)
+            return orm_to_workflow_job(orm)
+
+    def heartbeat(
+        self, job_id: str, *, worker_id: str, lease_seconds: int = 90
+    ) -> WorkflowJob:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive.")
+        with self.session_factory() as db:
+            orm = self._require_orm_for_update(db, job_id)
+            now = _utc_now()
+            self._require_active_lease(orm, worker_id=worker_id, now=now)
+            orm.heartbeat_at = now
+            orm.lease_expires_at = now + timedelta(seconds=lease_seconds)
             orm.updated_at = now
             db.commit()
             db.refresh(orm)
             return orm_to_workflow_job(orm)
 
-    def mark_running(self, job_id: str, *, worker_id: str) -> WorkflowJob:
+    def is_cancel_requested(self, job_id: str, *, worker_id: str) -> bool:
         with self.session_factory() as db:
-            orm = self._require_orm(db, job_id)
+            orm = self._require_orm_for_update(db, job_id)
+            now = _utc_now()
+            self._require_active_lease(orm, worker_id=worker_id, now=now)
+            return orm.cancel_requested_at is not None
+
+    def mark_succeeded(
+        self, job_id: str, *, worker_id: str, result_json: dict
+    ) -> WorkflowJob:
+        with self.session_factory() as db:
+            orm = self._require_orm_for_update(db, job_id)
+            now = _utc_now()
+            self._require_active_lease(orm, worker_id=worker_id, now=now)
+            if orm.cancel_requested_at is not None:
+                _finish_workflow_job(
+                    db,
+                    orm,
+                    status="canceled",
+                    now=now,
+                    error_json=_job_canceled_error(),
+                )
+            else:
+                _finish_workflow_job(
+                    db, orm, status="succeeded", now=now, result_json=result_json
+                )
+            db.commit()
+            db.refresh(orm)
+            return orm_to_workflow_job(orm)
+
+    def record_failure(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        error_json: dict,
+        retryable: bool,
+    ) -> WorkflowJob:
+        with self.session_factory() as db:
+            orm = self._require_orm_for_update(db, job_id)
+            now = _utc_now()
+            self._require_active_lease(orm, worker_id=worker_id, now=now)
+            if orm.cancel_requested_at is not None:
+                _finish_workflow_job(
+                    db,
+                    orm,
+                    status="canceled",
+                    now=now,
+                    error_json=_job_canceled_error(),
+                )
+            elif retryable and orm.attempts < orm.max_attempts:
+                orm.status = "queued"
+                orm.error_json = error_json
+                orm.next_attempt_at = now + timedelta(
+                    seconds=_retry_delay_seconds(orm)
+                )
+                _clear_workflow_job_lock(orm)
+                orm.updated_at = now
+            else:
+                _finish_workflow_job(
+                    db, orm, status="failed", now=now, error_json=error_json
+                )
+            db.commit()
+            db.refresh(orm)
+            return orm_to_workflow_job(orm)
+
+    def mark_canceled(self, job_id: str) -> WorkflowJob:
+        with self.session_factory() as db:
+            orm = self._require_orm_for_update(db, job_id)
+            self._require_status(orm, {"queued", "running"}, target_status="canceled")
+            now = _utc_now()
+            if orm.status == "running":
+                orm.cancel_requested_at = orm.cancel_requested_at or now
+                orm.updated_at = now
+            else:
+                _finish_workflow_job(
+                    db,
+                    orm,
+                    status="canceled",
+                    now=now,
+                    error_json=_job_canceled_error(),
+                )
+            db.commit()
+            db.refresh(orm)
+            return orm_to_workflow_job(orm)
+
+    def complete_canceled(self, job_id: str, *, worker_id: str) -> WorkflowJob:
+        with self.session_factory() as db:
+            orm = self._require_orm_for_update(db, job_id)
+            now = _utc_now()
+            self._require_active_lease(orm, worker_id=worker_id, now=now)
+            if orm.cancel_requested_at is None:
+                raise InvalidWorkflowJobTransitionError(
+                    job_id=orm.id, status=orm.status, target_status="canceled"
+                )
+            _finish_workflow_job(
+                db,
+                orm,
+                status="canceled",
+                now=now,
+                error_json=_job_canceled_error(),
+            )
+            db.commit()
+            db.refresh(orm)
+            return orm_to_workflow_job(orm)
+
+    def mark_running(
+        self, job_id: str, *, worker_id: str, lease_seconds: int = 90
+    ) -> WorkflowJob:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive.")
+        with self.session_factory() as db:
+            orm = self._require_orm_for_update(db, job_id)
             now = _utc_now()
             if orm.status == "running" and orm.locked_by == worker_id:
-                orm.locked_at = now
+                self._require_active_lease(orm, worker_id=worker_id, now=now)
+                orm.heartbeat_at = now
+                orm.lease_expires_at = now + timedelta(seconds=lease_seconds)
                 orm.updated_at = now
                 db.commit()
                 db.refresh(orm)
@@ -688,6 +868,8 @@ class PostgresWorkflowJobRepository:
             orm.status = "running"
             orm.locked_by = worker_id
             orm.locked_at = now
+            orm.heartbeat_at = now
+            orm.lease_expires_at = now + timedelta(seconds=lease_seconds)
             if orm.started_at is None:
                 orm.started_at = now
             orm.attempts += 1
@@ -696,56 +878,29 @@ class PostgresWorkflowJobRepository:
             db.refresh(orm)
             return orm_to_workflow_job(orm)
 
-    def mark_succeeded(self, job_id: str, *, result_json: dict) -> WorkflowJob:
-        with self.session_factory() as db:
-            orm = self._require_orm(db, job_id)
-            self._require_status(orm, {"running"}, target_status="succeeded")
-            now = _utc_now()
-            orm.status = "succeeded"
-            orm.result_json = result_json
-            orm.error_json = None
-            orm.finished_at = now
-            orm.locked_by = None
-            orm.locked_at = None
-            orm.updated_at = now
-            _release_workflow_job_reference(db, job_id=orm.id, released_at=now)
-            db.commit()
-            db.refresh(orm)
-            return orm_to_workflow_job(orm)
-
-    def mark_failed(self, job_id: str, *, error_json: dict) -> WorkflowJob:
-        with self.session_factory() as db:
-            orm = self._require_orm(db, job_id)
-            self._require_status(orm, {"running"}, target_status="failed")
-            now = _utc_now()
-            orm.status = "failed"
-            orm.error_json = error_json
-            orm.finished_at = now
-            orm.locked_by = None
-            orm.locked_at = None
-            orm.updated_at = now
-            _release_workflow_job_reference(db, job_id=orm.id, released_at=now)
-            db.commit()
-            db.refresh(orm)
-            return orm_to_workflow_job(orm)
-
-    def mark_canceled(self, job_id: str) -> WorkflowJob:
-        with self.session_factory() as db:
-            orm = self._require_orm(db, job_id)
-            self._require_status(orm, {"queued", "running"}, target_status="canceled")
-            now = _utc_now()
-            orm.status = "canceled"
-            orm.finished_at = now
-            orm.locked_by = None
-            orm.locked_at = None
-            orm.updated_at = now
-            _release_workflow_job_reference(db, job_id=orm.id, released_at=now)
-            db.commit()
-            db.refresh(orm)
-            return orm_to_workflow_job(orm)
+    def mark_failed(
+        self, job_id: str, *, worker_id: str, error_json: dict
+    ) -> WorkflowJob:
+        return self.record_failure(
+            job_id, worker_id=worker_id, error_json=error_json, retryable=False
+        )
 
     def _require_orm(self, db: DbSession, job_id: str) -> WorkflowJobORM:
         orm = db.get(WorkflowJobORM, job_id)
+        if orm is None:
+            raise WorkflowJobNotFoundError(job_id)
+        return orm
+
+    def _require_orm_for_update(self, db: DbSession, job_id: str) -> WorkflowJobORM:
+        orm = (
+            db.execute(
+                select(WorkflowJobORM)
+                .where(WorkflowJobORM.id == job_id)
+                .with_for_update()
+            )
+            .scalars()
+            .first()
+        )
         if orm is None:
             raise WorkflowJobNotFoundError(job_id)
         return orm
@@ -762,6 +917,19 @@ class PostgresWorkflowJobRepository:
                 job_id=orm.id,
                 status=orm.status,
                 target_status=target_status,
+            )
+
+    def _require_active_lease(
+        self, orm: WorkflowJobORM, *, worker_id: str, now: datetime
+    ) -> None:
+        if (
+            orm.status != "running"
+            or orm.locked_by != worker_id
+            or orm.lease_expires_at is None
+            or orm.lease_expires_at <= now
+        ):
+            raise WorkflowJobLeaseLostError(
+                job_id=orm.id, status=orm.status, target_status="running"
             )
 
 
@@ -844,6 +1012,47 @@ def _release_workflow_job_reference(
         .where(BlobReferenceORM.status == "active")
         .values(status="released", released_at=released_at)
     )
+
+
+def _clear_workflow_job_lock(orm: WorkflowJobORM) -> None:
+    orm.locked_by = None
+    orm.locked_at = None
+    orm.lease_expires_at = None
+    orm.heartbeat_at = None
+
+
+def _finish_workflow_job(
+    db: DbSession,
+    orm: WorkflowJobORM,
+    *,
+    status: JobStatus,
+    now: datetime,
+    result_json: dict | None = None,
+    error_json: dict | None = None,
+) -> None:
+    orm.status = status
+    orm.result_json = result_json
+    orm.error_json = error_json
+    orm.finished_at = now
+    orm.next_attempt_at = None
+    _clear_workflow_job_lock(orm)
+    orm.updated_at = now
+    _release_workflow_job_reference(db, job_id=orm.id, released_at=now)
+
+
+def _retry_delay_seconds(orm: WorkflowJobORM) -> float:
+    policy = orm.retry_policy_json or {}
+    base_delay = policy.get("base_delay_seconds", 5)
+    max_delay = policy.get("max_delay_seconds", 300)
+    if not isinstance(base_delay, (int, float)) or base_delay < 0:
+        base_delay = 5
+    if not isinstance(max_delay, (int, float)) or max_delay < 0:
+        max_delay = 300
+    return min(float(max_delay), float(base_delay) * (2 ** max(orm.attempts - 1, 0)))
+
+
+def _job_canceled_error() -> dict:
+    return {"error": "job_canceled", "message": "Workflow job cancellation requested."}
 
 
 class PostgresSessionStore(SessionStore):

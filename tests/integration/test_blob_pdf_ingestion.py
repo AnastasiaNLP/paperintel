@@ -81,7 +81,10 @@ class PersistingPdfHandler:
         expected_paper_id=None,
         skip_arxiv_metadata_fetch=False,
         pipeline_version="v1",
+        cancellation_callback=None,
     ):
+        if cancellation_callback is not None:
+            cancellation_callback()
         materialized_path = Path(input_value)
         assert input_type == "pdf"
         assert materialized_path.exists()

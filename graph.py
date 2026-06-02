@@ -4,6 +4,7 @@ from typing import Literal
 from langgraph.graph import END, StateGraph
 
 from agents.benchmark import benchmark_analyst_agent
+from agents.cancellation import cancellation_guard
 from agents.chunk_and_index import chunk_and_index_node
 from agents.comparator import comparator_agent
 from agents.extraction import extraction_agent
@@ -62,19 +63,19 @@ def _error_node(state: PaperIntelState) -> dict:
 def build_graph() -> StateGraph:
     graph = StateGraph(PaperIntelState)
 
-    graph.add_node("supervisor", supervisor_node)
-    graph.add_node("ingestion", ingestion_agent)
-    graph.add_node("extraction", extraction_agent)
-    graph.add_node("human_review", human_review_node)
-    graph.add_node("error", _error_node)
-    graph.add_node("benchmark", benchmark_analyst_agent)
-    graph.add_node("readiness", readiness_agent)
-    graph.add_node("report", report_agent)
-    graph.add_node("evidence_critic", evidence_critic_agent)
-    graph.add_node("report_finalize", report_finalize_node)
-    graph.add_node("chunk_and_index", chunk_and_index_node)
-    graph.add_node("paper_failure_finalize", paper_failure_finalize_node)
-    graph.add_node("comparator", comparator_agent)
+    graph.add_node("supervisor", cancellation_guard(supervisor_node))
+    graph.add_node("ingestion", cancellation_guard(ingestion_agent))
+    graph.add_node("extraction", cancellation_guard(extraction_agent))
+    graph.add_node("human_review", cancellation_guard(human_review_node))
+    graph.add_node("error", cancellation_guard(_error_node))
+    graph.add_node("benchmark", cancellation_guard(benchmark_analyst_agent))
+    graph.add_node("readiness", cancellation_guard(readiness_agent))
+    graph.add_node("report", cancellation_guard(report_agent))
+    graph.add_node("evidence_critic", cancellation_guard(evidence_critic_agent))
+    graph.add_node("report_finalize", cancellation_guard(report_finalize_node))
+    graph.add_node("chunk_and_index", cancellation_guard(chunk_and_index_node))
+    graph.add_node("paper_failure_finalize", cancellation_guard(paper_failure_finalize_node))
+    graph.add_node("comparator", cancellation_guard(comparator_agent))
 
     graph.set_entry_point("supervisor")
 

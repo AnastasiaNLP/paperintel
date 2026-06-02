@@ -6,7 +6,7 @@ from threading import Barrier
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from api.in_memory_session_store import SessionNotFoundError
 from models.agent_runs import AgentRun
@@ -20,7 +20,7 @@ from models.registered_pdf_errors import RegisteredPdfBlobNotAuthorizedError
 from models.errors import ErrorCodes, make_error
 from models.retrieval import ChunkSource, PaperChunk
 from storage.db import make_engine, make_session_factory
-from storage.models import BlobArtifactORM, BlobReferenceORM
+from storage.models import BlobArtifactORM, BlobReferenceORM, WorkflowJobORM
 from storage.repositories import (
     BlobArtifactNotFoundError,
     PostgresAgentRunPersistence,
@@ -519,6 +519,7 @@ def test_postgres_workflow_job_repository_lifecycle(session_factory):
     running = repository.mark_running(job.id, worker_id="worker-1")
     succeeded = repository.mark_succeeded(
         job.id,
+        worker_id="worker-1",
         result_json={"intent": "analyze_paper", "phase": "qa"},
     )
 
@@ -559,6 +560,7 @@ def test_postgres_workflow_job_repository_failure_and_cancel(session_factory):
     running_failed_job = repository.mark_running(failed_job.id, worker_id="worker-1")
     failed = repository.mark_failed(
         running_failed_job.id,
+        worker_id="worker-1",
         error_json={"error": "paper_workspace_not_ready"},
     )
     canceled = repository.mark_canceled(canceled_job.id)
@@ -732,15 +734,19 @@ def test_postgres_workflow_job_terminal_transitions_require_running_job(
     )
 
     with pytest.raises(InvalidWorkflowJobTransitionError):
-        repository.mark_succeeded(queued.id, result_json={})
+        repository.mark_succeeded(queued.id, worker_id="worker-1", result_json={})
     with pytest.raises(InvalidWorkflowJobTransitionError):
-        repository.mark_failed(queued.id, error_json={})
+        repository.mark_failed(queued.id, worker_id="worker-1", error_json={})
 
     running = repository.mark_running(queued.id, worker_id="worker-1")
-    succeeded = repository.mark_succeeded(running.id, result_json={"ok": True})
+    succeeded = repository.mark_succeeded(
+        running.id, worker_id="worker-1", result_json={"ok": True}
+    )
 
     with pytest.raises(InvalidWorkflowJobTransitionError):
-        repository.mark_failed(succeeded.id, error_json={"error": "late"})
+        repository.mark_failed(
+            succeeded.id, worker_id="worker-1", error_json={"error": "late"}
+        )
     with pytest.raises(InvalidWorkflowJobTransitionError):
         repository.mark_canceled(succeeded.id)
 
@@ -766,9 +772,12 @@ def test_postgres_workflow_job_cancel_allows_queued_or_running_only(session_fact
 
     canceled_queued = repository.mark_canceled(queued.id)
     running = repository.mark_running(running.id, worker_id="worker-1")
-    canceled_running = repository.mark_canceled(running.id)
+    cancel_requested = repository.mark_canceled(running.id)
+    canceled_running = repository.complete_canceled(running.id, worker_id="worker-1")
 
     assert canceled_queued.status == "canceled"
+    assert cancel_requested.status == "running"
+    assert cancel_requested.cancel_requested_at is not None
     assert canceled_running.status == "canceled"
     with pytest.raises(InvalidWorkflowJobTransitionError):
         repository.mark_canceled(canceled_queued.id)
@@ -1178,6 +1187,17 @@ def test_postgres_workflow_job_repository_enqueues_pdf_blob_idempotently(session
         ("workflow_job", first.id, "active"),
     ]
 
+    running = repository.claim_next(worker_id="worker-1")
+    retry = repository.record_failure(
+        running.id,
+        worker_id="worker-1",
+        error_json={"error": "blob_store_unavailable"},
+        retryable=True,
+    )
+    assert retry.status == "queued"
+    references = blob_repository.list_references(artifact.id)
+    assert references[1].status == "active"
+
     canceled = repository.mark_canceled(first.id)
     assert canceled.status == "canceled"
     references = blob_repository.list_references(artifact.id)
@@ -1291,3 +1311,188 @@ def test_postgres_workflow_job_repository_rolls_back_unauthorized_pdf_enqueue(
 
     assert upload_repository.get(upload.id).status == "finalized"
     assert repository.list_for_session(session.id) == []
+
+
+def test_postgres_workflow_job_repository_heartbeat_requires_current_owner(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = repository.create(
+        WorkflowJob(session_id=session.id, kind="analyze_paper", input_json={})
+    )
+    with pytest.raises(ValueError, match="lease_seconds must be positive"):
+        repository.mark_running(job.id, worker_id="worker-1", lease_seconds=0)
+    running = repository.claim_next(worker_id="worker-1", lease_seconds=30)
+
+    renewed = repository.heartbeat(
+        running.id, worker_id="worker-1", lease_seconds=60
+    )
+
+    assert renewed.heartbeat_at >= running.heartbeat_at
+    assert renewed.lease_expires_at > running.lease_expires_at
+    with pytest.raises(InvalidWorkflowJobTransitionError):
+        repository.heartbeat(running.id, worker_id="worker-2", lease_seconds=60)
+
+
+def test_postgres_workflow_job_repository_reclaims_expired_lease_and_rejects_stale_owner(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={},
+            max_attempts=3,
+        )
+    )
+    repository.claim_next(worker_id="worker-1")
+    with session_factory() as db:
+        db.execute(
+            update(WorkflowJobORM)
+            .where(WorkflowJobORM.id == job.id)
+            .values(lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+        )
+        db.commit()
+
+    reclaimed = repository.claim_next(worker_id="worker-2")
+
+    assert reclaimed.id == job.id
+    assert reclaimed.status == "running"
+    assert reclaimed.locked_by == "worker-2"
+    assert reclaimed.attempts == 2
+    with pytest.raises(InvalidWorkflowJobTransitionError):
+        repository.mark_succeeded(job.id, worker_id="worker-1", result_json={})
+
+
+def test_postgres_workflow_job_repository_reclaims_legacy_running_job_without_lease(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            status="running",
+            input_json={},
+            attempts=1,
+            max_attempts=3,
+            locked_by="legacy-worker",
+        )
+    )
+
+    reclaimed = repository.claim_next(worker_id="worker-2")
+
+    assert reclaimed.id == job.id
+    assert reclaimed.status == "running"
+    assert reclaimed.locked_by == "worker-2"
+    assert reclaimed.attempts == 2
+    assert reclaimed.lease_expires_at is not None
+
+
+def test_postgres_workflow_job_repository_exhausts_reclaimed_job_without_execution(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={},
+            max_attempts=2,
+        )
+    )
+    repository.claim_next(worker_id="worker-1")
+    with session_factory() as db:
+        db.execute(
+            update(WorkflowJobORM)
+            .where(WorkflowJobORM.id == job.id)
+            .values(lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+        )
+        db.commit()
+
+    exhausted = repository.claim_next(worker_id="worker-2")
+
+    assert exhausted.status == "failed"
+    assert exhausted.error_json["error"] == "retry_exhausted"
+    assert exhausted.locked_by is None
+
+
+def test_postgres_workflow_job_repository_cancels_reclaimed_job_before_retry_exhaustion(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={},
+            max_attempts=2,
+        )
+    )
+    running = repository.claim_next(worker_id="worker-1")
+    repository.mark_canceled(running.id)
+    with session_factory() as db:
+        db.execute(
+            update(WorkflowJobORM)
+            .where(WorkflowJobORM.id == job.id)
+            .values(lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+        )
+        db.commit()
+
+    canceled = repository.claim_next(worker_id="worker-2")
+
+    assert canceled.status == "canceled"
+    assert canceled.error_json["error"] == "job_canceled"
+    assert canceled.locked_by is None
+
+
+def test_postgres_workflow_job_repository_retry_respects_schedule(session_factory):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={},
+            max_attempts=3,
+            retry_policy_json={"base_delay_seconds": 60},
+        )
+    )
+    running = repository.claim_next(worker_id="worker-1")
+
+    retry = repository.record_failure(
+        running.id,
+        worker_id="worker-1",
+        error_json={"error": "provider_timeout"},
+        retryable=True,
+    )
+
+    assert retry.status == "queued"
+    assert retry.next_attempt_at is not None
+    assert retry.locked_by is None
+    assert repository.claim_next(worker_id="worker-2") is None
+
+
+def test_postgres_workflow_job_success_commit_honors_cancel_request(session_factory):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = repository.create(
+        WorkflowJob(session_id=session.id, kind="analyze_paper", input_json={})
+    )
+    running = repository.claim_next(worker_id="worker-1")
+    requested = repository.mark_canceled(running.id)
+
+    terminal = repository.mark_succeeded(
+        running.id, worker_id="worker-1", result_json={"unexpected": True}
+    )
+
+    assert requested.status == "running"
+    assert terminal.status == "canceled"
+    assert terminal.result_json is None
+    assert terminal.error_json["error"] == "job_canceled"

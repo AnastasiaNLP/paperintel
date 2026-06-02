@@ -2,6 +2,7 @@ import re
 from typing import Any, Protocol
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
+from agents.cancellation import WorkflowCancellationRequested
 from api.session_store import SessionStore
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SelectionAdvice
@@ -101,6 +102,8 @@ class ChatHandler:
                 message,
                 user_turn_id=user_turn.id,
             )
+        except WorkflowCancellationRequested:
+            raise
         except Exception as exc:
             error = make_error(
                 ErrorCodes.FATAL_ERROR,
@@ -252,6 +255,7 @@ class ChatHandler:
         expected_paper_id: str | None = None,
         skip_arxiv_metadata_fetch: bool = False,
         pipeline_version: str = "v1",
+        cancellation_callback=None,
     ) -> HandlerResult:
         session = self.store.require_session(session_id)
         user_turn = self.store.append_turn(
@@ -268,7 +272,10 @@ class ChatHandler:
                 input_value=input_value,
                 expected_paper_id=expected_paper_id,
                 skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+                cancellation_callback=cancellation_callback,
             )
+        except WorkflowCancellationRequested:
+            raise
         except Exception as exc:
             error = make_error(
                 ErrorCodes.FATAL_ERROR,
@@ -499,6 +506,7 @@ class ChatHandler:
         input_value: str,
         expected_paper_id: str | None = None,
         skip_arxiv_metadata_fetch: bool = False,
+        cancellation_callback=None,
     ) -> GraphInvocationResult:
         if self.analysis_runner is None:
             return GraphInvocationResult(
@@ -517,7 +525,9 @@ class ChatHandler:
                 metadata_fallback_by_arxiv_id=self.analysis_metadata_fallback_by_arxiv_id,
                 skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
             ),
-            config=self._graph_config(session),
+            config=self._graph_config(
+                session, cancellation_callback=cancellation_callback
+            ),
         )
         return _normalize_analysis_result(raw)
 
@@ -587,7 +597,7 @@ class ChatHandler:
         )
         return _normalize_discovery_result(raw)
 
-    def _graph_config(self, session: Session) -> dict[str, Any]:
+    def _graph_config(self, session: Session, *, cancellation_callback=None) -> dict[str, Any]:
         configurable: dict[str, Any] = {
             "session_id": session.id,
             "session_store": self.store,
@@ -597,6 +607,8 @@ class ChatHandler:
             configurable["retrieval_layer"] = self.retrieval_layer
         if self.searcher is not None:
             configurable["searcher"] = self.searcher
+        if cancellation_callback is not None:
+            configurable["cancellation_callback"] = cancellation_callback
         return {"configurable": configurable}
 
 
