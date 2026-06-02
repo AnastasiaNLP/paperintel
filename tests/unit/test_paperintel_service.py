@@ -1,5 +1,6 @@
 import hashlib
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -9,13 +10,15 @@ from agents.agent_run_recorder import InMemoryAgentRunPersistence
 from api.in_memory_session_store import SessionNotFoundError
 from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.blob_artifacts import BlobArtifact, BlobReference
-from models.blob_storage import StoredBlobObject
+from models.blob_storage import BlobObjectMetadata, StoredBlobObject
 from models.discovery import SearchCandidate
 from models.api import HealthStatus
 from models.errors import ErrorCodes, make_error
 from models.jobs import WorkflowJob
+from models.pdf_uploads import PdfUpload
+from models.session import utc_now
 from models.session import HandlerResult, Session, Turn
-from services.blob_store import BlobStoreUnavailableError
+from services.blob_store import BlobNotFoundError, BlobStoreUnavailableError
 from services.paperintel_service import (
     BlobStorageNotConfiguredError,
     ComparisonNotFoundError,
@@ -26,6 +29,8 @@ from services.paperintel_service import (
     PaperIntelService,
     PaperWorkspaceNotFoundError,
     InvalidWorkflowJobInputError,
+    PdfUploadChecksumMismatchError,
+    PdfUploadSizeMismatchError,
     WorkflowJobNotFoundError,
 )
 from services.selected_candidate_resolver import NoSelectedCandidatesError
@@ -219,6 +224,10 @@ class FakeBlobStore:
         self.put_calls = []
         self.materialized_paths = []
         self.deleted_materialized_paths = []
+        self.objects = {}
+        self.deleted_objects = []
+        self.head_calls = []
+        self.presigned_calls = []
 
     def ensure_bucket(self):
         self.ensure_calls += 1
@@ -228,24 +237,49 @@ class FakeBlobStore:
             {"content": content, "kind": kind, "content_type": content_type}
         )
         content_hash = hashlib.sha256(content).hexdigest()
+        object_key = f"papers/sha256/{content_hash[:2]}/{content_hash}.pdf"
+        self.objects[object_key] = {"content": content, "content_type": content_type or "application/pdf"}
         return StoredBlobObject(
-            kind=kind,
-            object_key=f"papers/sha256/{content_hash[:2]}/{content_hash}.pdf",
-            bucket_name="paperintel-test",
-            content_hash=content_hash,
-            content_type=content_type or "application/pdf",
+            kind=kind, object_key=object_key, bucket_name="paperintel-test",
+            content_hash=content_hash, content_type=content_type or "application/pdf",
             size_bytes=len(content),
         )
 
+    def put_staging(self, object_key, content, *, content_type):
+        self.objects[object_key] = {"content": content, "content_type": content_type}
+
+    def create_presigned_put(self, object_key, *, content_type, expires_seconds):
+        self.presigned_calls.append((object_key, content_type, expires_seconds))
+        return f"https://uploads.example/{object_key}"
+
+    def delete(self, object_key):
+        self.deleted_objects.append(object_key)
+        self.objects.pop(object_key, None)
+
+    def head_object(self, object_key):
+        self.head_calls.append(object_key)
+        if object_key not in self.objects:
+            raise BlobNotFoundError(f"Blob object not found: {object_key}")
+        stored = self.objects[object_key]
+        return BlobObjectMetadata(
+            object_key=object_key, content_type=stored["content_type"],
+            size_bytes=len(stored["content"]),
+        )
+
     @contextmanager
-    def materialize(self, object_key, *, expected_sha256=None):
+    def materialize(self, object_key, *, expected_sha256=None, max_bytes=None):
+        if object_key not in self.objects:
+            raise BlobNotFoundError(f"Blob object not found: {object_key}")
+        if max_bytes is not None and len(self.objects[object_key]["content"]) > max_bytes:
+            from services.blob_store import BlobSizeLimitError
+            raise BlobSizeLimitError("object exceeds limit")
         with NamedTemporaryFile(
             mode="wb",
             suffix=".pdf",
             prefix="paperintel_test_blob_",
             delete=False,
         ) as temp_file:
-            temp_file.write(b"%PDF-1.7\nmaterialized")
+            temp_file.write(self.objects[object_key]["content"])
             temp_path = temp_file.name
         self.materialized_paths.append(temp_path)
         try:
@@ -303,6 +337,59 @@ class FakeBlobArtifactRepository:
             artifact for artifact in self.artifacts.values() if artifact.id == blob_id
         )
         return artifact
+
+    def get_artifact(self, blob_id):
+        return next(
+            (artifact for artifact in self.artifacts.values() if artifact.id == blob_id),
+            None,
+        )
+
+    def has_active_reference(self, blob_id, *, ref_kind, ref_id):
+        return any(
+            reference.blob_id == blob_id
+            and reference.ref_kind == ref_kind
+            and reference.ref_id == ref_id
+            and reference.status == "active"
+            for reference in self.references
+        )
+
+
+class FakePdfUploadRepository:
+    def __init__(self) -> None:
+        self.uploads = {}
+
+    def create(self, upload):
+        self.uploads[upload.id] = upload
+        return upload
+
+    def get(self, upload_id):
+        return self.uploads.get(upload_id)
+
+    def mark_uploaded(self, upload_id):
+        upload = self.uploads[upload_id].model_copy(update={"status": "uploaded"})
+        self.uploads[upload_id] = upload
+        return upload
+
+    def finalize(self, upload_id, *, blob_id, actual_sha256, size_bytes):
+        upload = self.uploads[upload_id].model_copy(
+            update={
+                "status": "finalized",
+                "blob_id": blob_id,
+                "actual_sha256": actual_sha256,
+                "size_bytes": size_bytes,
+                "finalized_at": utc_now(),
+                "error_json": None,
+            }
+        )
+        self.uploads[upload_id] = upload
+        return upload
+
+    def mark_failed(self, upload_id, *, error_json):
+        upload = self.uploads[upload_id].model_copy(
+            update={"status": "failed", "error_json": error_json}
+        )
+        self.uploads[upload_id] = upload
+        return upload
 
 
 class FakeWorkflowJobRepository:
@@ -1007,3 +1094,230 @@ def test_service_health_uses_checker_when_configured():
     assert status.healthy is True
     assert status.checks["postgres"] == "ok"
     assert checker.calls == 1
+
+
+def _upload_service():
+    handler = FakeHandler()
+    blob_store = FakeBlobStore()
+    blob_repository = FakeBlobArtifactRepository()
+    upload_repository = FakePdfUploadRepository()
+    service = PaperIntelService(
+        handler=handler,
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
+        pdf_upload_repository=upload_repository,
+    )
+    return service, handler, blob_store, blob_repository, upload_repository
+
+
+def test_service_initiate_pdf_upload_creates_presigned_contract():
+    service, _, blob_store, _, upload_repository = _upload_service()
+    session = service.create_session()
+    digest = "a" * 64
+
+    initiation = service.initiate_pdf_upload(
+        session.id, expected_sha256=digest, size_bytes=128
+    )
+
+    assert initiation.upload.status == "initiated"
+    assert initiation.upload.expected_sha256 == digest
+    assert initiation.upload.object_key.startswith(f"uploads/{session.id}/")
+    assert initiation.upload_url.endswith(initiation.upload.object_key)
+    assert initiation.upload_headers == {"Content-Type": "application/pdf"}
+    assert upload_repository.get(initiation.upload.id) == initiation.upload
+    assert blob_store.presigned_calls == [
+        (initiation.upload.object_key, "application/pdf", 900)
+    ]
+
+
+def test_service_store_pdf_upload_finalizes_durable_blob_and_cleans_staging():
+    service, _, blob_store, blob_repository, _ = _upload_service()
+    session = service.create_session()
+    content = b"%PDF-1.7\nasync upload"
+
+    upload = service.store_pdf_upload(session.id, content)
+
+    assert upload.status == "finalized"
+    assert upload.actual_sha256 == hashlib.sha256(content).hexdigest()
+    assert upload.blob_id is not None
+    assert upload.object_key in blob_store.deleted_objects
+    assert upload.object_key not in blob_store.objects
+    assert blob_store.presigned_calls == []
+    assert [(ref.ref_kind, ref.ref_id) for ref in blob_repository.references] == [
+        ("session", session.id)
+    ]
+
+
+def test_service_finalize_pdf_upload_marks_checksum_failure_and_deletes_staging():
+    service, _, blob_store, _, upload_repository = _upload_service()
+    session = service.create_session()
+    initiation = service.initiate_pdf_upload(
+        session.id, expected_sha256="a" * 64, size_bytes=len(b"%PDF-1.7\nbad")
+    )
+    blob_store.put_staging(
+        initiation.upload.object_key, b"%PDF-1.7\nbad", content_type="application/pdf"
+    )
+
+    with pytest.raises(PdfUploadChecksumMismatchError):
+        service.finalize_pdf_upload(session.id, initiation.upload.id)
+
+    failed = upload_repository.get(initiation.upload.id)
+    assert failed.status == "failed"
+    assert failed.error_json["code"] == "PdfUploadChecksumMismatchError"
+    assert initiation.upload.object_key not in blob_store.objects
+
+
+def test_service_analyze_registered_pdf_blob_does_not_upload_again():
+    handler = FakeHandler()
+    blob_store = FakeBlobStore()
+    blob_repository = FakeBlobArtifactRepository()
+    artifact_repository = FakeArtifactRepository()
+    service = PaperIntelService(
+        handler=handler, artifact_repository=artifact_repository,
+        blob_store=blob_store, blob_artifact_repository=blob_repository,
+    )
+    session = service.create_session()
+    stored = blob_store.put(b"%PDF-1.7\nregistered", kind="pdf")
+    artifact = blob_repository.upsert_artifact(stored)
+    blob_repository.add_reference(artifact.id, ref_kind="session", ref_id=session.id)
+    blob_store.put_calls.clear()
+
+    result = service.analyze_registered_pdf_blob(
+        session.id, artifact.id, paper_id="1706.03762"
+    )
+
+    assert result.response_text == "pdf analysis complete"
+    assert blob_store.put_calls == []
+    assert blob_repository.accessed == [artifact.id]
+    assert len(blob_store.materialized_paths) == 1
+
+
+def test_service_analyze_registered_pdf_blob_rejects_missing_session_reference():
+    handler = FakeHandler()
+    blob_store = FakeBlobStore()
+    blob_repository = FakeBlobArtifactRepository()
+    service = PaperIntelService(
+        handler=handler, blob_store=blob_store, blob_artifact_repository=blob_repository
+    )
+    session = service.create_session()
+    stored = blob_store.put(b"%PDF-1.7\nregistered", kind="pdf")
+    artifact = blob_repository.upsert_artifact(stored)
+    blob_store.materialized_paths.clear()
+
+    with pytest.raises(InvalidPdfInputError, match="Registered PDF blob was not found"):
+        service.analyze_registered_pdf_blob(session.id, artifact.id)
+
+    assert blob_store.materialized_paths == []
+
+
+def test_service_finalize_pdf_upload_rejects_oversized_object_before_materialize(monkeypatch):
+    service, _, blob_store, _, upload_repository = _upload_service()
+    session = service.create_session()
+    initiation = service.initiate_pdf_upload(
+        session.id, expected_sha256="a" * 64, size_bytes=1
+    )
+    blob_store.objects[initiation.upload.object_key] = {
+        "content": b"x", "content_type": "application/pdf"
+    }
+    monkeypatch.setattr("services.paperintel_service.MAX_LOCAL_PDF_BYTES", 0)
+
+    with pytest.raises(PdfUploadSizeMismatchError):
+        service.finalize_pdf_upload(session.id, initiation.upload.id)
+
+    assert blob_store.materialized_paths == []
+    assert upload_repository.get(initiation.upload.id).status == "failed"
+
+
+def test_service_store_pdf_upload_marks_failed_when_staging_write_fails():
+    class FailingStagingBlobStore(FakeBlobStore):
+        def put_staging(self, object_key, content, *, content_type):
+            raise BlobStoreUnavailableError("staging unavailable")
+
+    handler = FakeHandler()
+    upload_repository = FakePdfUploadRepository()
+    service = PaperIntelService(
+        handler=handler, blob_store=FailingStagingBlobStore(),
+        blob_artifact_repository=FakeBlobArtifactRepository(),
+        pdf_upload_repository=upload_repository,
+    )
+    session = service.create_session()
+
+    with pytest.raises(BlobStoreUnavailableError, match="staging unavailable"):
+        service.store_pdf_upload(session.id, b"%PDF-1.7\ncontent")
+
+    upload = next(iter(upload_repository.uploads.values()))
+    assert upload.status == "failed"
+    assert upload.error_json["code"] == "BlobStoreUnavailableError"
+
+
+def test_service_initiate_pdf_upload_marks_failed_when_presign_fails():
+    class FailingPresignBlobStore(FakeBlobStore):
+        def create_presigned_put(self, object_key, *, content_type, expires_seconds):
+            raise BlobStoreUnavailableError("presign unavailable")
+
+    handler = FakeHandler()
+    upload_repository = FakePdfUploadRepository()
+    service = PaperIntelService(
+        handler=handler, blob_store=FailingPresignBlobStore(),
+        blob_artifact_repository=FakeBlobArtifactRepository(),
+        pdf_upload_repository=upload_repository,
+    )
+    session = service.create_session()
+
+    with pytest.raises(BlobStoreUnavailableError, match="presign unavailable"):
+        service.initiate_pdf_upload(
+            session.id, expected_sha256="a" * 64, size_bytes=1
+        )
+
+    upload = next(iter(upload_repository.uploads.values()))
+    assert upload.status == "failed"
+    assert upload.error_json["code"] == "BlobStoreUnavailableError"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"size_bytes": 0}, "between 1"),
+        ({"size_bytes": 1, "expires_seconds": 0}, "expires_seconds"),
+        ({"size_bytes": 1, "expires_seconds": 3601}, "expires_seconds"),
+    ],
+)
+def test_service_initiate_pdf_upload_rejects_invalid_limits(kwargs, message):
+    service, _, _, _, upload_repository = _upload_service()
+    session = service.create_session()
+
+    with pytest.raises(ValueError, match=message):
+        service.initiate_pdf_upload(
+            session.id, expected_sha256="a" * 64, **kwargs
+        )
+
+    assert upload_repository.uploads == {}
+
+
+def test_service_analyze_registered_pdf_blob_skips_workspace_link_after_failed_analysis():
+    class FailedHandler(FakeHandler):
+        def analyze_paper_input(self, session_id, **kwargs):
+            result = super().analyze_paper_input(session_id, **kwargs)
+            return result.model_copy(update={"phase": "analysis", "needs_analysis": True})
+
+    handler = FailedHandler()
+    blob_store = FakeBlobStore()
+    blob_repository = FakeBlobArtifactRepository()
+    artifact_repository = FakeArtifactRepository()
+    service = PaperIntelService(
+        handler=handler, artifact_repository=artifact_repository,
+        blob_store=blob_store, blob_artifact_repository=blob_repository,
+    )
+    session = service.create_session()
+    stored = blob_store.put(b"%PDF-1.7\nregistered", kind="pdf")
+    artifact = blob_repository.upsert_artifact(stored)
+    blob_repository.add_reference(artifact.id, ref_kind="session", ref_id=session.id)
+
+    result = service.analyze_registered_pdf_blob(
+        session.id, artifact.id, paper_id="1706.03762"
+    )
+
+    assert result.needs_analysis is True
+    assert [(ref.ref_kind, ref.ref_id) for ref in blob_repository.references] == [
+        ("session", session.id)
+    ]

@@ -16,3 +16,11 @@ class StoredBlobObject(BaseModel):
     content_type: str
     size_bytes: int = Field(ge=0)
     storage_backend: str = "s3"
+
+
+class BlobObjectMetadata(BaseModel):
+    """Metadata returned without downloading an object body."""
+
+    object_key: str
+    content_type: str | None = None
+    size_bytes: int = Field(ge=0)

@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, ContextManager, Iterator, Protocol
 
-from models.blob_storage import BlobKind, StoredBlobObject
+from models.blob_storage import BlobKind, BlobObjectMetadata, StoredBlobObject
 
 
 DEFAULT_CONTENT_TYPES: dict[BlobKind, str] = {
@@ -42,6 +42,10 @@ class BlobIntegrityError(BlobStoreError):
     pass
 
 
+class BlobSizeLimitError(BlobStoreError):
+    pass
+
+
 class BlobConfigurationError(BlobStoreError):
     pass
 
@@ -57,13 +61,32 @@ class BlobStore(Protocol):
         content_type: str | None = None,
     ) -> StoredBlobObject: ...
 
+    def put_staging(
+        self,
+        object_key: str,
+        content: bytes,
+        *,
+        content_type: str,
+    ) -> None: ...
+
+    def create_presigned_put(
+        self,
+        object_key: str,
+        *,
+        content_type: str,
+        expires_seconds: int,
+    ) -> str: ...
+
     def exists(self, object_key: str) -> bool: ...
+
+    def head_object(self, object_key: str) -> BlobObjectMetadata: ...
 
     def materialize(
         self,
         object_key: str,
         *,
         expected_sha256: str | None = None,
+        max_bytes: int | None = None,
     ) -> ContextManager[str]: ...
 
     def delete(self, object_key: str) -> None: ...
@@ -163,8 +186,63 @@ class S3BlobStore:
             size_bytes=stored_size,
         )
 
+    def put_staging(
+        self,
+        object_key: str,
+        content: bytes,
+        *,
+        content_type: str,
+    ) -> None:
+        if not isinstance(content, bytes):
+            raise TypeError("BlobStore.put_staging content must be bytes.")
+        try:
+            self.client.put_object(
+                Bucket=self.bucket_name,
+                Key=object_key,
+                Body=content,
+                ContentType=content_type,
+            )
+        except Exception as exc:
+            raise BlobStoreUnavailableError(
+                f"Could not upload staging blob object {object_key!r}: {exc}"
+            ) from exc
+
+    def create_presigned_put(
+        self,
+        object_key: str,
+        *,
+        content_type: str,
+        expires_seconds: int,
+    ) -> str:
+        try:
+            return str(
+                self.client.generate_presigned_url(
+                    "put_object",
+                    Params={
+                        "Bucket": self.bucket_name,
+                        "Key": object_key,
+                        "ContentType": content_type,
+                    },
+                    ExpiresIn=expires_seconds,
+                )
+            )
+        except Exception as exc:
+            raise BlobStoreUnavailableError(
+                f"Could not create presigned upload URL for {object_key!r}: {exc}"
+            ) from exc
+
     def exists(self, object_key: str) -> bool:
         return self._head_object_or_none(object_key) is not None
+
+    def head_object(self, object_key: str) -> BlobObjectMetadata:
+        metadata = self._head_object_or_none(object_key)
+        if metadata is None:
+            raise BlobNotFoundError(f"Blob object not found: {object_key}")
+        return BlobObjectMetadata(
+            object_key=object_key,
+            content_type=metadata.get("ContentType"),
+            size_bytes=int(metadata.get("ContentLength", 0)),
+        )
 
     def _head_object_or_none(self, object_key: str) -> dict[str, Any] | None:
         try:
@@ -182,16 +260,26 @@ class S3BlobStore:
         object_key: str,
         *,
         expected_sha256: str | None = None,
+        max_bytes: int | None = None,
     ) -> Iterator[str]:
         try:
             response = self.client.get_object(Bucket=self.bucket_name, Key=object_key)
-            content = response["Body"].read()
+            body = response["Body"]
+            try:
+                content = body.read(max_bytes + 1 if max_bytes is not None else None)
+            finally:
+                body.close()
         except Exception as exc:
             if _is_missing_error(exc):
                 raise BlobNotFoundError(f"Blob object not found: {object_key}") from exc
             raise BlobStoreUnavailableError(
                 f"Could not download blob object {object_key!r}: {exc}"
             ) from exc
+
+        if max_bytes is not None and len(content) > max_bytes:
+            raise BlobSizeLimitError(
+                f"Blob object {object_key!r} exceeds materialization limit of {max_bytes} bytes."
+            )
 
         actual_sha256 = hashlib.sha256(content).hexdigest()
         if expected_sha256 is not None and actual_sha256 != expected_sha256:

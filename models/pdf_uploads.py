@@ -63,3 +63,11 @@ class PdfUpload(BaseModel):
             if self.finalized_at is None:
                 raise ValueError("finalized uploads require finalized_at")
         return self
+
+
+class PdfUploadInitiation(BaseModel):
+    """Client-facing presigned upload contract."""
+
+    upload: PdfUpload
+    upload_url: str
+    upload_headers: dict[str, str] = Field(default_factory=dict)

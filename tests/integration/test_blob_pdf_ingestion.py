@@ -13,10 +13,11 @@ from models.session import HandlerResult
 from services.blob_store import S3BlobStore
 from services.paperintel_service import PaperIntelService
 from storage.db import make_engine, make_session_factory
-from storage.models import BlobArtifactORM
+from storage.models import BlobArtifactORM, PdfUploadORM
 from storage.repositories import (
     PostgresBlobArtifactRepository,
     PostgresPaperWorkspaceRepository,
+    PostgresPdfUploadRepository,
     PostgresSessionStore,
     clear_foundation_tables,
 )
@@ -141,3 +142,48 @@ def test_pdf_ingestion_persists_one_blob_and_idempotent_references(stack, tmp_pa
     ]
     assert len(handler.materialized_paths) == 2
     assert all(not Path(path).exists() for path in handler.materialized_paths)
+
+
+@mock_aws
+def test_pdf_upload_lifecycle_finalizes_canonical_blob_and_analyzes_registered_artifact(
+    stack,
+):
+    session_store, workspace_repository, blob_repository, session_factory = stack
+    client = boto3.client("s3", region_name="us-east-1")
+    blob_store = S3BlobStore(client=client, bucket_name=BUCKET)
+    upload_repository = PostgresPdfUploadRepository(session_factory)
+    handler = PersistingPdfHandler(
+        session_store=session_store, workspace_repository=workspace_repository
+    )
+    service = PaperIntelService(
+        handler=handler, artifact_repository=workspace_repository,
+        blob_store=blob_store, blob_artifact_repository=blob_repository,
+        pdf_upload_repository=upload_repository,
+    )
+    session = service.create_session()
+
+    upload = service.store_pdf_upload(session.id, PDF_BYTES)
+
+    assert upload.status == "finalized"
+    assert upload.blob_id is not None
+    objects = client.list_objects_v2(Bucket=BUCKET)["Contents"]
+    assert len(objects) == 1
+    assert objects[0]["Key"].startswith("papers/sha256/")
+    with session_factory() as db:
+        assert db.get(PdfUploadORM, upload.id).status == "finalized"
+
+    service.analyze_registered_pdf_blob(
+        session.id, upload.blob_id, paper_id="local-upload-paper"
+    )
+
+    references = blob_repository.list_references(upload.blob_id)
+    assert [(reference.ref_kind, reference.ref_id) for reference in references] == [
+        ("session", session.id),
+        (
+            "paper_workspace",
+            workspace_repository.get_workspace(session.id, "local-upload-paper").id,
+        ),
+    ]
+    assert len(client.list_objects_v2(Bucket=BUCKET)["Contents"]) == 1
+    assert len(handler.materialized_paths) == 1
+    assert not Path(handler.materialized_paths[0]).exists()

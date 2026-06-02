@@ -22,6 +22,7 @@ from storage.repositories import (
     PostgresBlobArtifactRepository,
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
+    PostgresPdfUploadRepository,
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
     PostgresWorkflowJobRepository,
@@ -133,6 +134,7 @@ def create_paperintel_service(
     artifact_repository = PostgresPaperWorkspaceRepository(session_factory)
     workflow_job_repository = PostgresWorkflowJobRepository(session_factory)
     blob_artifact_repository = PostgresBlobArtifactRepository(session_factory)
+    pdf_upload_repository = PostgresPdfUploadRepository(session_factory)
     if discovery_runner is None:
         from graph_discovery import build_discovery_graph
 
@@ -183,6 +185,9 @@ def create_paperintel_service(
         blob_store=resolved_blob_store,
         blob_artifact_repository=(
             blob_artifact_repository if resolved_blob_store is not None else None
+        ),
+        pdf_upload_repository=(
+            pdf_upload_repository if resolved_blob_store is not None else None
         ),
     )
 

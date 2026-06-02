@@ -22,6 +22,12 @@ from models.discovery import CandidateStatus, SearchCandidate
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.errors import StructuredError
 from models.jobs import JobKind, JobStatus, WorkflowJob
+from models.pdf_upload_errors import (
+    PdfUploadExpiredError,
+    PdfUploadNotFoundError,
+    PdfUploadStateError,
+)
+from models.pdf_uploads import PdfUpload, PdfUploadStatus
 from models.retrieval import PaperChunk, UpsertChunksResult
 from models.session import Persona, Session, SessionPhase, Turn, TurnRole
 from storage.mappers import (
@@ -38,12 +44,14 @@ from storage.mappers import (
     orm_to_paper_chunk,
     orm_to_workflow_job,
     orm_to_paper_workspace,
+    orm_to_pdf_upload,
     orm_to_session,
     orm_to_search_candidate,
     orm_to_structured_error,
     orm_to_turn,
     paper_chunk_to_orm,
     paper_workspace_to_orm,
+    pdf_upload_to_orm,
     search_candidate_to_orm,
     session_to_orm,
     structured_error_to_orm,
@@ -298,6 +306,27 @@ class PostgresBlobArtifactRepository:
             db.commit()
             return orm_to_blob_reference(orm)
 
+    def has_active_reference(
+        self,
+        blob_id: str,
+        *,
+        ref_kind: BlobReferenceKind,
+        ref_id: str,
+    ) -> bool:
+        with self.session_factory() as db:
+            return (
+                db.execute(
+                    select(BlobReferenceORM.id)
+                    .where(BlobReferenceORM.blob_id == blob_id)
+                    .where(BlobReferenceORM.ref_kind == ref_kind)
+                    .where(BlobReferenceORM.ref_id == ref_id)
+                    .where(BlobReferenceORM.status == "active")
+                )
+                .scalars()
+                .first()
+                is not None
+            )
+
     def list_references(self, blob_id: str) -> list[BlobReference]:
         with self.session_factory() as db:
             self._require_orm(db, blob_id)
@@ -368,6 +397,95 @@ class PostgresBlobArtifactRepository:
         if orm is None:
             raise BlobArtifactNotFoundError(blob_id)
         return orm
+
+
+
+InvalidPdfUploadTransitionError = PdfUploadStateError
+
+class PostgresPdfUploadRepository:
+    def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
+        self.session_factory = session_factory
+
+    def create(self, upload: PdfUpload) -> PdfUpload:
+        with self.session_factory() as db:
+            db.add(pdf_upload_to_orm(upload))
+            db.commit()
+        return upload
+
+    def get(self, upload_id: str) -> PdfUpload | None:
+        with self.session_factory() as db:
+            orm = db.get(PdfUploadORM, upload_id)
+            return orm_to_pdf_upload(orm) if orm is not None else None
+
+    def mark_uploaded(self, upload_id: str) -> PdfUpload:
+        return self._transition(upload_id, allowed={"initiated"}, target_status="uploaded")
+
+    def finalize(
+        self,
+        upload_id: str,
+        *,
+        blob_id: str,
+        actual_sha256: str,
+        size_bytes: int,
+    ) -> PdfUpload:
+        return self._transition(
+            upload_id,
+            allowed={"uploaded"},
+            target_status="finalized",
+            reject_expired=True,
+            updates={
+                "blob_id": blob_id,
+                "actual_sha256": actual_sha256,
+                "size_bytes": size_bytes,
+                "finalized_at": _utc_now(),
+                "error_json": None,
+            },
+        )
+
+    def mark_failed(self, upload_id: str, *, error_json: dict) -> PdfUpload:
+        return self._transition(
+            upload_id,
+            allowed={"initiated", "uploaded"},
+            target_status="failed",
+            updates={"error_json": error_json},
+        )
+
+    def mark_enqueued(self, upload_id: str) -> PdfUpload:
+        return self._transition(upload_id, allowed={"finalized"}, target_status="enqueued")
+
+    def _transition(
+        self,
+        upload_id: str,
+        *,
+        allowed: set[PdfUploadStatus],
+        target_status: PdfUploadStatus,
+        updates: dict | None = None,
+        reject_expired: bool = False,
+    ) -> PdfUpload:
+        with self.session_factory() as db:
+            orm = (
+                db.execute(
+                    select(PdfUploadORM)
+                    .where(PdfUploadORM.id == upload_id)
+                    .with_for_update()
+                )
+                .scalars()
+                .first()
+            )
+            if orm is None:
+                raise PdfUploadNotFoundError(upload_id)
+            if orm.status not in allowed:
+                raise PdfUploadStateError(
+                    upload_id=upload_id, status=orm.status, target_status=target_status
+                )
+            if reject_expired and orm.expires_at <= _utc_now():
+                raise PdfUploadExpiredError(upload_id)
+            values = {"status": target_status, "updated_at": _utc_now(), **(updates or {})}
+            for name, value in values.items():
+                setattr(orm, name, value)
+            db.commit()
+            db.refresh(orm)
+            return orm_to_pdf_upload(orm)
 
 
 class WorkflowJobNotFoundError(ValueError):

@@ -15,6 +15,7 @@ from models.blob_storage import StoredBlobObject
 from models.discovery import SearchCandidate
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.jobs import WorkflowJob
+from models.pdf_uploads import PdfUpload
 from models.errors import ErrorCodes, make_error
 from models.retrieval import ChunkSource, PaperChunk
 from storage.db import make_engine, make_session_factory
@@ -26,10 +27,13 @@ from storage.repositories import (
     PostgresBlobArtifactRepository,
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
+    PostgresPdfUploadRepository,
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
     PostgresStructuredErrorRepository,
     InvalidWorkflowJobTransitionError,
+    InvalidPdfUploadTransitionError,
+    PdfUploadExpiredError,
     PostgresWorkflowJobRepository,
     clear_foundation_tables,
 )
@@ -891,6 +895,12 @@ def test_postgres_blob_artifact_repository_references_are_idempotent(session_fac
     assert second == first
     assert workspace.id != first.id
     assert repository.list_references(artifact.id) == [first, workspace]
+    assert repository.has_active_reference(
+        artifact.id, ref_kind="session", ref_id="session-1"
+    ) is True
+    assert repository.has_active_reference(
+        artifact.id, ref_kind="session", ref_id="missing"
+    ) is False
     assert repository.list_artifacts_for_reference(
         ref_kind="session",
         ref_id="session-1",
@@ -964,7 +974,9 @@ def test_postgres_blob_artifact_repository_concurrent_upsert_is_idempotent(
 
     repository = PostgresBlobArtifactRepository(session_factory)
     assert len({artifact.id for artifact in artifacts}) == 1
-    assert repository.get_by_kind_and_hash("pdf", "a" * 64) == artifacts[0]
+    persisted = repository.get_by_kind_and_hash("pdf", "a" * 64)
+    assert persisted is not None
+    assert persisted.id == artifacts[0].id
 
 
 def test_postgres_blob_artifact_repository_concurrent_reference_is_idempotent(
@@ -988,3 +1000,123 @@ def test_postgres_blob_artifact_repository_concurrent_reference_is_idempotent(
 
     assert len({reference.id for reference in references}) == 1
     assert repository.list_references(artifact.id) == [references[0]]
+
+
+def test_postgres_pdf_upload_repository_enforces_lifecycle(session_factory):
+    session = PostgresSessionStore(session_factory).create_session()
+    blob_repository = PostgresBlobArtifactRepository(session_factory)
+    artifact = blob_repository.upsert_artifact(_stored_pdf())
+    repository = PostgresPdfUploadRepository(session_factory)
+    digest = "a" * 64
+    upload = repository.create(
+        PdfUpload(
+            session_id=session.id,
+            object_key=f"uploads/{session.id}/upload-1.pdf",
+            expected_sha256=digest,
+            size_bytes=128,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        )
+    )
+
+    uploaded = repository.mark_uploaded(upload.id)
+    finalized = repository.finalize(
+        upload.id, blob_id=artifact.id, actual_sha256=digest, size_bytes=128
+    )
+    enqueued = repository.mark_enqueued(upload.id)
+
+    assert uploaded.status == "uploaded"
+    assert finalized.status == "finalized"
+    assert finalized.blob_id == artifact.id
+    assert finalized.actual_sha256 == digest
+    assert enqueued.status == "enqueued"
+    with pytest.raises(InvalidPdfUploadTransitionError):
+        repository.mark_uploaded(upload.id)
+
+
+def test_postgres_pdf_upload_repository_rejects_expired_finalize(session_factory):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresPdfUploadRepository(session_factory)
+    upload = repository.create(
+        PdfUpload(
+            session_id=session.id,
+            object_key=f"uploads/{session.id}/expired.pdf",
+            expected_sha256="a" * 64,
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+    )
+
+    repository.mark_uploaded(upload.id)
+    with pytest.raises(PdfUploadExpiredError):
+        repository.finalize(
+            upload.id, blob_id="unused", actual_sha256="a" * 64, size_bytes=128
+        )
+
+
+def test_postgres_pdf_upload_repository_serializes_competing_transitions(session_factory):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresPdfUploadRepository(session_factory)
+    upload = repository.create(
+        PdfUpload(
+            session_id=session.id, object_key=f"uploads/{session.id}/race.pdf",
+            expected_sha256="a" * 64,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        )
+    )
+    barrier = Barrier(2)
+
+    def transition_once():
+        thread_repository = PostgresPdfUploadRepository(session_factory)
+        barrier.wait()
+        try:
+            return thread_repository.mark_uploaded(upload.id).status
+        except InvalidPdfUploadTransitionError:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(pool.map(lambda _: transition_once(), range(2)))
+
+    assert sorted(statuses) == ["rejected", "uploaded"]
+    assert repository.get(upload.id).status == "uploaded"
+
+
+def test_postgres_pdf_upload_repository_allows_only_one_terminal_transition(session_factory):
+    session = PostgresSessionStore(session_factory).create_session()
+    blob_repository = PostgresBlobArtifactRepository(session_factory)
+    artifact = blob_repository.upsert_artifact(_stored_pdf())
+    repository = PostgresPdfUploadRepository(session_factory)
+    upload = repository.create(
+        PdfUpload(
+            session_id=session.id, object_key=f"uploads/{session.id}/terminal-race.pdf",
+            expected_sha256="a" * 64,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        )
+    )
+    repository.mark_uploaded(upload.id)
+    barrier = Barrier(2)
+
+    def finalize_once():
+        thread_repository = PostgresPdfUploadRepository(session_factory)
+        barrier.wait()
+        try:
+            return thread_repository.finalize(
+                upload.id, blob_id=artifact.id, actual_sha256="a" * 64, size_bytes=128
+            ).status
+        except InvalidPdfUploadTransitionError:
+            return "rejected"
+
+    def fail_once():
+        thread_repository = PostgresPdfUploadRepository(session_factory)
+        barrier.wait()
+        try:
+            return thread_repository.mark_failed(
+                upload.id, error_json={"code": "test_failure"}
+            ).status
+        except InvalidPdfUploadTransitionError:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = [pool.submit(finalize_once), pool.submit(fail_once)]
+        statuses = [future.result() for future in statuses]
+
+    assert statuses.count("rejected") == 1
+    assert repository.get(upload.id).status in {"finalized", "failed"}

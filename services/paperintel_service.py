@@ -1,5 +1,8 @@
+import hashlib
+from datetime import timedelta
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
 from agents.comparison_analyst import compare_workspaces
 from agents.synthesis_agent import synthesize_workspaces
@@ -10,13 +13,25 @@ from models.blob_artifacts import BlobArtifact, BlobReference, BlobReferenceKind
 from models.blob_storage import StoredBlobObject
 from models.discovery import CandidateStatus, SearchCandidate
 from models.jobs import WorkflowJob
+from models.pdf_upload_errors import (
+    PdfUploadChecksumMismatchError,
+    PdfUploadExpiredError,
+    PdfUploadInvalidContentError,
+    PdfUploadNotFoundError,
+    PdfUploadSizeMismatchError,
+    PdfUploadStateError,
+)
+from models.pdf_uploads import PdfUpload, PdfUploadInitiation
+from models.session import utc_now
 from models.session import HandlerResult, Persona, Session, Turn
 from models.synthesis import SynthesisAgentResult
-from services.blob_store import BlobStore
+from services.blob_store import BlobSizeLimitError, BlobStore, BlobStoreUnavailableError
 from services.selected_candidate_resolver import SelectedCandidateResolver
 
 _FAILED_WORKSPACE_STAGES = {"failed", "paper_failure_finalize"}
 MAX_LOCAL_PDF_BYTES = 50 * 1024 * 1024
+MIN_UPLOAD_URL_EXPIRES_SECONDS = 60
+MAX_UPLOAD_URL_EXPIRES_SECONDS = 3600
 
 
 class InvalidPdfInputError(ValueError):
@@ -88,6 +103,12 @@ class BlobStorageNotConfiguredError(RuntimeError):
         super().__init__(
             "Blob storage requires both blob_store and blob_artifact_repository."
         )
+
+
+class PdfUploadNotConfiguredError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("PDF uploads require blob storage and pdf_upload_repository.")
+
 
 
 class WorkflowJobNotConfiguredError(RuntimeError):
@@ -169,6 +190,38 @@ class BlobArtifactRepository(Protocol):
     def mark_accessed(self, blob_id: str) -> BlobArtifact:
         ...
 
+    def get_artifact(self, blob_id: str) -> BlobArtifact | None:
+        ...
+
+    def has_active_reference(
+        self, blob_id: str, *, ref_kind: BlobReferenceKind, ref_id: str
+    ) -> bool:
+        ...
+
+
+class PdfUploadRepository(Protocol):
+    def create(self, upload: PdfUpload) -> PdfUpload:
+        ...
+
+    def get(self, upload_id: str) -> PdfUpload | None:
+        ...
+
+    def mark_uploaded(self, upload_id: str) -> PdfUpload:
+        ...
+
+    def finalize(
+        self,
+        upload_id: str,
+        *,
+        blob_id: str,
+        actual_sha256: str,
+        size_bytes: int,
+    ) -> PdfUpload:
+        ...
+
+    def mark_failed(self, upload_id: str, *, error_json: dict) -> PdfUpload:
+        ...
+
 
 class WorkflowJobRepository(Protocol):
     def create(self, job: WorkflowJob) -> WorkflowJob:
@@ -203,6 +256,7 @@ class PaperIntelService:
         workflow_job_repository: WorkflowJobRepository | None = None,
         blob_store: BlobStore | None = None,
         blob_artifact_repository: BlobArtifactRepository | None = None,
+        pdf_upload_repository: PdfUploadRepository | None = None,
     ) -> None:
         self.handler = handler
         self.health_checker = health_checker
@@ -212,6 +266,7 @@ class PaperIntelService:
         self.workflow_job_repository = workflow_job_repository
         self.blob_store = blob_store
         self.blob_artifact_repository = blob_artifact_repository
+        self.pdf_upload_repository = pdf_upload_repository
 
     def create_session(
         self,
@@ -302,50 +357,252 @@ class PaperIntelService:
         paper_id: str | None,
         skip_arxiv_metadata_fetch: bool,
     ) -> HandlerResult:
-        assert self.blob_store is not None
-        assert self.blob_artifact_repository is not None
-        before_workspace_ids = self._workspace_ids(session_id)
-        self.blob_store.ensure_bucket()
-        stored = self.blob_store.put(
+        artifact = self._store_pdf_blob(
+            session_id,
             Path(source_pdf_path).read_bytes(),
-            kind="pdf",
-            content_type="application/pdf",
+            source="pdf_ingestion",
         )
-        artifact = self.blob_artifact_repository.upsert_artifact(
-            stored,
-            retention_policy="durable",
-        )
-        self.blob_artifact_repository.add_reference(
+        return self.analyze_registered_pdf_blob(
+            session_id,
             artifact.id,
-            ref_kind="session",
-            ref_id=session_id,
-            metadata={"source": "pdf_ingestion"},
+            paper_id=paper_id,
+            skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+            user_content=f"Analyze local PDF {paper_id or source_pdf_path}",
         )
-        with self.blob_store.materialize(
-            artifact.object_key,
-            expected_sha256=artifact.content_hash,
-        ) as materialized_path:
-            self.blob_artifact_repository.mark_accessed(artifact.id)
+
+    def initiate_pdf_upload(
+        self,
+        session_id: str,
+        *,
+        expected_sha256: str,
+        size_bytes: int,
+        content_type: str = "application/pdf",
+        expires_seconds: int = 900,
+    ) -> PdfUploadInitiation:
+        self.handler.store.require_session(session_id)
+        blob_store, _, upload_repository = self._pdf_upload_dependencies()
+        upload = self._new_pdf_upload(
+            session_id, expected_sha256=expected_sha256, size_bytes=size_bytes,
+            content_type=content_type, expires_seconds=expires_seconds,
+        )
+        upload_repository.create(upload)
+        try:
+            upload_url = blob_store.create_presigned_put(
+                upload.object_key, content_type=content_type, expires_seconds=expires_seconds
+            )
+        except BlobStoreUnavailableError as exc:
+            upload_repository.mark_failed(
+                upload.id, error_json={"code": exc.__class__.__name__, "message": str(exc)}
+            )
+            raise
+        return PdfUploadInitiation(
+            upload=upload, upload_url=upload_url,
+            upload_headers={"Content-Type": content_type},
+        )
+
+    def finalize_pdf_upload(self, session_id: str, upload_id: str) -> PdfUpload:
+        self.handler.store.require_session(session_id)
+        blob_store, artifact_repository, upload_repository = self._pdf_upload_dependencies()
+        upload = upload_repository.get(upload_id)
+        if upload is None or upload.session_id != session_id:
+            raise PdfUploadNotFoundError(upload_id)
+        if upload.status not in {"initiated", "uploaded"}:
+            raise PdfUploadStateError(
+                upload_id=upload.id, status=upload.status, target_status="finalized"
+            )
+        if upload.expires_at <= utc_now():
+            raise PdfUploadExpiredError(upload.id)
+        try:
+            metadata = blob_store.head_object(upload.object_key)
+            self._validate_pdf_upload_metadata(upload, metadata)
+            if upload.status == "initiated":
+                upload = upload_repository.mark_uploaded(upload.id)
+            with blob_store.materialize(
+                upload.object_key, max_bytes=MAX_LOCAL_PDF_BYTES
+            ) as staged_path:
+                content = Path(staged_path).read_bytes()
+            self._validate_pdf_upload_content(upload, content)
+            stored = blob_store.put(content, kind="pdf", content_type="application/pdf")
+            artifact = artifact_repository.upsert_artifact(stored, retention_policy="durable")
+            artifact_repository.add_reference(
+                artifact.id, ref_kind="session", ref_id=session_id,
+                metadata={"source": "pdf_upload", "upload_id": upload.id},
+            )
+            finalized = upload_repository.finalize(
+                upload.id, blob_id=artifact.id, actual_sha256=stored.content_hash,
+                size_bytes=stored.size_bytes,
+            )
+            try:
+                blob_store.delete(upload.object_key)
+            except BlobStoreUnavailableError:
+                # Expired-upload cleanup will reconcile staging objects after provider recovery.
+                pass
+            return finalized
+        except (
+            BlobSizeLimitError,
+            PdfUploadChecksumMismatchError,
+            PdfUploadInvalidContentError,
+            PdfUploadSizeMismatchError,
+        ) as exc:
+            upload_repository.mark_failed(
+                upload.id, error_json={"code": exc.__class__.__name__, "message": str(exc)}
+            )
+            try:
+                blob_store.delete(upload.object_key)
+            except BlobStoreUnavailableError:
+                # Expired-upload cleanup will reconcile staging objects after provider recovery.
+                pass
+            raise
+
+    def store_pdf_upload(
+        self,
+        session_id: str,
+        content: bytes,
+        *,
+        expected_sha256: str | None = None,
+    ) -> PdfUpload:
+        self.handler.store.require_session(session_id)
+        blob_store, _, upload_repository = self._pdf_upload_dependencies()
+        digest = expected_sha256 or hashlib.sha256(content).hexdigest()
+        upload = self._new_pdf_upload(
+            session_id, expected_sha256=digest, size_bytes=len(content),
+            content_type="application/pdf", expires_seconds=900,
+        )
+        upload_repository.create(upload)
+        try:
+            blob_store.put_staging(upload.object_key, content, content_type="application/pdf")
+        except BlobStoreUnavailableError as exc:
+            upload_repository.mark_failed(
+                upload.id, error_json={"code": exc.__class__.__name__, "message": str(exc)}
+            )
+            raise
+        return self.finalize_pdf_upload(session_id, upload.id)
+
+    def analyze_registered_pdf_blob(
+        self,
+        session_id: str,
+        blob_id: str,
+        *,
+        paper_id: str | None = None,
+        skip_arxiv_metadata_fetch: bool = False,
+        user_content: str | None = None,
+    ) -> HandlerResult:
+        self.handler.store.require_session(session_id)
+        blob_store, artifact_repository = self._blob_dependencies()
+        artifact = artifact_repository.get_artifact(blob_id)
+        if (
+            artifact is None
+            or artifact.kind != "pdf"
+            or not artifact_repository.has_active_reference(
+                blob_id, ref_kind="session", ref_id=session_id
+            )
+        ):
+            raise InvalidPdfInputError(f"Registered PDF blob was not found: {blob_id}")
+        before_workspace_ids = self._workspace_ids(session_id)
+        with blob_store.materialize(artifact.object_key, expected_sha256=artifact.content_hash) as materialized_path:
+            artifact_repository.mark_accessed(artifact.id)
             result = self._analyze_pdf_path(
-                session_id,
-                materialized_path,
-                user_content=f"Analyze local PDF {paper_id or source_pdf_path}",
+                session_id, materialized_path,
+                user_content=user_content or f"Analyze registered PDF blob {blob_id}",
                 paper_id=paper_id,
                 skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
             )
         workspace = self._resolve_pdf_workspace(
-            session_id,
-            paper_id=paper_id,
-            before_workspace_ids=before_workspace_ids,
+            session_id, paper_id=paper_id, before_workspace_ids=before_workspace_ids
         )
-        if workspace is not None:
-            self.blob_artifact_repository.add_reference(
-                artifact.id,
-                ref_kind="paper_workspace",
-                ref_id=workspace.id,
+        if workspace is not None and self._analysis_succeeded(result):
+            artifact_repository.add_reference(
+                artifact.id, ref_kind="paper_workspace", ref_id=workspace.id,
                 metadata={"paper_id": workspace.paper_id},
             )
         return result
+
+    def _store_pdf_blob(self, session_id: str, content: bytes, *, source: str) -> BlobArtifact:
+        blob_store, artifact_repository = self._blob_dependencies()
+        blob_store.ensure_bucket()
+        stored = blob_store.put(content, kind="pdf", content_type="application/pdf")
+        artifact = artifact_repository.upsert_artifact(stored, retention_policy="durable")
+        artifact_repository.add_reference(
+            artifact.id, ref_kind="session", ref_id=session_id, metadata={"source": source}
+        )
+        return artifact
+
+    def _new_pdf_upload(
+        self,
+        session_id: str,
+        *,
+        expected_sha256: str,
+        size_bytes: int,
+        content_type: str,
+        expires_seconds: int,
+    ) -> PdfUpload:
+        blob_store, _, _ = self._pdf_upload_dependencies()
+        if content_type != "application/pdf":
+            raise PdfUploadInvalidContentError("PDF upload content type must be application/pdf.")
+        if size_bytes <= 0 or size_bytes > MAX_LOCAL_PDF_BYTES:
+            raise PdfUploadSizeMismatchError(
+                f"PDF upload size must be between 1 and {MAX_LOCAL_PDF_BYTES} bytes."
+            )
+        if not (MIN_UPLOAD_URL_EXPIRES_SECONDS <= expires_seconds <= MAX_UPLOAD_URL_EXPIRES_SECONDS):
+            raise ValueError(
+                f"expires_seconds must be between {MIN_UPLOAD_URL_EXPIRES_SECONDS} "
+                f"and {MAX_UPLOAD_URL_EXPIRES_SECONDS}."
+            )
+        upload_id = str(uuid4())
+        blob_store.ensure_bucket()
+        return PdfUpload(
+            id=upload_id, session_id=session_id,
+            object_key=f"uploads/{session_id}/{upload_id}.pdf",
+            expected_sha256=expected_sha256, size_bytes=size_bytes,
+            content_type=content_type,
+            expires_at=utc_now() + timedelta(seconds=expires_seconds),
+        )
+
+    def _validate_pdf_upload_metadata(self, upload: PdfUpload, metadata) -> None:
+        if metadata.content_type != "application/pdf":
+            raise PdfUploadInvalidContentError(
+                f"PDF upload content type mismatch: got {metadata.content_type!r}."
+            )
+        if metadata.size_bytes <= 0 or metadata.size_bytes > MAX_LOCAL_PDF_BYTES:
+            raise PdfUploadSizeMismatchError(
+                f"PDF upload size must be between 1 and {MAX_LOCAL_PDF_BYTES} bytes; "
+                f"got {metadata.size_bytes}."
+            )
+        if upload.size_bytes != metadata.size_bytes:
+            raise PdfUploadSizeMismatchError(
+                f"PDF upload size mismatch: expected {upload.size_bytes}, "
+                f"got {metadata.size_bytes}."
+            )
+
+    def _validate_pdf_upload_content(self, upload: PdfUpload, content: bytes) -> None:
+        if not content.startswith(b"%PDF-"):
+            raise PdfUploadInvalidContentError("PDF upload must start with %PDF- magic bytes.")
+        if upload.size_bytes is not None and len(content) != upload.size_bytes:
+            raise PdfUploadSizeMismatchError(
+                f"PDF upload size mismatch: expected {upload.size_bytes}, got {len(content)}."
+            )
+        actual_sha256 = hashlib.sha256(content).hexdigest()
+        if upload.expected_sha256 != actual_sha256:
+            raise PdfUploadChecksumMismatchError(
+                f"PDF upload checksum mismatch: expected {upload.expected_sha256}, got {actual_sha256}."
+            )
+
+    @staticmethod
+    def _analysis_succeeded(result: HandlerResult) -> bool:
+        return result.phase == "qa" and not result.needs_analysis and not result.errors and result.error is None
+
+    def _blob_dependencies(self) -> tuple[BlobStore, BlobArtifactRepository]:
+        if self.blob_store is None or self.blob_artifact_repository is None:
+            raise BlobStorageNotConfiguredError()
+        return self.blob_store, self.blob_artifact_repository
+
+    def _pdf_upload_dependencies(
+        self,
+    ) -> tuple[BlobStore, BlobArtifactRepository, PdfUploadRepository]:
+        blob_store, artifact_repository = self._blob_dependencies()
+        if self.pdf_upload_repository is None:
+            raise PdfUploadNotConfiguredError()
+        return blob_store, artifact_repository, self.pdf_upload_repository
 
     def _analyze_pdf_path(
         self,

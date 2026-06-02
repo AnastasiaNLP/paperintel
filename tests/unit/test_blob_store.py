@@ -10,6 +10,7 @@ from services.blob_store import (
     BlobConfigurationError,
     BlobIntegrityError,
     BlobNotFoundError,
+    BlobSizeLimitError,
     BlobStoreUnavailableError,
     S3BlobStore,
     object_key_for,
@@ -238,3 +239,102 @@ def test_ensure_bucket_wraps_runtime_outage_as_unavailable():
 
     with pytest.raises(BlobStoreUnavailableError):
         store.ensure_bucket()
+
+
+@mock_aws
+def test_staging_upload_and_presigned_put_use_explicit_object_key():
+    client = _client()
+    store = S3BlobStore(client=client, bucket_name=BUCKET)
+    store.ensure_bucket()
+    object_key = "uploads/session-1/upload-1.pdf"
+
+    upload_url = store.create_presigned_put(
+        object_key, content_type="application/pdf", expires_seconds=900
+    )
+    store.put_staging(object_key, PDF_BYTES, content_type="application/pdf")
+
+    assert object_key in upload_url
+    assert store.exists(object_key)
+    with store.materialize(object_key) as path:
+        assert Path(path).read_bytes() == PDF_BYTES
+    store.delete(object_key)
+    assert not store.exists(object_key)
+
+
+@mock_aws
+def test_head_object_returns_metadata_without_downloading_body():
+    client = _client()
+    store = S3BlobStore(client=client, bucket_name=BUCKET)
+    store.ensure_bucket()
+    object_key = "uploads/session-1/upload-1.pdf"
+    store.put_staging(object_key, PDF_BYTES, content_type="application/pdf")
+
+    metadata = store.head_object(object_key)
+
+    assert metadata.object_key == object_key
+    assert metadata.content_type == "application/pdf"
+    assert metadata.size_bytes == len(PDF_BYTES)
+
+
+@mock_aws
+def test_head_object_rejects_missing_object():
+    client = _client()
+    store = S3BlobStore(client=client, bucket_name=BUCKET)
+    store.ensure_bucket()
+
+    with pytest.raises(BlobNotFoundError):
+        store.head_object("uploads/session-1/missing.pdf")
+
+
+@mock_aws
+def test_materialize_enforces_download_limit_even_after_head_check():
+    client = _client()
+    store = S3BlobStore(client=client, bucket_name=BUCKET)
+    store.ensure_bucket()
+    object_key = "uploads/session-1/replaced.pdf"
+    store.put_staging(object_key, b"too-large", content_type="application/pdf")
+
+    with pytest.raises(BlobSizeLimitError):
+        with store.materialize(object_key, max_bytes=3):
+            pytest.fail("oversized object must not yield a path")
+
+
+def test_materialize_closes_response_body_after_successful_read():
+    body = TrackingBody(PDF_BYTES)
+    store = S3BlobStore(client=BodyClient(body), bucket_name=BUCKET)
+
+    with store.materialize("papers/example.pdf") as path:
+        assert Path(path).read_bytes() == PDF_BYTES
+
+    assert body.closed is True
+
+
+def test_materialize_closes_response_body_after_limited_read():
+    body = TrackingBody(b"too-large")
+    store = S3BlobStore(client=BodyClient(body), bucket_name=BUCKET)
+
+    with pytest.raises(BlobSizeLimitError):
+        with store.materialize("uploads/session-1/replaced.pdf", max_bytes=3):
+            pytest.fail("oversized object must not yield a path")
+
+    assert body.closed is True
+
+
+class TrackingBody:
+    def __init__(self, content):
+        self.content = content
+        self.closed = False
+
+    def read(self, amount=None):
+        return self.content if amount is None else self.content[:amount]
+
+    def close(self):
+        self.closed = True
+
+
+class BodyClient:
+    def __init__(self, body):
+        self.body = body
+
+    def get_object(self, **kwargs):
+        return {"Body": self.body}
