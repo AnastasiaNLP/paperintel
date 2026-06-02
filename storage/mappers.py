@@ -363,8 +363,11 @@ def blob_artifact_to_orm(artifact: BlobArtifact) -> BlobArtifactORM:
         size_bytes=artifact.size_bytes,
         storage_backend=artifact.storage_backend,
         retention_policy=artifact.retention_policy,
+        status=artifact.status,
         expires_at=artifact.expires_at,
         last_accessed_at=artifact.last_accessed_at,
+        deleted_at=artifact.deleted_at,
+        cleanup_metadata_json=artifact.cleanup_metadata,
         created_at=artifact.created_at,
         updated_at=artifact.updated_at,
     )
@@ -381,8 +384,11 @@ def orm_to_blob_artifact(orm: BlobArtifactORM) -> BlobArtifact:
         size_bytes=orm.size_bytes,
         storage_backend=orm.storage_backend,
         retention_policy=orm.retention_policy,
+        status=orm.status,
         expires_at=orm.expires_at,
         last_accessed_at=orm.last_accessed_at,
+        deleted_at=orm.deleted_at,
+        cleanup_metadata=orm.cleanup_metadata_json or {},
         created_at=orm.created_at,
         updated_at=orm.updated_at,
     )

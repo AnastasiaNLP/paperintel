@@ -1,7 +1,8 @@
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Sequence, get_args
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, exists, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy.orm import sessionmaker
@@ -190,8 +191,11 @@ class PostgresBlobArtifactRepository:
                     size_bytes=candidate.size_bytes,
                     storage_backend=candidate.storage_backend,
                     retention_policy=candidate.retention_policy,
+                    status=candidate.status,
                     expires_at=candidate.expires_at,
                     last_accessed_at=candidate.last_accessed_at,
+                    deleted_at=candidate.deleted_at,
+                    cleanup_metadata_json=candidate.cleanup_metadata,
                     created_at=candidate.created_at,
                     updated_at=candidate.updated_at,
                 )
@@ -217,7 +221,10 @@ class PostgresBlobArtifactRepository:
                     "size_bytes": stored.size_bytes,
                     "storage_backend": stored.storage_backend,
                     "retention_policy": retention_policy,
+                    "status": "active",
                     "expires_at": expires_at,
+                    "deleted_at": None,
+                    "cleanup_metadata": {},
                     "updated_at": _utc_now(),
                 }
             )
@@ -227,7 +234,10 @@ class PostgresBlobArtifactRepository:
             orm.size_bytes = artifact.size_bytes
             orm.storage_backend = artifact.storage_backend
             orm.retention_policy = artifact.retention_policy
+            orm.status = artifact.status
             orm.expires_at = artifact.expires_at
+            orm.deleted_at = artifact.deleted_at
+            orm.cleanup_metadata_json = artifact.cleanup_metadata
             orm.updated_at = artifact.updated_at
             db.commit()
             db.refresh(orm)
@@ -236,7 +246,11 @@ class PostgresBlobArtifactRepository:
     def get_artifact(self, blob_id: str) -> BlobArtifact | None:
         with self.session_factory() as db:
             orm = db.get(BlobArtifactORM, blob_id)
-            return orm_to_blob_artifact(orm) if orm is not None else None
+            return (
+                orm_to_blob_artifact(orm)
+                if orm is not None and orm.status == "active"
+                else None
+            )
 
     def get_by_kind_and_hash(self, kind: str, content_hash: str) -> BlobArtifact | None:
         with self.session_factory() as db:
@@ -245,6 +259,7 @@ class PostgresBlobArtifactRepository:
                     select(BlobArtifactORM)
                     .where(BlobArtifactORM.kind == kind)
                     .where(BlobArtifactORM.content_hash == content_hash)
+                    .where(BlobArtifactORM.status == "active")
                 )
                 .scalars()
                 .first()
@@ -257,7 +272,7 @@ class PostgresBlobArtifactRepository:
                 db.execute(
                     select(BlobArtifactORM).where(
                         BlobArtifactORM.object_key == object_key
-                    )
+                    ).where(BlobArtifactORM.status == "active")
                 )
                 .scalars()
                 .first()
@@ -279,7 +294,7 @@ class PostgresBlobArtifactRepository:
             metadata=metadata or {},
         )
         with self.session_factory() as db:
-            self._require_orm(db, blob_id)
+            self._require_active_orm_for_update(db, blob_id)
             db.execute(
                 pg_insert(BlobReferenceORM)
                 .values(
@@ -290,8 +305,12 @@ class PostgresBlobArtifactRepository:
                     metadata_json=reference.metadata,
                     created_at=reference.created_at,
                 )
-                .on_conflict_do_nothing(
-                    constraint="uq_blob_references_blob_kind_ref"
+                .on_conflict_do_update(
+                    constraint="uq_blob_references_blob_kind_ref",
+                    set_={
+                        "status": "active",
+                        "released_at": None,
+                    },
                 )
             )
             orm = (
@@ -353,6 +372,7 @@ class PostgresBlobArtifactRepository:
                 db.execute(
                     select(BlobArtifactORM)
                     .join(BlobReferenceORM)
+                    .where(BlobArtifactORM.status == "active")
                     .where(BlobReferenceORM.ref_kind == ref_kind)
                     .where(BlobReferenceORM.ref_id == ref_id)
                     .where(BlobReferenceORM.status == "active")
@@ -401,6 +421,146 @@ class PostgresBlobArtifactRepository:
         if orm is None:
             raise BlobArtifactNotFoundError(blob_id)
         return orm
+
+    def _require_active_orm_for_update(
+        self, db: DbSession, blob_id: str
+    ) -> BlobArtifactORM:
+        orm = (
+            db.execute(
+                select(BlobArtifactORM)
+                .where(BlobArtifactORM.id == blob_id)
+                .where(BlobArtifactORM.status == "active")
+                .with_for_update()
+            )
+            .scalars()
+            .first()
+        )
+        if orm is None:
+            raise BlobArtifactNotFoundError(blob_id)
+        return orm
+
+
+class PostgresBlobCleanupRepository:
+    def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
+        self.session_factory = session_factory
+
+    def list_expired_upload_candidates(
+        self, *, now: datetime, limit: int
+    ) -> list[PdfUpload]:
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(PdfUploadORM)
+                    .where(PdfUploadORM.status.in_(("initiated", "uploaded", "failed")))
+                    .where(PdfUploadORM.expires_at <= now)
+                    .order_by(PdfUploadORM.expires_at.asc())
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+            return [orm_to_pdf_upload(row) for row in rows]
+
+    def expire_next_upload(
+        self, *, now: datetime, delete_object: Callable[[str], None]
+    ) -> PdfUpload | None:
+        with self.session_factory() as db:
+            orm = (
+                db.execute(
+                    select(PdfUploadORM)
+                    .where(PdfUploadORM.status.in_(("initiated", "uploaded", "failed")))
+                    .where(PdfUploadORM.expires_at <= now)
+                    .order_by(PdfUploadORM.expires_at.asc())
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                )
+                .scalars()
+                .first()
+            )
+            if orm is None:
+                return None
+            delete_object(orm.object_key)
+            previous_error = orm.error_json
+            orm.status = "expired"
+            orm.error_json = {
+                "code": "upload_expired",
+                "message": "Expired staging upload cleaned up.",
+                "cleaned_at": now.isoformat(),
+                "previous_error": previous_error,
+            }
+            orm.updated_at = now
+            db.commit()
+            db.refresh(orm)
+            return orm_to_pdf_upload(orm)
+
+    def list_ttl_blob_cleanup_candidates(
+        self, *, cutoff: datetime, limit: int
+    ) -> list[BlobArtifact]:
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(BlobArtifactORM)
+                    .where(BlobArtifactORM.status == "active")
+                    .where(BlobArtifactORM.retention_policy == "ttl")
+                    .where(BlobArtifactORM.expires_at <= cutoff)
+                    .where(~_active_blob_reference_exists())
+                    .order_by(BlobArtifactORM.expires_at.asc())
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+            return [orm_to_blob_artifact(row) for row in rows]
+
+    def tombstone_next_ttl_blob(
+        self,
+        *,
+        cutoff: datetime,
+        now: datetime,
+        delete_object: Callable[[str], None],
+    ) -> BlobArtifact | None:
+        with self.session_factory() as db:
+            orm = (
+                db.execute(
+                    select(BlobArtifactORM)
+                    .where(BlobArtifactORM.status == "active")
+                    .where(BlobArtifactORM.retention_policy == "ttl")
+                    .where(BlobArtifactORM.expires_at <= cutoff)
+                    .where(~_active_blob_reference_exists())
+                    .order_by(BlobArtifactORM.expires_at.asc())
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                )
+                .scalars()
+                .first()
+            )
+            if orm is None:
+                return None
+            has_active_reference = (
+                db.execute(
+                    select(BlobReferenceORM.id)
+                    .where(BlobReferenceORM.blob_id == orm.id)
+                    .where(BlobReferenceORM.status == "active")
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+                is not None
+            )
+            if has_active_reference:
+                return None
+            delete_object(orm.object_key)
+            orm.status = "deleted"
+            orm.deleted_at = now
+            orm.cleanup_metadata_json = {
+                "code": "ttl_blob_deleted",
+                "message": "Unreferenced TTL blob object deleted.",
+                "cleaned_at": now.isoformat(),
+            }
+            orm.updated_at = now
+            db.commit()
+            db.refresh(orm)
+            return orm_to_blob_artifact(orm)
 
 
 
@@ -1011,6 +1171,14 @@ def _release_workflow_job_reference(
         .where(BlobReferenceORM.ref_id == job_id)
         .where(BlobReferenceORM.status == "active")
         .values(status="released", released_at=released_at)
+    )
+
+
+def _active_blob_reference_exists():
+    return exists(
+        select(BlobReferenceORM.id)
+        .where(BlobReferenceORM.blob_id == BlobArtifactORM.id)
+        .where(BlobReferenceORM.status == "active")
     )
 
 

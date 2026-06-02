@@ -62,6 +62,39 @@ def test_blob_artifact_requires_lowercase_sha256_hex():
         )
 
 
+def test_blob_artifact_deleted_tombstone_requires_timestamp():
+    with pytest.raises(ValidationError, match="deleted blobs require deleted_at"):
+        BlobArtifact(
+            kind="pdf",
+            object_key=f"papers/sha256/aa/{HASH}.pdf",
+            bucket_name="paperintel",
+            content_hash=HASH,
+            content_type="application/pdf",
+            size_bytes=128,
+            status="deleted",
+        )
+
+
+def test_blob_artifact_accepts_deleted_tombstone():
+    deleted_at = datetime.now(timezone.utc)
+    artifact = BlobArtifact(
+        kind="page_image",
+        object_key=f"page_images/sha256/aa/{HASH}.png",
+        bucket_name="paperintel",
+        content_hash=HASH,
+        content_type="image/png",
+        size_bytes=128,
+        retention_policy="ttl",
+        expires_at=deleted_at - timedelta(days=1),
+        status="deleted",
+        deleted_at=deleted_at,
+        cleanup_metadata={"code": "ttl_blob_deleted"},
+    )
+
+    assert artifact.status == "deleted"
+    assert artifact.cleanup_metadata == {"code": "ttl_blob_deleted"}
+
+
 def test_blob_reference_accepts_polymorphic_relationship():
     reference = BlobReference(
         blob_id="blob-1",

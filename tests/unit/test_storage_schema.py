@@ -300,8 +300,11 @@ def test_blob_artifact_table_matches_registry_contract_columns():
         "size_bytes",
         "storage_backend",
         "retention_policy",
+        "status",
         "expires_at",
         "last_accessed_at",
+        "deleted_at",
+        "cleanup_metadata_json",
         "created_at",
         "updated_at",
     ]:
@@ -314,6 +317,8 @@ def test_blob_artifact_table_matches_registry_contract_columns():
         "ck_blob_artifacts_retention_policy",
         "ck_blob_artifacts_retention_expiry",
         "ck_blob_artifacts_size_nonnegative",
+        "ck_blob_artifacts_status",
+        "ck_blob_artifacts_deletion_state",
     }.issubset({constraint.name for constraint in BlobArtifactORM.__table__.constraints})
 
 

@@ -67,7 +67,7 @@ def test_put_pdf_uses_content_addressed_key_and_real_s3_metadata():
 
 
 @mock_aws
-def test_put_is_idempotent_and_does_not_upload_existing_object(monkeypatch):
+def test_put_is_idempotent_and_reconciles_existing_object(monkeypatch):
     client = _client()
     store = S3BlobStore(client=client, bucket_name=BUCKET)
     store.ensure_bucket()
@@ -84,11 +84,11 @@ def test_put_is_idempotent_and_does_not_upload_existing_object(monkeypatch):
     second = store.put(PDF_BYTES, kind="pdf")
 
     assert first == second
-    assert len(put_calls) == 1
+    assert len(put_calls) == 2
 
 
 @mock_aws
-def test_idempotent_put_returns_persisted_s3_content_type():
+def test_idempotent_put_restores_canonical_s3_content_type():
     client = _client()
     store = S3BlobStore(client=client, bucket_name=BUCKET)
     store.ensure_bucket()
@@ -103,8 +103,10 @@ def test_idempotent_put_returns_persisted_s3_content_type():
 
     reused = store.put(b"json-content", kind="generated_artifact")
 
-    assert reused.content_type == "application/json"
+    assert reused.content_type == "application/octet-stream"
     assert reused.size_bytes == len(b"json-content")
+    metadata = client.head_object(Bucket=BUCKET, Key=stored.object_key)
+    assert metadata["ContentType"] == "application/octet-stream"
 
 
 @mock_aws

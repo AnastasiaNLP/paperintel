@@ -11,6 +11,7 @@ from models.session import utc_now
 
 
 BlobRetentionPolicy: TypeAlias = Literal["durable", "ttl"]
+BlobArtifactStatus: TypeAlias = Literal["active", "deleted"]
 BlobReferenceKind: TypeAlias = Literal[
     "session",
     "paper_workspace",
@@ -31,8 +32,11 @@ class BlobArtifact(BaseModel):
     size_bytes: int = Field(ge=0)
     storage_backend: Literal["s3"] = "s3"
     retention_policy: BlobRetentionPolicy = "durable"
+    status: BlobArtifactStatus = "active"
     expires_at: datetime | None = None
     last_accessed_at: datetime | None = None
+    deleted_at: datetime | None = None
+    cleanup_metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -56,6 +60,10 @@ class BlobArtifact(BaseModel):
             raise ValueError("durable blobs must not have expires_at")
         if self.retention_policy == "ttl" and self.expires_at is None:
             raise ValueError("ttl blobs require expires_at")
+        if self.status == "active" and self.deleted_at is not None:
+            raise ValueError("active blobs must not have deleted_at")
+        if self.status == "deleted" and self.deleted_at is None:
+            raise ValueError("deleted blobs require deleted_at")
         return self
 
 

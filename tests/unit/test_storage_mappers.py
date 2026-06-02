@@ -266,6 +266,27 @@ def test_blob_artifact_mapper_round_trip():
     assert mapped == artifact
 
 
+def test_blob_artifact_tombstone_mapper_round_trip():
+    deleted_at = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    artifact = BlobArtifact(
+        kind="page_image",
+        object_key="page_images/sha256/aa/" + "a" * 64 + ".png",
+        bucket_name="paperintel",
+        content_hash="a" * 64,
+        content_type="image/png",
+        size_bytes=128,
+        retention_policy="ttl",
+        expires_at=deleted_at,
+        status="deleted",
+        deleted_at=deleted_at,
+        cleanup_metadata={"code": "ttl_blob_deleted"},
+    )
+
+    mapped = orm_to_blob_artifact(blob_artifact_to_orm(artifact))
+
+    assert mapped == artifact
+
+
 def test_blob_reference_mapper_round_trip():
     reference = BlobReference(
         blob_id="blob-1",

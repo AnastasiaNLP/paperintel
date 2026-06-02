@@ -159,31 +159,24 @@ class S3BlobStore:
         _validate_content_type(kind, resolved_content_type)
         content_hash = hashlib.sha256(content).hexdigest()
         object_key = object_key_for(kind, content_hash)
-        existing = self._head_object_or_none(object_key)
-        if existing is None:
-            try:
-                self.client.put_object(
-                    Bucket=self.bucket_name,
-                    Key=object_key,
-                    Body=content,
-                    ContentType=resolved_content_type,
-                )
-            except Exception as exc:
-                raise BlobStoreUnavailableError(
-                    f"Could not upload blob object {object_key!r}: {exc}"
-                ) from exc
-            stored_content_type = resolved_content_type
-            stored_size = len(content)
-        else:
-            stored_content_type = str(existing.get("ContentType") or resolved_content_type)
-            stored_size = int(existing.get("ContentLength", len(content)))
+        try:
+            self.client.put_object(
+                Bucket=self.bucket_name,
+                Key=object_key,
+                Body=content,
+                ContentType=resolved_content_type,
+            )
+        except Exception as exc:
+            raise BlobStoreUnavailableError(
+                f"Could not upload blob object {object_key!r}: {exc}"
+            ) from exc
         return StoredBlobObject(
             kind=kind,
             object_key=object_key,
             bucket_name=self.bucket_name,
             content_hash=content_hash,
-            content_type=stored_content_type,
-            size_bytes=stored_size,
+            content_type=resolved_content_type,
+            size_bytes=len(content),
         )
 
     def put_staging(

@@ -281,6 +281,15 @@ class BlobArtifactORM(TimestampMixin, Base):
             "size_bytes >= 0",
             name="ck_blob_artifacts_size_nonnegative",
         ),
+        CheckConstraint(
+            "status in ('active', 'deleted')",
+            name="ck_blob_artifacts_status",
+        ),
+        CheckConstraint(
+            "(status = 'active' and deleted_at is null) "
+            "or (status = 'deleted' and deleted_at is not null)",
+            name="ck_blob_artifacts_deletion_state",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -292,6 +301,13 @@ class BlobArtifactORM(TimestampMixin, Base):
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     storage_backend: Mapped[str] = mapped_column(String(32), nullable=False)
     retention_policy: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="active",
+        server_default="active",
+        index=True,
+    )
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -301,6 +317,17 @@ class BlobArtifactORM(TimestampMixin, Base):
         DateTime(timezone=True),
         nullable=True,
         index=True,
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    cleanup_metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=dict,
+        server_default="{}",
     )
 
     references: Mapped[list["BlobReferenceORM"]] = relationship(
