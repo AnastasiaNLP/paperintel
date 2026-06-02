@@ -7,6 +7,7 @@ from models.discovery import SearchCandidate
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.errors import ErrorCodes, StructuredError, make_error
 from models.jobs import WorkflowJob
+from models.pdf_uploads import PdfUpload
 from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
 from models.session import Session, Turn
 from storage.mappers import (
@@ -22,12 +23,14 @@ from storage.mappers import (
     orm_to_comparison_artifact,
     orm_to_paper_chunk,
     orm_to_paper_workspace,
+    orm_to_pdf_upload,
     orm_to_session,
     orm_to_search_candidate,
     orm_to_structured_error,
     orm_to_turn,
     paper_chunk_to_orm,
     paper_workspace_to_orm,
+    pdf_upload_to_orm,
     search_candidate_to_orm,
     session_to_orm,
     structured_error_to_orm,
@@ -176,6 +179,7 @@ def test_paper_workspace_mapper_round_trip():
         title="Attention Is All You Need",
         source_url="https://arxiv.org/abs/1706.03762",
         pipeline_stage="chunk_and_index",
+        pipeline_version="pipeline-v2",
         finalized_report_json={"recommended_action": "prototype"},
         method_extraction_json={"method_name": "Transformer"},
         benchmarks_json=[{"task": "translation", "metric": "BLEU"}],
@@ -210,7 +214,13 @@ def test_workflow_job_mapper_round_trip():
         result_json={"phase": "qa"},
         attempts=1,
         max_attempts=2,
+        idempotency_key="session-1:blob-1:v1",
+        pipeline_version="v1",
+        next_attempt_at=datetime(2026, 6, 2, tzinfo=timezone.utc),
+        retry_policy_json={"base_delay_seconds": 10},
         locked_by="worker-1",
+        lease_expires_at=datetime(2026, 6, 2, 0, 5, tzinfo=timezone.utc),
+        heartbeat_at=datetime(2026, 6, 2, tzinfo=timezone.utc),
     )
 
     mapped = orm_to_workflow_job(workflow_job_to_orm(job))
@@ -267,3 +277,22 @@ def test_blob_reference_mapper_round_trip():
     mapped = orm_to_blob_reference(blob_reference_to_orm(reference))
 
     assert mapped == reference
+
+
+def test_pdf_upload_mapper_round_trip():
+    finalized_at = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    upload = PdfUpload(
+        session_id="session-1",
+        blob_id="blob-1",
+        object_key="uploads/session-1/upload-1.pdf",
+        expected_sha256="a" * 64,
+        actual_sha256="a" * 64,
+        size_bytes=128,
+        status="finalized",
+        expires_at=datetime(2026, 6, 3, tzinfo=timezone.utc),
+        finalized_at=finalized_at,
+    )
+
+    mapped = orm_to_pdf_upload(pdf_upload_to_orm(upload))
+
+    assert mapped == upload

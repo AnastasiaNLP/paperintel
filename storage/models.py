@@ -88,6 +88,10 @@ class SessionORM(TimestampMixin, Base):
         back_populates="session",
         cascade="all, delete-orphan",
     )
+    pdf_uploads: Mapped[list["PdfUploadORM"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
 
 
 class StructuredErrorORM(Base):
@@ -281,7 +285,7 @@ class BlobArtifactORM(TimestampMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    object_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
     bucket_name: Mapped[str] = mapped_column(String(255), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     content_type: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -318,6 +322,15 @@ class BlobReferenceORM(Base):
             "ref_kind in ('session', 'paper_workspace', 'workflow_job')",
             name="ck_blob_references_ref_kind",
         ),
+        CheckConstraint(
+            "status in ('active', 'released')",
+            name="ck_blob_references_status",
+        ),
+        CheckConstraint(
+            "(status = 'active' and released_at is null) "
+            "or (status = 'released' and released_at is not null)",
+            name="ck_blob_references_release_state",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -334,6 +347,17 @@ class BlobReferenceORM(Base):
         default=dict,
         server_default="{}",
     )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="active",
+        server_default="active",
+        index=True,
+    )
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -343,11 +367,63 @@ class BlobReferenceORM(Base):
     blob: Mapped[BlobArtifactORM] = relationship(back_populates="references")
 
 
+class PdfUploadORM(TimestampMixin, Base):
+    __tablename__ = "pdf_uploads"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('initiated', 'uploaded', 'finalized', 'enqueued', 'failed', 'expired')",
+            name="ck_pdf_uploads_status",
+        ),
+        CheckConstraint(
+            "size_bytes is null or size_bytes >= 0",
+            name="ck_pdf_uploads_size_nonnegative",
+        ),
+        CheckConstraint(
+            "status not in ('finalized', 'enqueued') or "
+            "(blob_id is not null and expected_sha256 is not null and "
+            "actual_sha256 is not null and expected_sha256 = actual_sha256 "
+            "and finalized_at is not null)",
+            name="ck_pdf_uploads_finalized_integrity",
+        ),
+        UniqueConstraint("object_key", name="uq_pdf_uploads_object_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    blob_id: Mapped[str | None] = mapped_column(
+        ForeignKey("blob_artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    object_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    expected_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actual_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_json: Mapped[dict[str, Any] | None] = mapped_column(
+        jsonb_type(), nullable=True
+    )
+
+    session: Mapped[SessionORM] = relationship(back_populates="pdf_uploads")
+
+
+
 class WorkflowJobORM(TimestampMixin, Base):
     __tablename__ = "workflow_jobs"
     __table_args__ = (
         CheckConstraint(
-            "kind in ('analyze_paper', 'analyze_selected', 'discover', 'compare', 'synthesize', 'judge_eval')",
+            "kind in ('analyze_paper', 'analyze_selected', 'analyze_pdf_blob', 'discover', 'compare', 'synthesize', 'judge_eval')",
             name="ck_workflow_jobs_kind",
         ),
         CheckConstraint(
@@ -382,11 +458,32 @@ class WorkflowJobORM(TimestampMixin, Base):
     )
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True
+    )
+    pipeline_version: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="v1", server_default="v1"
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    retry_policy_json: Mapped[dict[str, Any]] = mapped_column(
+        jsonb_type(), nullable=False, default=dict, server_default="{}"
+    )
     locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     locked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
         index=True,
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -513,6 +610,9 @@ class PaperWorkspaceORM(TimestampMixin, Base):
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
     pipeline_stage: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    pipeline_version: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="v1", server_default="v1"
+    )
     finalized_report_json: Mapped[dict[str, Any] | None] = mapped_column(
         jsonb_type(),
         nullable=True,
@@ -566,6 +666,7 @@ Index("ix_workflow_jobs_session_created_at", WorkflowJobORM.session_id, Workflow
 Index("ix_workflow_jobs_status_created_at", WorkflowJobORM.status, WorkflowJobORM.created_at)
 Index("ix_workflow_jobs_kind_status", WorkflowJobORM.kind, WorkflowJobORM.status)
 Index("ix_blob_references_kind_ref", BlobReferenceORM.ref_kind, BlobReferenceORM.ref_id)
+Index("ix_pdf_uploads_session_created_at", PdfUploadORM.session_id, PdfUploadORM.created_at)
 Index("ix_paper_chunks_paper_chunk", PaperChunkORM.paper_id, PaperChunkORM.chunk_index)
 Index("ix_paper_chunks_session_paper", PaperChunkORM.session_id, PaperChunkORM.paper_id)
 Index(

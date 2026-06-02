@@ -9,6 +9,7 @@ from storage.models import (
     ComparisonArtifactORM,
     PaperChunkORM,
     PaperWorkspaceORM,
+    PdfUploadORM,
     SearchCandidateORM,
     SessionORM,
     StructuredErrorORM,
@@ -35,6 +36,7 @@ def test_initial_storage_metadata_contains_foundation_tables():
         "arxiv_metadata_cache",
         "blob_artifacts",
         "blob_references",
+        "pdf_uploads",
     }.issubset(Base.metadata.tables.keys())
 
 
@@ -168,6 +170,7 @@ def test_paper_workspace_table_matches_artifact_contract_columns():
         "title",
         "source_url",
         "pipeline_stage",
+        "pipeline_version",
         "finalized_report_json",
         "method_extraction_json",
         "benchmarks_json",
@@ -218,8 +221,15 @@ def test_workflow_job_table_matches_async_job_contract_columns():
         "error_json",
         "attempts",
         "max_attempts",
+        "idempotency_key",
+        "pipeline_version",
+        "next_attempt_at",
+        "retry_policy_json",
         "locked_by",
         "locked_at",
+        "lease_expires_at",
+        "heartbeat_at",
+        "cancel_requested_at",
         "started_at",
         "finished_at",
         "created_at",
@@ -231,6 +241,7 @@ def test_workflow_job_table_matches_async_job_contract_columns():
     assert isinstance(_postgres_type(columns.input_json), postgresql.JSONB)
     assert isinstance(_postgres_type(columns.result_json), postgresql.JSONB)
     assert isinstance(_postgres_type(columns.error_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.retry_policy_json), postgresql.JSONB)
     assert {
         "ck_workflow_jobs_kind",
         "ck_workflow_jobs_status",
@@ -309,7 +320,10 @@ def test_blob_artifact_table_matches_registry_contract_columns():
 def test_blob_reference_table_matches_polymorphic_reference_contract():
     columns = BlobReferenceORM.__table__.c
 
-    for name in ["id", "blob_id", "ref_kind", "ref_id", "metadata_json", "created_at"]:
+    for name in [
+        "id", "blob_id", "ref_kind", "ref_id", "metadata_json",
+        "status", "released_at", "created_at",
+    ]:
         assert name in columns
 
     foreign_keys = {fk.target_fullname for fk in BlobReferenceORM.__table__.foreign_keys}
@@ -318,7 +332,33 @@ def test_blob_reference_table_matches_polymorphic_reference_contract():
     assert {
         "uq_blob_references_blob_kind_ref",
         "ck_blob_references_ref_kind",
+        "ck_blob_references_status",
+        "ck_blob_references_release_state",
     }.issubset({constraint.name for constraint in BlobReferenceORM.__table__.constraints})
     assert "ix_blob_references_kind_ref" in {
         index.name for index in BlobReferenceORM.__table__.indexes
+    }
+
+
+def test_pdf_upload_table_matches_durable_upload_contract():
+    columns = PdfUploadORM.__table__.c
+
+    for name in [
+        "id", "session_id", "blob_id", "object_key", "expected_sha256",
+        "actual_sha256", "size_bytes", "content_type", "status",
+        "expires_at", "finalized_at", "error_json", "created_at", "updated_at",
+    ]:
+        assert name in columns
+
+    foreign_keys = {fk.target_fullname for fk in PdfUploadORM.__table__.foreign_keys}
+    assert foreign_keys == {"sessions.id", "blob_artifacts.id"}
+    assert isinstance(_postgres_type(columns.error_json), postgresql.JSONB)
+    assert {
+        "ck_pdf_uploads_status",
+        "ck_pdf_uploads_size_nonnegative",
+        "ck_pdf_uploads_finalized_integrity",
+        "uq_pdf_uploads_object_key",
+    }.issubset({constraint.name for constraint in PdfUploadORM.__table__.constraints})
+    assert "ix_pdf_uploads_session_created_at" in {
+        index.name for index in PdfUploadORM.__table__.indexes
     }

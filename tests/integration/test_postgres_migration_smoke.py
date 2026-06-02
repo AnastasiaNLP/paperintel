@@ -43,11 +43,27 @@ def test_alembic_upgrade_and_downgrade_against_postgres():
             "arxiv_metadata_cache",
             "blob_artifacts",
             "blob_references",
+            "pdf_uploads",
         }.issubset(inspector.get_table_names())
 
-        with engine.connect() as conn:
+        with engine.begin() as conn:
             version = conn.execute(text("select version_num from alembic_version")).scalar()
-        assert version == "20260601_0007"
+            conn.execute(
+                text(
+                    "insert into sessions "
+                    "(id, persona, phase, selected_candidate_ids, active_paper_ids) "
+                    "values ('migration-session', 'engineer', 'analysis', '[]'::jsonb, '[]'::jsonb)"
+                )
+            )
+            conn.execute(
+                text(
+                    "insert into workflow_jobs "
+                    "(id, session_id, kind, status, input_json, attempts, max_attempts) "
+                    "values ('migration-pdf-job', 'migration-session', 'analyze_pdf_blob', "
+                    "'queued', '{}'::jsonb, 0, 1)"
+                )
+            )
+        assert version == "20260602_0008"
     finally:
         command.downgrade(config, "base")
         engine.dispose()

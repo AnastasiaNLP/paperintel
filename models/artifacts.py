@@ -21,6 +21,7 @@ class PaperWorkspace(BaseModel):
     title: str | None = None
     source_url: str
     pipeline_stage: str
+    pipeline_version: str = "v1"
     finalized_report_json: dict | None = None
     method_extraction_json: dict | None = None
     benchmarks_json: list[dict] = Field(default_factory=list)

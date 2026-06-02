@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 JobKind: TypeAlias = Literal[
     "analyze_paper",
     "analyze_selected",
+    "analyze_pdf_blob",
     "discover",
     "compare",
     "synthesize",
@@ -36,8 +37,15 @@ class WorkflowJob(BaseModel):
     error_json: dict[str, Any] | None = None
     attempts: int = Field(default=0, ge=0)
     max_attempts: int = Field(default=1, ge=1)
+    idempotency_key: str | None = None
+    pipeline_version: str = "v1"
+    next_attempt_at: datetime | None = None
+    retry_policy_json: dict[str, Any] = Field(default_factory=dict)
     locked_by: str | None = None
     locked_at: datetime | None = None
+    lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)

@@ -15,6 +15,9 @@ def test_workflow_job_defaults_to_queued_with_single_attempt_budget():
     assert job.status == "queued"
     assert job.attempts == 0
     assert job.max_attempts == 1
+    assert job.pipeline_version == "v1"
+    assert job.retry_policy_json == {}
+    assert job.idempotency_key is None
     assert job.result_json is None
     assert job.error_json is None
     assert job.created_at.tzinfo is not None
@@ -50,3 +53,17 @@ def test_workflow_job_rejects_invalid_attempt_counts():
             input_json={},
             max_attempts=0,
         )
+
+
+def test_workflow_job_accepts_async_pdf_reliability_fields():
+    job = WorkflowJob(
+        session_id="session-1",
+        kind="analyze_pdf_blob",
+        input_json={"blob_id": "blob-1"},
+        idempotency_key="session-1:blob-1:v1",
+        pipeline_version="v1",
+        retry_policy_json={"base_delay_seconds": 10},
+    )
+
+    assert job.kind == "analyze_pdf_blob"
+    assert job.idempotency_key == "session-1:blob-1:v1"

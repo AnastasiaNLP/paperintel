@@ -6,6 +6,7 @@ from models.external_metadata import ArxivMetadataCacheEntry
 from models.errors import StructuredError
 from models.retrieval import ChunkLocation, ChunkSource, EvidenceArtifact, PaperChunk
 from models.jobs import WorkflowJob
+from models.pdf_uploads import PdfUpload
 from models.session import Session, Turn
 from storage.models import (
     AgentRunORM,
@@ -15,6 +16,7 @@ from storage.models import (
     ComparisonArtifactORM,
     PaperChunkORM,
     PaperWorkspaceORM,
+    PdfUploadORM,
     SearchCandidateORM,
     SessionORM,
     StructuredErrorORM,
@@ -254,6 +256,7 @@ def paper_workspace_to_orm(workspace: PaperWorkspace) -> PaperWorkspaceORM:
         title=workspace.title,
         source_url=workspace.source_url,
         pipeline_stage=workspace.pipeline_stage,
+        pipeline_version=workspace.pipeline_version,
         finalized_report_json=workspace.finalized_report_json,
         method_extraction_json=workspace.method_extraction_json,
         benchmarks_json=workspace.benchmarks_json,
@@ -272,6 +275,7 @@ def orm_to_paper_workspace(orm: PaperWorkspaceORM) -> PaperWorkspace:
         title=orm.title,
         source_url=orm.source_url,
         pipeline_stage=orm.pipeline_stage,
+        pipeline_version=orm.pipeline_version,
         finalized_report_json=orm.finalized_report_json,
         method_extraction_json=orm.method_extraction_json,
         benchmarks_json=list(orm.benchmarks_json or []),
@@ -391,6 +395,8 @@ def blob_reference_to_orm(reference: BlobReference) -> BlobReferenceORM:
         ref_kind=reference.ref_kind,
         ref_id=reference.ref_id,
         metadata_json=reference.metadata,
+        status=reference.status,
+        released_at=reference.released_at,
         created_at=reference.created_at,
     )
 
@@ -402,7 +408,47 @@ def orm_to_blob_reference(orm: BlobReferenceORM) -> BlobReference:
         ref_kind=orm.ref_kind,
         ref_id=orm.ref_id,
         metadata=orm.metadata_json or {},
+        status=orm.status,
+        released_at=orm.released_at,
         created_at=orm.created_at,
+    )
+
+
+def pdf_upload_to_orm(upload: PdfUpload) -> PdfUploadORM:
+    return PdfUploadORM(
+        id=upload.id,
+        session_id=upload.session_id,
+        blob_id=upload.blob_id,
+        object_key=upload.object_key,
+        expected_sha256=upload.expected_sha256,
+        actual_sha256=upload.actual_sha256,
+        size_bytes=upload.size_bytes,
+        content_type=upload.content_type,
+        status=upload.status,
+        expires_at=upload.expires_at,
+        finalized_at=upload.finalized_at,
+        error_json=upload.error_json,
+        created_at=upload.created_at,
+        updated_at=upload.updated_at,
+    )
+
+
+def orm_to_pdf_upload(orm: PdfUploadORM) -> PdfUpload:
+    return PdfUpload(
+        id=orm.id,
+        session_id=orm.session_id,
+        blob_id=orm.blob_id,
+        object_key=orm.object_key,
+        expected_sha256=orm.expected_sha256,
+        actual_sha256=orm.actual_sha256,
+        size_bytes=orm.size_bytes,
+        content_type=orm.content_type,
+        status=orm.status,
+        expires_at=orm.expires_at,
+        finalized_at=orm.finalized_at,
+        error_json=orm.error_json,
+        created_at=orm.created_at,
+        updated_at=orm.updated_at,
     )
 
 
@@ -417,8 +463,15 @@ def workflow_job_to_orm(job: WorkflowJob) -> WorkflowJobORM:
         error_json=job.error_json,
         attempts=job.attempts,
         max_attempts=job.max_attempts,
+        idempotency_key=job.idempotency_key,
+        pipeline_version=job.pipeline_version,
+        next_attempt_at=job.next_attempt_at,
+        retry_policy_json=job.retry_policy_json,
         locked_by=job.locked_by,
         locked_at=job.locked_at,
+        lease_expires_at=job.lease_expires_at,
+        heartbeat_at=job.heartbeat_at,
+        cancel_requested_at=job.cancel_requested_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
         created_at=job.created_at,
@@ -437,8 +490,15 @@ def orm_to_workflow_job(orm: WorkflowJobORM) -> WorkflowJob:
         error_json=orm.error_json,
         attempts=orm.attempts,
         max_attempts=orm.max_attempts,
+        idempotency_key=orm.idempotency_key,
+        pipeline_version=orm.pipeline_version,
+        next_attempt_at=orm.next_attempt_at,
+        retry_policy_json=orm.retry_policy_json or {},
         locked_by=orm.locked_by,
         locked_at=orm.locked_at,
+        lease_expires_at=orm.lease_expires_at,
+        heartbeat_at=orm.heartbeat_at,
+        cancel_requested_at=orm.cancel_requested_at,
         started_at=orm.started_at,
         finished_at=orm.finished_at,
         created_at=orm.created_at,

@@ -72,3 +72,26 @@ def test_blob_reference_accepts_polymorphic_relationship():
 
     assert reference.ref_kind == "paper_workspace"
     assert reference.metadata == {"source": "upload"}
+
+
+def test_blob_reference_released_state_requires_timestamp():
+    with pytest.raises(ValidationError, match="released references require released_at"):
+        BlobReference(
+            blob_id="blob-1",
+            ref_kind="workflow_job",
+            ref_id="job-1",
+            status="released",
+        )
+
+
+def test_blob_reference_accepts_released_historical_relationship():
+    released_at = datetime.now(timezone.utc)
+    reference = BlobReference(
+        blob_id="blob-1",
+        ref_kind="workflow_job",
+        ref_id="job-1",
+        status="released",
+        released_at=released_at,
+    )
+
+    assert reference.released_at == released_at

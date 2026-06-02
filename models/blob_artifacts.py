@@ -16,6 +16,7 @@ BlobReferenceKind: TypeAlias = Literal[
     "paper_workspace",
     "workflow_job",
 ]
+BlobReferenceStatus: TypeAlias = Literal["active", "released"]
 
 
 class BlobArtifact(BaseModel):
@@ -66,6 +67,8 @@ class BlobReference(BaseModel):
     ref_kind: BlobReferenceKind
     ref_id: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    status: BlobReferenceStatus = "active"
+    released_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("blob_id", "ref_id")
@@ -74,3 +77,11 @@ class BlobReference(BaseModel):
         if not value.strip():
             raise ValueError("must not be blank")
         return value
+
+    @model_validator(mode="after")
+    def validate_release_state(self) -> "BlobReference":
+        if self.status == "active" and self.released_at is not None:
+            raise ValueError("active references must not have released_at")
+        if self.status == "released" and self.released_at is None:
+            raise ValueError("released references require released_at")
+        return self

@@ -58,6 +58,7 @@ from storage.models import (
     ComparisonArtifactORM,
     PaperChunkORM,
     PaperWorkspaceORM,
+    PdfUploadORM,
     SearchCandidateORM,
     SessionORM,
     StructuredErrorORM,
@@ -932,6 +933,7 @@ class PostgresPaperWorkspaceRepository:
 
 
 def clear_foundation_tables(db: DbSession) -> None:
+    db.execute(delete(PdfUploadORM))
     db.execute(delete(BlobReferenceORM))
     db.execute(delete(BlobArtifactORM))
     db.execute(delete(WorkflowJobORM))
