@@ -251,6 +251,7 @@ class ChatHandler:
         user_content: str | None = None,
         expected_paper_id: str | None = None,
         skip_arxiv_metadata_fetch: bool = False,
+        pipeline_version: str = "v1",
     ) -> HandlerResult:
         session = self.store.require_session(session_id)
         user_turn = self.store.append_turn(
@@ -296,7 +297,11 @@ class ChatHandler:
                 error=error,
             )
 
-        self._persist_analysis_artifacts(session, graph_result)
+        self._persist_analysis_artifacts(
+            session,
+            graph_result,
+            pipeline_version=pipeline_version,
+        )
 
         if graph_result.next_phase is not None:
             session = self.store.update_phase(session.id, graph_result.next_phase)
@@ -338,6 +343,8 @@ class ChatHandler:
         self,
         session: Session,
         graph_result: GraphInvocationResult,
+        *,
+        pipeline_version: str = "v1",
     ) -> None:
         if self.artifact_repository is None:
             return
@@ -347,7 +354,11 @@ class ChatHandler:
             return
 
         try:
-            workspaces = _workspaces_from_analysis_raw(session.id, graph_result.raw)
+            workspaces = _workspaces_from_analysis_raw(
+                session.id,
+                graph_result.raw,
+                pipeline_version=pipeline_version,
+            )
             for workspace in workspaces:
                 self.artifact_repository.upsert_workspace(workspace)
 
@@ -681,6 +692,8 @@ def _analysis_referenced_paper_ids(raw: dict[str, Any]) -> list[str]:
 def _workspaces_from_analysis_raw(
     session_id: str,
     raw: dict[str, Any],
+    *,
+    pipeline_version: str = "v1",
 ) -> list[PaperWorkspace]:
     stage = str(raw.get("processing_stage") or "completed")
     workspaces = []
@@ -698,6 +711,7 @@ def _workspaces_from_analysis_raw(
                 title=getattr(metadata, "title", None),
                 source_url=slot.input_url,
                 pipeline_stage=stage,
+                pipeline_version=pipeline_version,
                 finalized_report_json=_model_dump(slot.engineer_report),
                 method_extraction_json=_model_dump(slot.method_extraction),
                 benchmarks_json=[

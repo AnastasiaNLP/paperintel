@@ -16,6 +16,7 @@ from models.discovery import SearchCandidate
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.jobs import WorkflowJob
 from models.pdf_uploads import PdfUpload
+from models.registered_pdf_errors import RegisteredPdfBlobNotAuthorizedError
 from models.errors import ErrorCodes, make_error
 from models.retrieval import ChunkSource, PaperChunk
 from storage.db import make_engine, make_session_factory
@@ -404,6 +405,7 @@ def test_postgres_paper_workspace_repository_upserts_and_gets_workspace(
             update={
                 "title": "Transformer",
                 "pipeline_stage": "comparison_completed",
+                "pipeline_version": "pipeline-v2",
                 "finalized_report_json": {"recommended_action": "implement_now"},
                 "benchmarks_json": [{"task": "translation", "metric": "accuracy"}],
             }
@@ -419,6 +421,7 @@ def test_postgres_paper_workspace_repository_upserts_and_gets_workspace(
     assert loaded.id == workspace.id
     assert loaded.title == "Transformer"
     assert loaded.pipeline_stage == "comparison_completed"
+    assert loaded.pipeline_version == "pipeline-v2"
     assert loaded.finalized_report_json == {"recommended_action": "implement_now"}
     assert loaded.benchmarks_json == [{"task": "translation", "metric": "accuracy"}]
     assert [item.paper_id for item in listed] == ["1706.03762"]
@@ -906,12 +909,23 @@ def test_postgres_blob_artifact_repository_references_are_idempotent(session_fac
         ref_id="session-1",
     ) == [artifact]
 
-    repository.delete_reference(
+    repository.release_reference(
         artifact.id,
         ref_kind="session",
         ref_id="session-1",
     )
-    assert repository.list_references(artifact.id) == [workspace]
+    references = repository.list_references(artifact.id)
+    assert [(reference.id, reference.status) for reference in references] == [
+        (first.id, "released"),
+        (workspace.id, "active"),
+    ]
+    assert references[0].released_at is not None
+    assert repository.has_active_reference(
+        artifact.id, ref_kind="session", ref_id="session-1"
+    ) is False
+    assert repository.list_artifacts_for_reference(
+        ref_kind="session", ref_id="session-1"
+    ) == []
 
 
 def test_postgres_blob_artifact_repository_marks_material_access(session_factory):
@@ -1120,3 +1134,160 @@ def test_postgres_pdf_upload_repository_allows_only_one_terminal_transition(sess
 
     assert statuses.count("rejected") == 1
     assert repository.get(upload.id).status in {"finalized", "failed"}
+
+
+def test_postgres_workflow_job_repository_enqueues_pdf_blob_idempotently(session_factory):
+    session = PostgresSessionStore(session_factory).create_session()
+    blob_repository = PostgresBlobArtifactRepository(session_factory)
+    artifact = blob_repository.upsert_artifact(_stored_pdf())
+    blob_repository.add_reference(artifact.id, ref_kind="session", ref_id=session.id)
+    upload_repository = PostgresPdfUploadRepository(session_factory)
+    upload = upload_repository.create(
+        PdfUpload(
+            session_id=session.id,
+            object_key=f"uploads/{session.id}/enqueue.pdf",
+            expected_sha256="a" * 64,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        )
+    )
+    upload_repository.mark_uploaded(upload.id)
+    upload_repository.finalize(
+        upload.id, blob_id=artifact.id, actual_sha256="a" * 64, size_bytes=128
+    )
+    repository = PostgresWorkflowJobRepository(session_factory)
+    first = repository.enqueue_pdf_blob(
+        session_id=session.id,
+        upload_id=upload.id,
+        paper_id="paper-1",
+        skip_arxiv_metadata_fetch=False,
+        pipeline_version="v1",
+    )
+    second = repository.enqueue_pdf_blob(
+        session_id=session.id,
+        upload_id=upload.id,
+        paper_id="paper-1",
+        skip_arxiv_metadata_fetch=False,
+        pipeline_version="v1",
+    )
+
+    assert second.id == first.id
+    assert upload_repository.get(upload.id).status == "enqueued"
+    references = blob_repository.list_references(artifact.id)
+    assert [(reference.ref_kind, reference.ref_id, reference.status) for reference in references] == [
+        ("session", session.id, "active"),
+        ("workflow_job", first.id, "active"),
+    ]
+
+    canceled = repository.mark_canceled(first.id)
+    assert canceled.status == "canceled"
+    references = blob_repository.list_references(artifact.id)
+    assert [(reference.ref_kind, reference.ref_id, reference.status) for reference in references] == [
+        ("session", session.id, "active"),
+        ("workflow_job", first.id, "released"),
+    ]
+    assert references[1].released_at is not None
+
+
+def test_postgres_workflow_job_repository_serializes_pdf_enqueue_race(session_factory):
+    session = PostgresSessionStore(session_factory).create_session()
+    blob_repository = PostgresBlobArtifactRepository(session_factory)
+    artifact = blob_repository.upsert_artifact(_stored_pdf())
+    blob_repository.add_reference(artifact.id, ref_kind="session", ref_id=session.id)
+    upload_repository = PostgresPdfUploadRepository(session_factory)
+    upload = upload_repository.create(
+        PdfUpload(
+            session_id=session.id,
+            object_key=f"uploads/{session.id}/enqueue-race.pdf",
+            expected_sha256="a" * 64,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        )
+    )
+    upload_repository.mark_uploaded(upload.id)
+    upload_repository.finalize(
+        upload.id, blob_id=artifact.id, actual_sha256="a" * 64, size_bytes=128
+    )
+    barrier = Barrier(2)
+
+    def enqueue_once(index):
+        barrier.wait()
+        return PostgresWorkflowJobRepository(session_factory).enqueue_pdf_blob(
+            session_id=session.id,
+            upload_id=upload.id,
+            paper_id="paper-1",
+            skip_arxiv_metadata_fetch=False,
+            pipeline_version="v1",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        jobs = list(pool.map(enqueue_once, range(2)))
+
+    assert len({job.id for job in jobs}) == 1
+    references = blob_repository.list_references(artifact.id)
+    assert [(reference.ref_kind, reference.ref_id) for reference in references] == [
+        ("session", session.id),
+        ("workflow_job", jobs[0].id),
+    ]
+
+
+@pytest.mark.parametrize("status", ["initiated", "uploaded", "failed"])
+def test_postgres_workflow_job_repository_rejects_unfinalized_pdf_upload(
+    session_factory, status
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    blob_repository = PostgresBlobArtifactRepository(session_factory)
+    artifact = blob_repository.upsert_artifact(_stored_pdf())
+    blob_repository.add_reference(artifact.id, ref_kind="session", ref_id=session.id)
+    upload = PostgresPdfUploadRepository(session_factory).create(
+        PdfUpload(
+            session_id=session.id,
+            blob_id=artifact.id,
+            object_key=f"uploads/{session.id}/{status}.pdf",
+            expected_sha256="a" * 64,
+            status=status,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        )
+    )
+
+    with pytest.raises(InvalidPdfUploadTransitionError):
+        PostgresWorkflowJobRepository(session_factory).enqueue_pdf_blob(
+            session_id=session.id,
+            upload_id=upload.id,
+            paper_id=None,
+            skip_arxiv_metadata_fetch=False,
+            pipeline_version="v1",
+        )
+
+
+def test_postgres_workflow_job_repository_rolls_back_unauthorized_pdf_enqueue(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    artifact = PostgresBlobArtifactRepository(session_factory).upsert_artifact(
+        _stored_pdf()
+    )
+    upload_repository = PostgresPdfUploadRepository(session_factory)
+    upload = upload_repository.create(
+        PdfUpload(
+            session_id=session.id,
+            object_key=f"uploads/{session.id}/unauthorized.pdf",
+            expected_sha256="a" * 64,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        )
+    )
+    upload_repository.mark_uploaded(upload.id)
+    upload_repository.finalize(
+        upload.id, blob_id=artifact.id, actual_sha256="a" * 64, size_bytes=128
+    )
+    repository = PostgresWorkflowJobRepository(session_factory)
+
+    with pytest.raises(RegisteredPdfBlobNotAuthorizedError):
+        repository.enqueue_pdf_blob(
+            session_id=session.id,
+            upload_id=upload.id,
+            paper_id=None,
+            skip_arxiv_metadata_fetch=False,
+            pipeline_version="v1",
+        )
+
+    assert upload_repository.get(upload.id).status == "finalized"
+    assert repository.list_for_session(session.id) == []

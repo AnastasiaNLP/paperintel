@@ -15,7 +15,9 @@ from models.discovery import SearchCandidate
 from models.api import HealthStatus
 from models.errors import ErrorCodes, make_error
 from models.jobs import WorkflowJob
+from models.jobs import pdf_blob_idempotency_key
 from models.pdf_uploads import PdfUpload
+from models.registered_pdf_errors import RegisteredPdfBlobNotAuthorizedError
 from models.session import utc_now
 from models.session import HandlerResult, Session, Turn
 from services.blob_store import BlobNotFoundError, BlobStoreUnavailableError
@@ -84,6 +86,7 @@ class FakeHandler:
         user_content=None,
         expected_paper_id=None,
         skip_arxiv_metadata_fetch=False,
+        pipeline_version="v1",
     ):
         self.analysis_input_calls.append(
             {
@@ -93,6 +96,7 @@ class FakeHandler:
                 "user_content": user_content,
                 "expected_paper_id": expected_paper_id,
                 "skip_arxiv_metadata_fetch": skip_arxiv_metadata_fetch,
+                "pipeline_version": pipeline_version,
             }
         )
         return HandlerResult(
@@ -419,6 +423,48 @@ class FakeWorkflowJobRepository:
         self.canceled.append(job_id)
         return job
 
+    def enqueue_pdf_blob(
+        self,
+        *,
+        session_id,
+        upload_id,
+        paper_id,
+        skip_arxiv_metadata_fetch,
+        pipeline_version,
+    ):
+        upload = self.upload_repository.get(upload_id)
+        job = WorkflowJob(
+            session_id=session_id,
+            kind="analyze_pdf_blob",
+            input_json={
+                "blob_id": upload.blob_id,
+                "upload_id": upload_id,
+                "paper_id": paper_id,
+                "skip_arxiv_metadata_fetch": skip_arxiv_metadata_fetch,
+                "pipeline_version": pipeline_version,
+            },
+            idempotency_key=pdf_blob_idempotency_key(
+                session_id=session_id,
+                blob_id=upload.blob_id,
+                paper_id=paper_id,
+                pipeline_version=pipeline_version,
+            ),
+            pipeline_version=pipeline_version,
+        )
+        existing = next(
+            (
+                persisted
+                for persisted in self.created
+                if persisted.idempotency_key == job.idempotency_key
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        self.jobs[job.id] = job
+        self.created.append(job)
+        return job
+
 
 def _candidate(candidate_id: str) -> SearchCandidate:
     return SearchCandidate(
@@ -516,6 +562,40 @@ def test_service_enqueue_analyze_selected_creates_queued_job():
     assert job.input_json == {}
 
 
+def test_service_enqueue_analyze_pdf_blob_creates_idempotent_job():
+    service, _, _, _, upload_repository = _upload_service()
+    repository = FakeWorkflowJobRepository()
+    service.workflow_job_repository = repository
+    repository.upload_repository = upload_repository
+    session = service.create_session()
+    upload = service.store_pdf_upload(session.id, b"%PDF-1.7\ncontent")
+
+    first = service.enqueue_analyze_pdf_blob(
+        session.id,
+        upload.id,
+        paper_id=" local-paper ",
+        skip_arxiv_metadata_fetch=True,
+    )
+    second = service.enqueue_analyze_pdf_blob(
+        session.id,
+        upload.id,
+        paper_id="local-paper",
+        skip_arxiv_metadata_fetch=True,
+    )
+
+    assert first == second
+    assert first.kind == "analyze_pdf_blob"
+    assert first.input_json == {
+        "blob_id": upload.blob_id,
+        "upload_id": upload.id,
+        "paper_id": "local-paper",
+        "skip_arxiv_metadata_fetch": True,
+        "pipeline_version": "v1",
+    }
+    assert first.idempotency_key.startswith("analyze_pdf_blob:")
+    assert len(repository.created) == 1
+
+
 def test_service_get_list_and_cancel_workflow_jobs():
     repository = FakeWorkflowJobRepository()
     service = PaperIntelService(
@@ -568,6 +648,7 @@ def test_service_analyze_pdf_passes_expected_paper_id_to_handler(tmp_path):
             "user_content": "Analyze local PDF 2501.12948",
             "expected_paper_id": "2501.12948",
             "skip_arxiv_metadata_fetch": True,
+            "pipeline_version": "v1",
         }
     ]
 
@@ -1183,13 +1264,17 @@ def test_service_analyze_registered_pdf_blob_does_not_upload_again():
     blob_store.put_calls.clear()
 
     result = service.analyze_registered_pdf_blob(
-        session.id, artifact.id, paper_id="1706.03762"
+        session.id,
+        artifact.id,
+        paper_id="1706.03762",
+        pipeline_version="pipeline-v2",
     )
 
     assert result.response_text == "pdf analysis complete"
     assert blob_store.put_calls == []
     assert blob_repository.accessed == [artifact.id]
     assert len(blob_store.materialized_paths) == 1
+    assert handler.analysis_input_calls[0]["pipeline_version"] == "pipeline-v2"
 
 
 def test_service_analyze_registered_pdf_blob_rejects_missing_session_reference():
@@ -1204,7 +1289,7 @@ def test_service_analyze_registered_pdf_blob_rejects_missing_session_reference()
     artifact = blob_repository.upsert_artifact(stored)
     blob_store.materialized_paths.clear()
 
-    with pytest.raises(InvalidPdfInputError, match="Registered PDF blob was not found"):
+    with pytest.raises(RegisteredPdfBlobNotAuthorizedError):
         service.analyze_registered_pdf_blob(session.id, artifact.id)
 
     assert blob_store.materialized_paths == []

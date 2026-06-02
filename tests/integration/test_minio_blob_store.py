@@ -114,6 +114,7 @@ class PersistingMinioPdfHandler:
         user_content=None,
         expected_paper_id=None,
         skip_arxiv_metadata_fetch=False,
+        pipeline_version="v1",
     ):
         materialized_path = Path(input_value)
         assert input_type == "pdf"
@@ -125,6 +126,7 @@ class PersistingMinioPdfHandler:
                 paper_id=expected_paper_id or "local-generated-paper",
                 source_url=f"local:{expected_paper_id or 'generated'}",
                 pipeline_stage="completed",
+                pipeline_version=pipeline_version,
             )
         )
         return HandlerResult(

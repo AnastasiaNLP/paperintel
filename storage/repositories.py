@@ -21,13 +21,14 @@ from models.blob_storage import StoredBlobObject
 from models.discovery import CandidateStatus, SearchCandidate
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.errors import StructuredError
-from models.jobs import JobKind, JobStatus, WorkflowJob
+from models.jobs import JobKind, JobStatus, WorkflowJob, pdf_blob_idempotency_key
 from models.pdf_upload_errors import (
     PdfUploadExpiredError,
     PdfUploadNotFoundError,
     PdfUploadStateError,
 )
 from models.pdf_uploads import PdfUpload, PdfUploadStatus
+from models.registered_pdf_errors import RegisteredPdfBlobNotAuthorizedError
 from models.retrieval import PaperChunk, UpsertChunksResult
 from models.session import Persona, Session, SessionPhase, Turn, TurnRole
 from storage.mappers import (
@@ -354,6 +355,7 @@ class PostgresBlobArtifactRepository:
                     .join(BlobReferenceORM)
                     .where(BlobReferenceORM.ref_kind == ref_kind)
                     .where(BlobReferenceORM.ref_id == ref_id)
+                    .where(BlobReferenceORM.status == "active")
                     .order_by(BlobReferenceORM.created_at.asc())
                 )
                 .scalars()
@@ -376,7 +378,7 @@ class PostgresBlobArtifactRepository:
             orm = self._require_orm(db, blob_id)
             return orm_to_blob_artifact(orm)
 
-    def delete_reference(
+    def release_reference(
         self,
         blob_id: str,
         *,
@@ -385,10 +387,12 @@ class PostgresBlobArtifactRepository:
     ) -> None:
         with self.session_factory() as db:
             db.execute(
-                delete(BlobReferenceORM)
+                update(BlobReferenceORM)
                 .where(BlobReferenceORM.blob_id == blob_id)
                 .where(BlobReferenceORM.ref_kind == ref_kind)
                 .where(BlobReferenceORM.ref_id == ref_id)
+                .where(BlobReferenceORM.status == "active")
+                .values(status="released", released_at=_utc_now())
             )
             db.commit()
 
@@ -515,6 +519,109 @@ class PostgresWorkflowJobRepository:
             db.commit()
         return job
 
+    def enqueue_pdf_blob(
+        self,
+        *,
+        session_id: str,
+        upload_id: str,
+        paper_id: str | None,
+        skip_arxiv_metadata_fetch: bool,
+        pipeline_version: str,
+    ) -> WorkflowJob:
+        with self.session_factory() as db:
+            upload = (
+                db.execute(
+                    select(PdfUploadORM)
+                    .where(PdfUploadORM.id == upload_id)
+                    .with_for_update()
+                )
+                .scalars()
+                .first()
+            )
+            if upload is None or upload.session_id != session_id:
+                raise PdfUploadNotFoundError(upload_id)
+            blob_id = upload.blob_id
+            if blob_id is None:
+                raise PdfUploadStateError(
+                    upload_id=upload.id,
+                    status=upload.status,
+                    target_status="enqueued",
+                )
+            job = WorkflowJob(
+                session_id=session_id,
+                kind="analyze_pdf_blob",
+                input_json={
+                    "blob_id": blob_id,
+                    "upload_id": upload.id,
+                    "paper_id": paper_id,
+                    "skip_arxiv_metadata_fetch": skip_arxiv_metadata_fetch,
+                    "pipeline_version": pipeline_version,
+                },
+                idempotency_key=pdf_blob_idempotency_key(
+                    session_id=session_id,
+                    blob_id=blob_id,
+                    paper_id=paper_id,
+                    pipeline_version=pipeline_version,
+                ),
+                pipeline_version=pipeline_version,
+            )
+
+            existing = (
+                db.execute(
+                    select(WorkflowJobORM).where(
+                        WorkflowJobORM.idempotency_key == job.idempotency_key
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if upload.status != "finalized" and not (
+                upload.status == "enqueued" and existing is not None
+            ):
+                raise PdfUploadStateError(
+                    upload_id=upload.id,
+                    status=upload.status,
+                    target_status="enqueued",
+                )
+            if not _has_active_blob_reference(
+                db, blob_id=blob_id, ref_kind="session", ref_id=session_id
+            ):
+                raise RegisteredPdfBlobNotAuthorizedError(
+                    session_id=session_id, blob_id=blob_id
+                )
+
+            if existing is None:
+                db.execute(
+                    pg_insert(WorkflowJobORM)
+                    .values(_workflow_job_values(job))
+                    .on_conflict_do_nothing(
+                        constraint="uq_workflow_jobs_idempotency_key"
+                    )
+                )
+                existing = (
+                    db.execute(
+                        select(WorkflowJobORM).where(
+                            WorkflowJobORM.idempotency_key == job.idempotency_key
+                        )
+                    )
+                    .scalars()
+                    .one()
+                )
+
+            _add_blob_reference(
+                db,
+                blob_id=blob_id,
+                ref_kind="workflow_job",
+                ref_id=existing.id,
+                metadata={"upload_id": upload.id},
+            )
+            if upload.status == "finalized":
+                upload.status = "enqueued"
+                upload.updated_at = _utc_now()
+            db.commit()
+            db.refresh(existing)
+            return orm_to_workflow_job(existing)
+
     def get(self, job_id: str) -> WorkflowJob | None:
         with self.session_factory() as db:
             orm = db.get(WorkflowJobORM, job_id)
@@ -601,6 +708,7 @@ class PostgresWorkflowJobRepository:
             orm.locked_by = None
             orm.locked_at = None
             orm.updated_at = now
+            _release_workflow_job_reference(db, job_id=orm.id, released_at=now)
             db.commit()
             db.refresh(orm)
             return orm_to_workflow_job(orm)
@@ -616,6 +724,7 @@ class PostgresWorkflowJobRepository:
             orm.locked_by = None
             orm.locked_at = None
             orm.updated_at = now
+            _release_workflow_job_reference(db, job_id=orm.id, released_at=now)
             db.commit()
             db.refresh(orm)
             return orm_to_workflow_job(orm)
@@ -630,6 +739,7 @@ class PostgresWorkflowJobRepository:
             orm.locked_by = None
             orm.locked_at = None
             orm.updated_at = now
+            _release_workflow_job_reference(db, job_id=orm.id, released_at=now)
             db.commit()
             db.refresh(orm)
             return orm_to_workflow_job(orm)
@@ -653,6 +763,87 @@ class PostgresWorkflowJobRepository:
                 status=orm.status,
                 target_status=target_status,
             )
+
+
+def _workflow_job_values(job: WorkflowJob) -> dict:
+    return {
+        "id": job.id,
+        "session_id": job.session_id,
+        "kind": job.kind,
+        "status": job.status,
+        "input_json": job.input_json,
+        "result_json": job.result_json,
+        "error_json": job.error_json,
+        "attempts": job.attempts,
+        "max_attempts": job.max_attempts,
+        "idempotency_key": job.idempotency_key,
+        "pipeline_version": job.pipeline_version,
+        "next_attempt_at": job.next_attempt_at,
+        "retry_policy_json": job.retry_policy_json,
+        "locked_by": job.locked_by,
+        "locked_at": job.locked_at,
+        "lease_expires_at": job.lease_expires_at,
+        "heartbeat_at": job.heartbeat_at,
+        "cancel_requested_at": job.cancel_requested_at,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+    }
+
+
+def _has_active_blob_reference(
+    db: DbSession,
+    *,
+    blob_id: str,
+    ref_kind: BlobReferenceKind,
+    ref_id: str,
+) -> bool:
+    return (
+        db.execute(
+            select(BlobReferenceORM.id)
+            .where(BlobReferenceORM.blob_id == blob_id)
+            .where(BlobReferenceORM.ref_kind == ref_kind)
+            .where(BlobReferenceORM.ref_id == ref_id)
+            .where(BlobReferenceORM.status == "active")
+        )
+        .scalars()
+        .first()
+        is not None
+    )
+
+
+def _add_blob_reference(
+    db: DbSession,
+    *,
+    blob_id: str,
+    ref_kind: BlobReferenceKind,
+    ref_id: str,
+    metadata: dict | None = None,
+) -> None:
+    db.execute(
+        pg_insert(BlobReferenceORM)
+        .values(
+            id=BlobReference(blob_id=blob_id, ref_kind=ref_kind, ref_id=ref_id).id,
+            blob_id=blob_id,
+            ref_kind=ref_kind,
+            ref_id=ref_id,
+            metadata_json=metadata or {},
+        )
+        .on_conflict_do_nothing(constraint="uq_blob_references_blob_kind_ref")
+    )
+
+
+def _release_workflow_job_reference(
+    db: DbSession, *, job_id: str, released_at: datetime
+) -> None:
+    db.execute(
+        update(BlobReferenceORM)
+        .where(BlobReferenceORM.ref_kind == "workflow_job")
+        .where(BlobReferenceORM.ref_id == job_id)
+        .where(BlobReferenceORM.status == "active")
+        .values(status="released", released_at=released_at)
+    )
 
 
 class PostgresSessionStore(SessionStore):
@@ -987,6 +1178,7 @@ class PostgresPaperWorkspaceRepository:
             existing.title = workspace.title
             existing.source_url = workspace.source_url
             existing.pipeline_stage = workspace.pipeline_stage
+            existing.pipeline_version = workspace.pipeline_version
             existing.finalized_report_json = workspace.finalized_report_json
             existing.method_extraction_json = workspace.method_extraction_json
             existing.benchmarks_json = workspace.benchmarks_json

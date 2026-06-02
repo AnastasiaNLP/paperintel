@@ -423,6 +423,32 @@ def test_handler_persists_single_analysis_workspace():
     assert workspace.full_markdown_report == "# Report"
 
 
+def test_handler_persists_requested_pipeline_version_for_pdf_analysis():
+    artifact_repository = FakeArtifactRepository()
+    analysis_runner = FakeRunner(
+        result={
+            "papers": [_paper_slot(arxiv_id="local-paper", input_url="/tmp/paper.pdf")],
+            "processing_stage": "chunk_and_index",
+            "next_phase": "qa",
+        }
+    )
+    handler, _, _, _ = _handler(
+        analysis_runner=analysis_runner,
+        artifact_repository=artifact_repository,
+    )
+    session = handler.create_session()
+
+    handler.analyze_paper_input(
+        session.id,
+        input_type="pdf",
+        input_value="/tmp/paper.pdf",
+        expected_paper_id="local-paper",
+        pipeline_version="pipeline-v2",
+    )
+
+    assert artifact_repository.workspaces[0].pipeline_version == "pipeline-v2"
+
+
 def test_analyze_selected_papers_persists_batch_workspaces_and_comparison():
     artifact_repository = FakeArtifactRepository()
     analysis_runner = FakeRunner(

@@ -22,6 +22,10 @@ from models.pdf_upload_errors import (
     PdfUploadStateError,
 )
 from models.pdf_uploads import PdfUpload, PdfUploadInitiation
+from models.registered_pdf_errors import (
+    RegisteredPdfBlobNotAuthorizedError,
+    RegisteredPdfBlobNotFoundError,
+)
 from models.session import utc_now
 from models.session import HandlerResult, Persona, Session, Turn
 from models.synthesis import SynthesisAgentResult
@@ -236,6 +240,17 @@ class WorkflowJobRepository(Protocol):
     def mark_canceled(self, job_id: str) -> WorkflowJob:
         ...
 
+    def enqueue_pdf_blob(
+        self,
+        *,
+        session_id: str,
+        upload_id: str,
+        paper_id: str | None,
+        skip_arxiv_metadata_fetch: bool,
+        pipeline_version: str,
+    ) -> WorkflowJob:
+        ...
+
 
 class PaperIntelService:
     """
@@ -306,6 +321,33 @@ class PaperIntelService:
                 kind="analyze_selected",
                 input_json={},
             )
+        )
+
+    def enqueue_analyze_pdf_blob(
+        self,
+        session_id: str,
+        upload_id: str,
+        *,
+        paper_id: str | None = None,
+        skip_arxiv_metadata_fetch: bool = False,
+        pipeline_version: str = "v1",
+    ) -> WorkflowJob:
+        self.handler.store.require_session(session_id)
+        upload_id = upload_id.strip() if isinstance(upload_id, str) else ""
+        paper_id = (paper_id.strip() or None) if isinstance(paper_id, str) else None
+        pipeline_version = (
+            pipeline_version.strip() if isinstance(pipeline_version, str) else ""
+        )
+        if not upload_id:
+            raise InvalidWorkflowJobInputError("upload_id must not be empty")
+        if not pipeline_version:
+            raise InvalidWorkflowJobInputError("pipeline_version must not be empty")
+        return self._workflow_jobs().enqueue_pdf_blob(
+            session_id=session_id,
+            upload_id=upload_id,
+            paper_id=paper_id,
+            skip_arxiv_metadata_fetch=bool(skip_arxiv_metadata_fetch),
+            pipeline_version=pipeline_version,
         )
 
     def get_workflow_job(self, job_id: str) -> WorkflowJob:
@@ -483,29 +525,49 @@ class PaperIntelService:
         session_id: str,
         blob_id: str,
         *,
+        upload_id: str | None = None,
         paper_id: str | None = None,
         skip_arxiv_metadata_fetch: bool = False,
+        pipeline_version: str = "v1",
         user_content: str | None = None,
     ) -> HandlerResult:
         self.handler.store.require_session(session_id)
         blob_store, artifact_repository = self._blob_dependencies()
+        if upload_id is not None:
+            upload = self._pdf_upload_repository().get(upload_id)
+            if (
+                upload is None
+                or upload.session_id != session_id
+                or upload.status != "enqueued"
+                or upload.blob_id != blob_id
+            ):
+                raise PdfUploadStateError(
+                    upload_id=upload_id,
+                    status=upload.status if upload is not None else "missing",
+                    target_status="analyze",
+                )
         artifact = artifact_repository.get_artifact(blob_id)
-        if (
-            artifact is None
-            or artifact.kind != "pdf"
-            or not artifact_repository.has_active_reference(
-                blob_id, ref_kind="session", ref_id=session_id
-            )
+        if artifact is None or artifact.kind != "pdf":
+            raise RegisteredPdfBlobNotFoundError(blob_id)
+        if not artifact_repository.has_active_reference(
+            blob_id, ref_kind="session", ref_id=session_id
         ):
-            raise InvalidPdfInputError(f"Registered PDF blob was not found: {blob_id}")
+            raise RegisteredPdfBlobNotAuthorizedError(
+                session_id=session_id, blob_id=blob_id
+            )
         before_workspace_ids = self._workspace_ids(session_id)
-        with blob_store.materialize(artifact.object_key, expected_sha256=artifact.content_hash) as materialized_path:
+        with blob_store.materialize(
+            artifact.object_key,
+            expected_sha256=artifact.content_hash,
+            max_bytes=MAX_LOCAL_PDF_BYTES,
+        ) as materialized_path:
             artifact_repository.mark_accessed(artifact.id)
             result = self._analyze_pdf_path(
                 session_id, materialized_path,
                 user_content=user_content or f"Analyze registered PDF blob {blob_id}",
                 paper_id=paper_id,
                 skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+                pipeline_version=pipeline_version,
             )
         workspace = self._resolve_pdf_workspace(
             session_id, paper_id=paper_id, before_workspace_ids=before_workspace_ids
@@ -604,6 +666,11 @@ class PaperIntelService:
             raise PdfUploadNotConfiguredError()
         return blob_store, artifact_repository, self.pdf_upload_repository
 
+    def _pdf_upload_repository(self) -> PdfUploadRepository:
+        if self.pdf_upload_repository is None:
+            raise PdfUploadNotConfiguredError()
+        return self.pdf_upload_repository
+
     def _analyze_pdf_path(
         self,
         session_id: str,
@@ -612,6 +679,7 @@ class PaperIntelService:
         user_content: str,
         paper_id: str | None,
         skip_arxiv_metadata_fetch: bool,
+        pipeline_version: str = "v1",
     ) -> HandlerResult:
         return self.handler.analyze_paper_input(
             session_id,
@@ -620,6 +688,7 @@ class PaperIntelService:
             user_content=user_content,
             expected_paper_id=paper_id,
             skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+            pipeline_version=pipeline_version,
         )
 
     def _workspace_ids(self, session_id: str) -> set[str]:

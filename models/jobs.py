@@ -1,3 +1,5 @@
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any, Literal, TypeAlias
 from uuid import uuid4
@@ -25,6 +27,21 @@ JobStatus: TypeAlias = Literal[
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def pdf_blob_idempotency_key(
+    *,
+    session_id: str,
+    blob_id: str,
+    paper_id: str | None,
+    pipeline_version: str,
+) -> str:
+    payload = json.dumps(
+        [session_id, blob_id, paper_id, pipeline_version],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return f"analyze_pdf_blob:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
 
 
 class WorkflowJob(BaseModel):

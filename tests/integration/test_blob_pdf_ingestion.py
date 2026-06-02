@@ -19,8 +19,10 @@ from storage.repositories import (
     PostgresPaperWorkspaceRepository,
     PostgresPdfUploadRepository,
     PostgresSessionStore,
+    PostgresWorkflowJobRepository,
     clear_foundation_tables,
 )
+from workers.workflow_worker import WorkflowJobExecutor, WorkflowWorker
 
 
 pytestmark = pytest.mark.db
@@ -78,6 +80,7 @@ class PersistingPdfHandler:
         user_content=None,
         expected_paper_id=None,
         skip_arxiv_metadata_fetch=False,
+        pipeline_version="v1",
     ):
         materialized_path = Path(input_value)
         assert input_type == "pdf"
@@ -90,6 +93,7 @@ class PersistingPdfHandler:
                 paper_id=expected_paper_id or "local-generated-paper",
                 source_url=f"local:{expected_paper_id or 'generated'}",
                 pipeline_stage="completed",
+                pipeline_version=pipeline_version,
             )
         )
         return HandlerResult(
@@ -185,5 +189,61 @@ def test_pdf_upload_lifecycle_finalizes_canonical_blob_and_analyzes_registered_a
         ),
     ]
     assert len(client.list_objects_v2(Bucket=BUCKET)["Contents"]) == 1
+    assert len(handler.materialized_paths) == 1
+    assert not Path(handler.materialized_paths[0]).exists()
+
+
+@mock_aws
+def test_pdf_blob_worker_analyzes_finalized_upload_without_second_upload(stack):
+    session_store, workspace_repository, blob_repository, session_factory = stack
+    client = boto3.client("s3", region_name="us-east-1")
+    blob_store = S3BlobStore(client=client, bucket_name=BUCKET)
+    upload_repository = PostgresPdfUploadRepository(session_factory)
+    job_repository = PostgresWorkflowJobRepository(session_factory)
+    handler = PersistingPdfHandler(
+        session_store=session_store, workspace_repository=workspace_repository
+    )
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=workspace_repository,
+        workflow_job_repository=job_repository,
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
+        pdf_upload_repository=upload_repository,
+    )
+    session = service.create_session()
+    upload = service.store_pdf_upload(session.id, PDF_BYTES)
+
+    job = service.enqueue_analyze_pdf_blob(
+        session.id,
+        upload.id,
+        paper_id="async-local-paper",
+        skip_arxiv_metadata_fetch=True,
+        pipeline_version="pipeline-v2",
+    )
+    result = WorkflowWorker(
+        repository=job_repository,
+        executor=WorkflowJobExecutor(service),
+        worker_id="worker-1",
+        kinds=["analyze_pdf_blob"],
+    ).run_once()
+
+    assert result is not None
+    assert result.id == job.id
+    assert result.status == "succeeded"
+    assert result.result_json["response_text"] == "pdf analysis complete"
+    assert upload_repository.get(upload.id).status == "enqueued"
+    assert (
+        workspace_repository.get_workspace(session.id, "async-local-paper").pipeline_version
+        == "pipeline-v2"
+    )
+    assert len(client.list_objects_v2(Bucket=BUCKET)["Contents"]) == 1
+    references = blob_repository.list_references(upload.blob_id)
+    assert [(reference.ref_kind, reference.status) for reference in references] == [
+        ("session", "active"),
+        ("workflow_job", "released"),
+        ("paper_workspace", "active"),
+    ]
+    assert references[1].released_at is not None
     assert len(handler.materialized_paths) == 1
     assert not Path(handler.materialized_paths[0]).exists()

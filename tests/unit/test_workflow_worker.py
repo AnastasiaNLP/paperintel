@@ -3,6 +3,10 @@ from dataclasses import dataclass, field
 import pytest
 
 from models.jobs import WorkflowJob
+from models.registered_pdf_errors import (
+    RegisteredPdfBlobNotAuthorizedError,
+    RegisteredPdfBlobNotFoundError,
+)
 from models.session import HandlerResult
 from workers.workflow_worker import (
     UnsupportedWorkflowJobKindError,
@@ -18,6 +22,8 @@ class FakeService:
     def __init__(self) -> None:
         self.analyze_calls = []
         self.analyze_selected_calls = []
+        self.analyze_registered_pdf_blob_calls = []
+        self.registered_pdf_blob_error = None
         self.fail_analyze = False
 
     def analyze_paper(self, session_id, paper_url):
@@ -45,6 +51,37 @@ class FakeService:
         return HandlerResult(
             session_id=session_id,
             response_text="selected analysis complete",
+            phase="qa",
+            intent="analyze_paper",
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
+    def analyze_registered_pdf_blob(
+        self,
+        session_id,
+        blob_id,
+        *,
+        upload_id=None,
+        paper_id=None,
+        skip_arxiv_metadata_fetch=False,
+        pipeline_version="v1",
+    ):
+        if self.registered_pdf_blob_error is not None:
+            raise self.registered_pdf_blob_error
+        self.analyze_registered_pdf_blob_calls.append(
+            (
+                session_id,
+                blob_id,
+                upload_id,
+                paper_id,
+                skip_arxiv_metadata_fetch,
+                pipeline_version,
+            )
+        )
+        return HandlerResult(
+            session_id=session_id,
+            response_text="pdf analysis complete",
             phase="qa",
             intent="analyze_paper",
             user_turn_id="user-turn",
@@ -177,6 +214,49 @@ def test_executor_analyze_selected_calls_service():
     assert result["response_text"] == "selected analysis complete"
 
 
+def test_executor_analyze_pdf_blob_calls_registered_blob_helper():
+    service = FakeService()
+    executor = WorkflowJobExecutor(service)
+
+    result = executor.execute(
+        _job(
+            kind="analyze_pdf_blob",
+            input_json={
+                "blob_id": "blob-1",
+                "upload_id": "upload-1",
+                "paper_id": "paper-1",
+                "skip_arxiv_metadata_fetch": True,
+                "pipeline_version": "v1",
+            },
+        )
+    )
+
+    assert result["response_text"] == "pdf analysis complete"
+    assert service.analyze_registered_pdf_blob_calls == [
+        ("session-1", "blob-1", "upload-1", "paper-1", True, "v1")
+    ]
+
+
+def test_executor_analyze_pdf_blob_rejects_pipeline_version_mismatch():
+    executor = WorkflowJobExecutor(FakeService())
+
+    with pytest.raises(WorkflowJobExecutionError, match="must match"):
+        executor.execute(
+            WorkflowJob(
+                session_id="session-1",
+                kind="analyze_pdf_blob",
+                pipeline_version="v2",
+                input_json={
+                    "blob_id": "blob-1",
+                    "upload_id": "upload-1",
+                    "paper_id": None,
+                    "skip_arxiv_metadata_fetch": False,
+                    "pipeline_version": "v1",
+                },
+            )
+        )
+
+
 def test_executor_rejects_unsupported_kind():
     executor = WorkflowJobExecutor(FakeService())
 
@@ -276,6 +356,37 @@ def test_worker_run_once_marks_failure_for_invalid_input():
     assert "input_json.paper_url" in error["message"]
 
 
+def test_worker_run_once_records_structured_pdf_blob_failure():
+    service = FakeService()
+    service.registered_pdf_blob_error = RegisteredPdfBlobNotAuthorizedError(
+        session_id="session-1", blob_id="blob-1"
+    )
+    repository = FakeRepository(
+        jobs=[
+            _job(
+                kind="analyze_pdf_blob",
+                input_json={
+                    "blob_id": "blob-1",
+                    "upload_id": "upload-1",
+                    "paper_id": None,
+                    "skip_arxiv_metadata_fetch": False,
+                    "pipeline_version": "v1",
+                },
+            )
+        ]
+    )
+
+    result = WorkflowWorker(
+        repository=repository,
+        executor=WorkflowJobExecutor(service),
+        worker_id="worker-1",
+    ).run_once()
+
+    assert result is not None
+    assert result.status == "failed"
+    assert repository.failed[0][1]["error"] == "registered_blob_not_authorized"
+
+
 def test_worker_run_until_idle_processes_until_no_jobs():
     repository = FakeRepository(jobs=[_job(), _job(kind="analyze_selected", input_json={})])
     worker = WorkflowWorker(
@@ -299,3 +410,31 @@ def test_serialize_exception_includes_job_context():
     assert payload["job_kind"] == "analyze_paper"
     assert payload["job_id"] == job.id
     assert payload["session_id"] == "session-1"
+
+
+@pytest.mark.parametrize(
+    ("exc", "error"),
+    [
+        (RegisteredPdfBlobNotFoundError("blob-1"), "blob_not_found"),
+        (
+            RegisteredPdfBlobNotAuthorizedError(
+                session_id="session-1", blob_id="blob-1"
+            ),
+            "registered_blob_not_authorized",
+        ),
+        (RuntimeError("analysis down"), "analysis_failed"),
+    ],
+)
+def test_serialize_exception_maps_pdf_blob_failures(exc, error):
+    job = _job(
+        kind="analyze_pdf_blob",
+        input_json={
+            "blob_id": "blob-1",
+            "upload_id": "upload-1",
+            "paper_id": None,
+            "skip_arxiv_metadata_fetch": False,
+            "pipeline_version": "v1",
+        },
+    )
+
+    assert serialize_exception(exc, job=job)["error"] == error

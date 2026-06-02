@@ -5,11 +5,21 @@ import time
 from typing import Protocol
 
 from models.jobs import JobKind, WorkflowJob
+from models.pdf_upload_errors import PdfUploadStateError
+from models.registered_pdf_errors import (
+    RegisteredPdfBlobNotAuthorizedError,
+    RegisteredPdfBlobNotFoundError,
+)
 from models.session import HandlerResult
+from services.blob_store import BlobIntegrityError, BlobNotFoundError, BlobSizeLimitError
 from services.paperintel_service import PaperIntelService
 
 LOGGER = logging.getLogger(__name__)
-SUPPORTED_JOB_KINDS: set[JobKind] = {"analyze_paper", "analyze_selected"}
+SUPPORTED_JOB_KINDS: set[JobKind] = {
+    "analyze_paper",
+    "analyze_selected",
+    "analyze_pdf_blob",
+}
 
 
 class WorkflowJobRepository(Protocol):
@@ -47,6 +57,8 @@ class WorkflowJobExecutor:
             return self._execute_analyze_paper(job)
         if job.kind == "analyze_selected":
             return self._execute_analyze_selected(job)
+        if job.kind == "analyze_pdf_blob":
+            return self._execute_analyze_pdf_blob(job)
         raise UnsupportedWorkflowJobKindError(job.kind)
 
     def _execute_analyze_paper(self, job: WorkflowJob) -> dict:
@@ -60,6 +72,48 @@ class WorkflowJobExecutor:
 
     def _execute_analyze_selected(self, job: WorkflowJob) -> dict:
         result = self.service.analyze_selected_papers(job.session_id)
+        return serialize_handler_result(result)
+
+    def _execute_analyze_pdf_blob(self, job: WorkflowJob) -> dict:
+        blob_id = job.input_json.get("blob_id")
+        upload_id = job.input_json.get("upload_id")
+        paper_id = job.input_json.get("paper_id")
+        skip_arxiv_metadata_fetch = job.input_json.get(
+            "skip_arxiv_metadata_fetch", False
+        )
+        pipeline_version = job.input_json.get("pipeline_version")
+        if not isinstance(blob_id, str) or not blob_id.strip():
+            raise WorkflowJobExecutionError(
+                "analyze_pdf_blob job requires non-empty input_json.blob_id"
+            )
+        if not isinstance(upload_id, str) or not upload_id.strip():
+            raise WorkflowJobExecutionError(
+                "analyze_pdf_blob job requires non-empty input_json.upload_id"
+            )
+        if paper_id is not None and not isinstance(paper_id, str):
+            raise WorkflowJobExecutionError(
+                "analyze_pdf_blob job input_json.paper_id must be a string or null"
+            )
+        if not isinstance(skip_arxiv_metadata_fetch, bool):
+            raise WorkflowJobExecutionError(
+                "analyze_pdf_blob job input_json.skip_arxiv_metadata_fetch must be a boolean"
+            )
+        if not isinstance(pipeline_version, str) or not pipeline_version.strip():
+            raise WorkflowJobExecutionError(
+                "analyze_pdf_blob job requires non-empty input_json.pipeline_version"
+            )
+        if pipeline_version.strip() != job.pipeline_version:
+            raise WorkflowJobExecutionError(
+                "analyze_pdf_blob job input_json.pipeline_version must match job.pipeline_version"
+            )
+        result = self.service.analyze_registered_pdf_blob(
+            job.session_id,
+            blob_id.strip(),
+            upload_id=upload_id.strip(),
+            paper_id=paper_id.strip() if paper_id is not None else None,
+            skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+            pipeline_version=job.pipeline_version,
+        )
         return serialize_handler_result(result)
 
 
@@ -154,6 +208,16 @@ def serialize_exception(exc: Exception, *, job: WorkflowJob) -> dict:
         error = "unsupported_job_kind"
     elif isinstance(exc, WorkflowJobExecutionError):
         error = "invalid_job_input"
+    elif isinstance(exc, (RegisteredPdfBlobNotFoundError, BlobNotFoundError)):
+        error = "blob_not_found"
+    elif isinstance(exc, (BlobIntegrityError, BlobSizeLimitError)):
+        error = "blob_integrity_failure"
+    elif isinstance(exc, PdfUploadStateError):
+        error = "pdf_upload_not_ready"
+    elif isinstance(exc, RegisteredPdfBlobNotAuthorizedError):
+        error = "registered_blob_not_authorized"
+    elif job.kind == "analyze_pdf_blob":
+        error = "analysis_failed"
     return {
         "error": error,
         "exception_type": type(exc).__name__,
