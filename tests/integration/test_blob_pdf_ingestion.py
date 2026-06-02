@@ -12,6 +12,7 @@ from moto import mock_aws
 from sqlalchemy import func, select
 
 from api.rest.app import create_rest_app
+from mcp_server.tools import enqueue_analyze_pdf_tool
 from models.artifacts import PaperWorkspace
 from models.session import HandlerResult
 from services.blob_store import S3BlobStore
@@ -339,4 +340,76 @@ def test_rest_pdf_upload_lifecycle_enqueues_and_worker_analyzes_blob(stack):
     assert (
         workspace_repository.get_workspace(session.id, "rest-upload-paper").pipeline_version
         == "pipeline-rest"
+    )
+
+
+@mock_aws
+def test_mcp_pdf_enqueue_deduplicates_blob_and_job_then_worker_analyzes(stack, tmp_path):
+    session_store, workspace_repository, blob_repository, session_factory = stack
+    client = boto3.client("s3", region_name="us-east-1")
+    blob_store = S3BlobStore(client=client, bucket_name=BUCKET)
+    upload_repository = PostgresPdfUploadRepository(session_factory)
+    job_repository = PostgresWorkflowJobRepository(session_factory)
+    handler = PersistingPdfHandler(
+        session_store=session_store, workspace_repository=workspace_repository
+    )
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=workspace_repository,
+        workflow_job_repository=job_repository,
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
+        pdf_upload_repository=upload_repository,
+    )
+    session = service.create_session()
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(PDF_BYTES)
+
+    first = asyncio.run(
+        enqueue_analyze_pdf_tool(
+            service,
+            session_id=session.id,
+            pdf_path=str(pdf_path),
+            paper_id="mcp-upload-paper",
+            pipeline_version="pipeline-mcp",
+        )
+    )
+    second = asyncio.run(
+        enqueue_analyze_pdf_tool(
+            service,
+            session_id=session.id,
+            pdf_path=str(pdf_path),
+            paper_id="mcp-upload-paper",
+            pipeline_version="pipeline-mcp",
+        )
+    )
+    jobs = job_repository.list_for_session(session.id)
+    result = WorkflowWorker(
+        repository=job_repository,
+        executor=WorkflowJobExecutor(service),
+        worker_id="worker-mcp",
+        kinds=["analyze_pdf_blob"],
+    ).run_once()
+
+    assert "Queued local PDF analysis job" in first
+    assert f"Job ID: {jobs[0].id}" in first
+    assert f"Job ID: {jobs[0].id}" in second
+    assert f"Upload ID: {jobs[0].input_json['upload_id']}" in second
+    assert len(jobs) == 1
+    assert result is not None
+    assert result.status == "succeeded"
+    objects = client.list_objects_v2(Bucket=BUCKET)["Contents"]
+    assert len(objects) == 1
+    assert objects[0]["Key"].startswith("papers/sha256/")
+    artifact = blob_repository.get_by_object_key(objects[0]["Key"])
+    assert artifact is not None
+    references = blob_repository.list_references(artifact.id)
+    assert [(reference.ref_kind, reference.status) for reference in references] == [
+        ("session", "active"),
+        ("workflow_job", "released"),
+        ("paper_workspace", "active"),
+    ]
+    assert (
+        workspace_repository.get_workspace(session.id, "mcp-upload-paper").pipeline_version
+        == "pipeline-mcp"
     )

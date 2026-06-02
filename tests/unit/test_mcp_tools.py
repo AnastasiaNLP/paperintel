@@ -11,6 +11,7 @@ from mcp_server.tools import (
     ask_paper_tool,
     compare_papers_tool,
     create_session_tool,
+    enqueue_analyze_pdf_tool,
     enqueue_analyze_paper_tool,
     enqueue_analyze_selected_tool,
     discover_papers_tool,
@@ -64,6 +65,8 @@ class FakeService:
         self.comparison_calls = []
         self.enqueue_analyze_paper_calls = []
         self.enqueue_analyze_selected_calls = []
+        self.store_pdf_upload_calls = []
+        self.enqueue_analyze_pdf_blob_calls = []
         self.workflow_job_calls = []
         self.workflow_job_list_calls = []
         self.workflow_job_cancel_calls = []
@@ -220,6 +223,36 @@ class FakeService:
             input_json={},
         )
 
+    def store_pdf_upload(self, session_id, content):
+        self.store_pdf_upload_calls.append((session_id, content))
+        return type("Upload", (), {"id": "upload-1"})()
+
+    def enqueue_analyze_pdf_blob(
+        self,
+        session_id,
+        upload_id,
+        *,
+        paper_id=None,
+        skip_arxiv_metadata_fetch=False,
+        pipeline_version="v1",
+    ):
+        self.enqueue_analyze_pdf_blob_calls.append(
+            {
+                "session_id": session_id,
+                "upload_id": upload_id,
+                "paper_id": paper_id,
+                "skip_arxiv_metadata_fetch": skip_arxiv_metadata_fetch,
+                "pipeline_version": pipeline_version,
+            }
+        )
+        return WorkflowJob(
+            id="job-pdf",
+            session_id=session_id,
+            kind="analyze_pdf_blob",
+            input_json={"upload_id": upload_id},
+            pipeline_version=pipeline_version,
+        )
+
     def get_workflow_job(self, job_id):
         self.workflow_job_calls.append(job_id)
         return self.jobs[0].model_copy(update={"id": job_id})
@@ -313,6 +346,9 @@ class ExplodingService(FakeService):
     def enqueue_analyze_paper(self, session_id, paper_url):
         raise RuntimeError("internal details should not leak")
 
+    def store_pdf_upload(self, session_id, content):
+        raise RuntimeError("internal details should not leak")
+
     def get_workflow_job(self, job_id):
         raise RuntimeError("internal details should not leak")
 
@@ -323,6 +359,11 @@ def run_sync_inline(monkeypatch):
         return func(*args, **kwargs)
 
     monkeypatch.setattr(tool_module, "_run_sync", inline)
+
+
+def _write_file(path, content):
+    path.write_bytes(content)
+    return path
 
 
 def test_create_session_tool_returns_session_id():
@@ -581,6 +622,166 @@ def test_enqueue_analyze_selected_tool_calls_service():
     assert "Queued selected-paper analysis job" in text
     assert "Job ID: job-queued-selected" in text
     assert service.enqueue_analyze_selected_calls == ["session-1"]
+
+
+def test_enqueue_analyze_pdf_tool_stores_blob_and_returns_polling_hint(tmp_path):
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+    service = FakeService()
+
+    text = asyncio.run(
+        enqueue_analyze_pdf_tool(
+            service,
+            session_id="session-1",
+            pdf_path=str(pdf_path),
+            paper_id="  local-paper  ",
+            skip_arxiv_metadata_fetch=True,
+            pipeline_version="  pipeline-v2  ",
+        )
+    )
+
+    assert "Queued local PDF analysis job" in text
+    assert "Job ID: job-pdf" in text
+    assert "Upload ID: upload-1" in text
+    assert "Pipeline version: pipeline-v2" in text
+    assert "get_workflow_job(job_id='job-pdf')" in text
+    assert service.store_pdf_upload_calls == [("session-1", b"%PDF-1.7\nbody")]
+    assert service.enqueue_analyze_pdf_blob_calls == [
+        {
+            "session_id": "session-1",
+            "upload_id": "upload-1",
+            "paper_id": "local-paper",
+            "skip_arxiv_metadata_fetch": True,
+            "pipeline_version": "pipeline-v2",
+        }
+    ]
+    assert service.analyze_pdf_calls == []
+
+
+def test_enqueue_analyze_pdf_tool_duplicate_returns_same_job(tmp_path):
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+    service = FakeService()
+
+    first = asyncio.run(
+        enqueue_analyze_pdf_tool(
+            service, session_id="session-1", pdf_path=str(pdf_path)
+        )
+    )
+    second = asyncio.run(
+        enqueue_analyze_pdf_tool(
+            service, session_id="session-1", pdf_path=str(pdf_path)
+        )
+    )
+
+    assert "Job ID: job-pdf" in first
+    assert "Job ID: job-pdf" in second
+
+
+@pytest.mark.parametrize(
+    "path_factory",
+    [
+        lambda tmp_path: tmp_path / "missing.pdf",
+        lambda tmp_path: tmp_path,
+        lambda tmp_path: _write_file(tmp_path / "paper.txt", b"%PDF-1.7\nbody"),
+        lambda tmp_path: _write_file(tmp_path / "empty.pdf", b""),
+        lambda tmp_path: _write_file(tmp_path / "bad.pdf", b"not pdf"),
+    ],
+)
+def test_enqueue_analyze_pdf_tool_rejects_invalid_local_pdf(tmp_path, path_factory):
+    with pytest.raises(ValueError):
+        asyncio.run(
+            enqueue_analyze_pdf_tool(
+                FakeService(),
+                session_id="session-1",
+                pdf_path=str(path_factory(tmp_path)),
+            )
+        )
+
+
+def test_enqueue_analyze_pdf_tool_rejects_oversized_pdf(tmp_path, monkeypatch):
+    monkeypatch.setattr(tool_module, "MAX_LOCAL_PDF_BYTES", 4)
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-")
+
+    with pytest.raises(ValueError, match="must not exceed"):
+        asyncio.run(
+            enqueue_analyze_pdf_tool(
+                FakeService(), session_id="session-1", pdf_path=str(pdf_path)
+            )
+        )
+
+
+def test_enqueue_analyze_pdf_tool_hides_local_read_error(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+
+    def fail_open(self, *args, **kwargs):
+        raise PermissionError(f"sensitive path: {self}")
+
+    monkeypatch.setattr(tool_module.Path, "open", fail_open)
+
+    with pytest.raises(ValueError, match="PDF file could not be read") as exc_info:
+        asyncio.run(
+            enqueue_analyze_pdf_tool(
+                FakeService(), session_id="session-1", pdf_path=str(pdf_path)
+            )
+        )
+
+    assert "sensitive path" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"session_id": "", "pdf_path": "/tmp/paper.pdf"},
+        {"session_id": "session-1", "pdf_path": "   "},
+        {
+            "session_id": "session-1",
+            "pdf_path": "/tmp/paper.pdf",
+            "paper_id": "x" * 501,
+        },
+        {
+            "session_id": "session-1",
+            "pdf_path": "/tmp/paper.pdf",
+            "pipeline_version": " ",
+        },
+        {
+            "session_id": "session-1",
+            "pdf_path": "/tmp/paper.pdf",
+            "pipeline_version": "x" * 101,
+        },
+        {
+            "session_id": "session-1",
+            "pdf_path": "/tmp/paper.pdf",
+            "skip_arxiv_metadata_fetch": "false",
+        },
+    ],
+)
+def test_enqueue_analyze_pdf_tool_rejects_invalid_arguments(tmp_path, kwargs):
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+    if kwargs["pdf_path"] == "/tmp/paper.pdf":
+        kwargs["pdf_path"] = str(pdf_path)
+
+    with pytest.raises(ValueError):
+        asyncio.run(enqueue_analyze_pdf_tool(FakeService(), **kwargs))
+
+
+def test_enqueue_analyze_pdf_tool_handles_service_exception_safely(tmp_path):
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nbody")
+
+    text = asyncio.run(
+        enqueue_analyze_pdf_tool(
+            ExplodingService(),
+            session_id="session-1",
+            pdf_path=str(pdf_path),
+        )
+    )
+
+    assert "could not enqueue local PDF analysis safely" in text
+    assert "internal details" not in text
 
 
 def test_workflow_job_tools_get_list_and_cancel():

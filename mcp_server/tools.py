@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from urllib.parse import urlparse
 
 from models.artifacts import ComparisonArtifact, PaperWorkspace
@@ -10,6 +11,9 @@ from services.paperintel_service import PaperIntelService
 
 VALID_PERSONAS: set[str] = {"engineer", "researcher", "techlead"}
 MAX_QUESTION_LENGTH = 2000
+MAX_LOCAL_PDF_BYTES = 50 * 1024 * 1024
+MAX_PAPER_ID_LENGTH = 500
+MAX_PIPELINE_VERSION_LENGTH = 100
 
 
 async def create_session_tool(
@@ -149,6 +153,40 @@ async def enqueue_analyze_selected_tool(
     except Exception:
         return _safe_error("enqueue selected-paper analysis")
     return format_workflow_job(job, heading="Queued selected-paper analysis job")
+
+
+async def enqueue_analyze_pdf_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    pdf_path: str,
+    paper_id: str | None = None,
+    skip_arxiv_metadata_fetch: bool = False,
+    pipeline_version: str = "v1",
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    paper_id = _validate_optional_text("paper_id", paper_id, MAX_PAPER_ID_LENGTH)
+    pipeline_version = _validate_bounded_text(
+        "pipeline_version", pipeline_version, MAX_PIPELINE_VERSION_LENGTH
+    )
+    if not isinstance(skip_arxiv_metadata_fetch, bool):
+        raise ValueError("skip_arxiv_metadata_fetch must be a boolean")
+    content = await _run_sync(_read_local_pdf, pdf_path)
+    try:
+        upload = await _run_sync(service.store_pdf_upload, session_id, content)
+        job = await _run_sync(
+            service.enqueue_analyze_pdf_blob,
+            session_id,
+            upload.id,
+            paper_id=paper_id,
+            skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+            pipeline_version=pipeline_version,
+        )
+    except Exception:
+        return _safe_error("enqueue local PDF analysis")
+    return format_pdf_workflow_job(
+        job, upload_id=str(job.input_json.get("upload_id") or upload.id)
+    )
 
 
 async def get_workflow_job_tool(
@@ -452,6 +490,15 @@ def format_workflow_job(job: WorkflowJob, *, heading: str = "Workflow job") -> s
     return "\n".join(lines)
 
 
+def format_pdf_workflow_job(job: WorkflowJob, *, upload_id: str) -> str:
+    return (
+        f"{format_workflow_job(job, heading='Queued local PDF analysis job')}\n"
+        f"Upload ID: {upload_id}\n"
+        f"Pipeline version: {job.pipeline_version}\n\n"
+        f"Poll status with get_workflow_job(job_id='{job.id}')."
+    )
+
+
 def format_workflow_job_list(jobs: list[WorkflowJob]) -> str:
     if not jobs:
         return "No workflow jobs are available for this session yet."
@@ -539,6 +586,47 @@ def _validate_question(question: str) -> str:
     if len(question) > MAX_QUESTION_LENGTH:
         raise ValueError(f"question must be at most {MAX_QUESTION_LENGTH} characters")
     return question
+
+
+def _validate_bounded_text(name: str, value: str, max_length: int) -> str:
+    value = _validate_non_empty(name, value)
+    if len(value) > max_length:
+        raise ValueError(f"{name} must be at most {max_length} characters")
+    return value
+
+
+def _validate_optional_text(
+    name: str, value: str | None, max_length: int
+) -> str | None:
+    if value is None:
+        return None
+    value = value.strip() or None
+    if value is not None and len(value) > max_length:
+        raise ValueError(f"{name} must be at most {max_length} characters")
+    return value
+
+
+def _read_local_pdf(pdf_path: str) -> bytes:
+    pdf_path = _validate_non_empty("pdf_path", pdf_path)
+    path = Path(pdf_path).expanduser()
+    if not path.exists():
+        raise ValueError("PDF file does not exist")
+    if not path.is_file():
+        raise ValueError("PDF path is not a file")
+    if path.suffix.lower() != ".pdf":
+        raise ValueError("PDF path must use a .pdf suffix")
+    try:
+        with path.open("rb") as handle:
+            content = handle.read(MAX_LOCAL_PDF_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("PDF file could not be read") from exc
+    if not content:
+        raise ValueError("PDF file must not be empty")
+    if len(content) > MAX_LOCAL_PDF_BYTES:
+        raise ValueError(f"PDF file must not exceed {MAX_LOCAL_PDF_BYTES} bytes")
+    if not content.startswith(b"%PDF-"):
+        raise ValueError("PDF file must start with %PDF- magic bytes")
+    return content
 
 
 def _validate_limit(limit: int) -> int:

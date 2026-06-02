@@ -152,6 +152,7 @@ def test_mcp_server_builds_with_four_tools():
         "get_latest_comparison",
         "enqueue_analyze_paper",
         "enqueue_analyze_selected",
+        "enqueue_analyze_pdf",
         "get_workflow_job",
         "list_workflow_jobs",
         "cancel_workflow_job",

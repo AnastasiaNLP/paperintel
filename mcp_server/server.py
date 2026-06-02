@@ -107,6 +107,30 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
         return await enqueue_analyze_selected_tool(service, session_id=session_id)
 
     @mcp.tool()
+    async def enqueue_analyze_pdf(
+        session_id: str,
+        pdf_path: str,
+        paper_id: str | None = None,
+        skip_arxiv_metadata_fetch: bool = False,
+        pipeline_version: str = "v1",
+    ) -> str:
+        """Queue analysis for a trusted local PDF path as a workflow job.
+
+        The PDF is uploaded into durable blob storage before enqueue. Poll the
+        returned job id with get_workflow_job.
+        """
+        from mcp_server.tools import enqueue_analyze_pdf_tool
+
+        return await enqueue_analyze_pdf_tool(
+            service,
+            session_id=session_id,
+            pdf_path=pdf_path,
+            paper_id=paper_id,
+            skip_arxiv_metadata_fetch=skip_arxiv_metadata_fetch,
+            pipeline_version=pipeline_version,
+        )
+
+    @mcp.tool()
     async def get_workflow_job(job_id: str) -> str:
         """Get workflow job status, result, or error payload."""
         from mcp_server.tools import get_workflow_job_tool
