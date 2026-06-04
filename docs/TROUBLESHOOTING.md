@@ -79,9 +79,10 @@ Common failures:
 
 REST upload temp files are temporary and deleted after analysis. PDF content
 is persisted to configured S3-compatible blob storage with content-hash
-deduplication. Async PDF jobs remain deferred until a dedicated workflow job
-kind is implemented. For MinIO setup and retention notes, see
-[BLOB_STORAGE.md](BLOB_STORAGE.md).
+deduplication. For long-running PDF analysis, use the async PDF job path:
+`/sessions/{id}/jobs/analyze-pdf` for multipart uploads or the presigned
+`/pdf-uploads` lifecycle followed by `/jobs/analyze`. For MinIO setup and
+retention notes, see [BLOB_STORAGE.md](BLOB_STORAGE.md).
 
 ## Analyze selected papers returns no active papers
 

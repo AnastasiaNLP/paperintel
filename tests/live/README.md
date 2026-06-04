@@ -160,8 +160,12 @@ real stack through the default application factory:
 
 - REST multipart upload persists one PDF through the configured MinIO backend.
 - MCP local path analysis uploads the same PDF from a second session.
+- Async PDF upload uses the presigned REST lifecycle, enqueues a workflow job,
+  and an in-process worker analyzes the stored blob.
+- Cancel-before-claim leaves the PDF blob durable and releases the workflow-job
+  reference.
 - Content-hash deduplication keeps one S3 object and one `blob_artifacts` row.
-- Postgres stores two session references and two paper-workspace references.
+- Postgres stores session, paper-workspace, and workflow-job references.
 - `/health` reports `blob_store=ok`.
 - Cleanup removes the temporary Qdrant collection, MinIO bucket, and Postgres
   foundation rows.
@@ -170,10 +174,17 @@ The test is skipped unless `PAPERINTEL_RUN_LIVE_BLOB_SMOKE=1` is set. It also
 requires the standard database, Qdrant, and provider variables plus:
 
 ```text
+PAPERINTEL_TEST_DATABASE_URL
+PAPERINTEL_QDRANT_TEST_URL
+ANTHROPIC_API_KEY
+OPENAI_API_KEY
 PAPERINTEL_MINIO_TEST_URL
 PAPERINTEL_MINIO_TEST_ACCESS_KEY_ID
 PAPERINTEL_MINIO_TEST_SECRET_ACCESS_KEY
 ```
+
+The run commands below assume those variables are already present in the
+environment or loaded from `.env` by `python -m dotenv run`.
 
 Required local PDF:
 
@@ -207,8 +218,14 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 ```text
 LIVE_BLOB_RUN_ID=<run_id>
 LIVE_BLOB_REST_STATUS=200
+LIVE_BLOB_ASYNC_INITIATE_STATUS=201
+LIVE_BLOB_ASYNC_PUT_STATUS=200
+LIVE_BLOB_ASYNC_FINALIZE_STATUS=200
+LIVE_BLOB_ASYNC_ENQUEUE_STATUS=202
+LIVE_BLOB_ASYNC_WORKER_RESULT=<job_id>:succeeded
+LIVE_BLOB_ASYNC_CANCEL_STATUS=canceled
 LIVE_BLOB_ARTIFACT_COUNT=1
-LIVE_BLOB_REFERENCE_COUNT=4
+LIVE_BLOB_REFERENCE_COUNT=9
 LIVE_BLOB_OBJECT_COUNT=1
 LIVE_BLOB_HEALTH_STORE=ok
 LIVE_BLOB_QDRANT_CLEANUP=success

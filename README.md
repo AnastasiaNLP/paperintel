@@ -195,9 +195,9 @@ LANGCHAIN_TRACING_V2=false PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 
 Current non-live coverage:
 
-- 542 passing unit and integration tests in the default non-live/non-DB profile
-- 18 DB-marked tests skipped unless `PAPERINTEL_TEST_DATABASE_URL` is set
-- live QA and discovery tests requiring real LLM credentials and local services
+- unit and integration tests cover service, graph, REST, MCP, storage, and evaluation paths
+- DB-marked tests require `PAPERINTEL_TEST_DATABASE_URL`
+- live QA, discovery, blob-storage, and job tests require real provider credentials and local services
 
 Live QA smoke:
 
@@ -230,7 +230,7 @@ runs completed without failures.
 
 - REST and MCP still expose synchronous analysis/discovery calls. Async URL
   analysis is available through workflow jobs and a separate worker process.
-  Local PDF analysis is synchronous in v1.
+  Local PDF analysis is available through synchronous calls and async PDF jobs.
 - Discovery currently searches arXiv only.
 - Discovery plus comparison/synthesis is implemented: discovery, shortlist
   selection, selected-paper analysis, batch comparison artifacts, request-driven

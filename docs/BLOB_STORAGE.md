@@ -60,6 +60,6 @@ Deleting an object directly can leave an orphan `blob_artifacts` row.
 - PDF uploads are loaded into memory before upload. The REST API limits uploads
   to 50 MB.
 - Streaming uploads are not implemented.
-- Async PDF workflow jobs are not implemented yet. The durable blob layer is
-  the prerequisite; a future job kind can reference a stored blob.
+- Async PDF workflow jobs use durable blob references. Canceling a queued job
+  does not delete the underlying PDF blob.
 - The cleanup engine and automated retention enforcement are not implemented.

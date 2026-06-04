@@ -25,6 +25,7 @@ PAPER_ID = "1706.03762"
 PDF_DIR = Path("~/Desktop/pdfs").expanduser()
 REST_PAPER_ID = "local-rest-blob-1706"
 MCP_PAPER_ID = "local-mcp-blob-1706"
+ASYNC_PAPER_ID = "local-async-blob-1706"
 
 
 def _missing_env() -> list[str]:
@@ -111,16 +112,44 @@ def test_blob_live_smoke_factory_rest_mcp_dedup_health_and_cleanup(monkeypatch):
         _assert_workspace(stack.service, mcp_session.id, MCP_PAPER_ID)
         _assert_no_new_temp_paths(initial_temp_paths)
 
+        async_session = stack.service.create_session(persona="engineer")
+        print(f"LIVE_BLOB_ASYNC_SESSION_ID={async_session.id}", flush=True)
+        async_job_id = _run_async_pdf_upload_flow(
+            app,
+            stack,
+            async_session.id,
+            pdf_path=pdf_path,
+            paper_id=ASYNC_PAPER_ID,
+        )
+        _assert_workspace(stack.service, async_session.id, ASYNC_PAPER_ID)
+        _assert_no_new_temp_paths(initial_temp_paths)
+
+        canceled_session = stack.service.create_session(persona="engineer")
+        print(f"LIVE_BLOB_CANCEL_SESSION_ID={canceled_session.id}", flush=True)
+        _assert_async_pdf_cancel_flow(
+            app,
+            stack,
+            canceled_session.id,
+            pdf_path=pdf_path,
+        )
+
         artifact = _assert_blob_registry(
             stack,
             pdf_path=pdf_path,
-            expected_session_ids={rest_session.id, mcp_session.id},
+            expected_session_ids={
+                rest_session.id,
+                mcp_session.id,
+                async_session.id,
+                canceled_session.id,
+            },
+            expected_reference_count=9,
         )
         print(f"LIVE_BLOB_ARTIFACT_ID={artifact.id}", flush=True)
         print(f"LIVE_BLOB_OBJECT_KEY={artifact.object_key}", flush=True)
         print("LIVE_BLOB_ARTIFACT_COUNT=1", flush=True)
-        print("LIVE_BLOB_REFERENCE_COUNT=4", flush=True)
+        print("LIVE_BLOB_REFERENCE_COUNT=9", flush=True)
         print("LIVE_BLOB_OBJECT_COUNT=1", flush=True)
+        print(f"LIVE_BLOB_ASYNC_JOB_ID={async_job_id}", flush=True)
 
         health_response = _get(app, "/health")
         health_payload = health_response.json()
@@ -255,6 +284,131 @@ def _get(app, path: str):
     return asyncio.run(run())
 
 
+def _post_json(app, path: str, *, payload: dict | None = None):
+    async def run():
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            return await client.post(path, json=payload)
+
+    return asyncio.run(run())
+
+
+def _put_presigned(url: str, *, content: bytes, headers: dict[str, str]) -> httpx.Response:
+    return httpx.put(url, content=content, headers=headers, timeout=60.0)
+
+
+def _run_worker_once(stack: LiveStack, *, worker_id: str):
+    from workers.workflow_worker import WorkflowJobExecutor, WorkflowWorker
+
+    return WorkflowWorker(
+        repository=stack.service.workflow_job_repository,
+        executor=WorkflowJobExecutor(stack.service),
+        worker_id=worker_id,
+        kinds=["analyze_pdf_blob"],
+    ).run_once()
+
+
+def _run_async_pdf_upload_flow(
+    app,
+    stack: LiveStack,
+    session_id: str,
+    *,
+    pdf_path: Path,
+    paper_id: str,
+) -> str:
+    content = pdf_path.read_bytes()
+    initiate_response = _post_json(
+        app,
+        f"/sessions/{session_id}/pdf-uploads",
+        payload={
+            "expected_sha256": hashlib.sha256(content).hexdigest(),
+            "size_bytes": len(content),
+        },
+    )
+    initiate_payload = initiate_response.json()
+    print(f"LIVE_BLOB_ASYNC_INITIATE_STATUS={initiate_response.status_code}", flush=True)
+    assert initiate_response.status_code == 201, initiate_payload
+    upload = initiate_payload["upload"]
+
+    put_response = _put_presigned(
+        initiate_payload["upload_url"],
+        content=content,
+        headers=initiate_payload["upload_headers"],
+    )
+    print(f"LIVE_BLOB_ASYNC_PUT_STATUS={put_response.status_code}", flush=True)
+    assert put_response.status_code in {200, 204}, put_response.text
+
+    finalize_response = _post_json(
+        app,
+        f"/sessions/{session_id}/pdf-uploads/{upload['id']}/finalize",
+    )
+    finalize_payload = finalize_response.json()
+    print(f"LIVE_BLOB_ASYNC_FINALIZE_STATUS={finalize_response.status_code}", flush=True)
+    assert finalize_response.status_code == 200, finalize_payload
+    assert finalize_payload["status"] == "finalized"
+    assert finalize_payload["blob_id"]
+
+    enqueue_response = _post_json(
+        app,
+        f"/sessions/{session_id}/pdf-uploads/{upload['id']}/jobs/analyze",
+        payload={
+            "paper_id": paper_id,
+            "skip_arxiv_metadata_fetch": True,
+            "pipeline_version": "live-async-pdf",
+        },
+    )
+    enqueue_payload = enqueue_response.json()
+    print(f"LIVE_BLOB_ASYNC_ENQUEUE_STATUS={enqueue_response.status_code}", flush=True)
+    assert enqueue_response.status_code == 202, enqueue_payload
+    assert enqueue_payload["kind"] == "analyze_pdf_blob"
+    assert enqueue_payload["status"] == "queued"
+    job_id = enqueue_payload["id"]
+
+    started = time.monotonic()
+    processed = _run_worker_once(stack, worker_id="live-blob-async-worker")
+    print(f"LIVE_BLOB_ASYNC_WORKER_SECONDS={time.monotonic() - started:.1f}", flush=True)
+    assert processed is not None
+    print(f"LIVE_BLOB_ASYNC_WORKER_RESULT={processed.id}:{processed.status}", flush=True)
+    assert processed.id == job_id
+    assert processed.status == "succeeded"
+
+    job_response = _get(app, f"/jobs/{job_id}")
+    job_payload = job_response.json()
+    print(f"LIVE_BLOB_ASYNC_JOB_STATUS={job_payload['status']}", flush=True)
+    assert job_response.status_code == 200, job_payload
+    assert job_payload["status"] == "succeeded"
+    return job_id
+
+
+def _assert_async_pdf_cancel_flow(
+    app,
+    stack: LiveStack,
+    session_id: str,
+    *,
+    pdf_path: Path,
+) -> None:
+    content = pdf_path.read_bytes()
+    upload = stack.service.store_pdf_upload(session_id, content)
+    job = stack.service.enqueue_analyze_pdf_blob(
+        session_id,
+        upload.id,
+        paper_id="local-canceled-blob-1706",
+        skip_arxiv_metadata_fetch=True,
+        pipeline_version="live-async-pdf-cancel",
+    )
+    cancel_response = _post_json(app, f"/jobs/{job.id}/cancel")
+    cancel_payload = cancel_response.json()
+    print(f"LIVE_BLOB_ASYNC_CANCEL_STATUS={cancel_payload['status']}", flush=True)
+    assert cancel_response.status_code == 200, cancel_payload
+    assert cancel_payload["status"] == "canceled"
+    processed = _run_worker_once(stack, worker_id="live-blob-cancel-worker")
+    print(f"LIVE_BLOB_ASYNC_CANCEL_WORKER_RESULT={processed}", flush=True)
+    assert processed is None
+
+
 def _run_mcp_pdf_tool(service, session_id: str, pdf_path: Path) -> str:
     from mcp_server.tools import analyze_pdf_tool
 
@@ -277,7 +431,13 @@ def _assert_workspace(service, session_id: str, paper_id: str) -> None:
     assert workspace_ids == [paper_id]
 
 
-def _assert_blob_registry(stack: LiveStack, *, pdf_path: Path, expected_session_ids: set[str]):
+def _assert_blob_registry(
+    stack: LiveStack,
+    *,
+    pdf_path: Path,
+    expected_session_ids: set[str],
+    expected_reference_count: int,
+):
     from storage.models import BlobArtifactORM, BlobReferenceORM
 
     expected_hash = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
@@ -289,9 +449,15 @@ def _assert_blob_registry(stack: LiveStack, *, pdf_path: Path, expected_session_
         artifact_count = db.execute(select(func.count(BlobArtifactORM.id))).scalar_one()
         reference_count = db.execute(select(func.count(BlobReferenceORM.id))).scalar_one()
     assert artifact_count == 1
-    assert reference_count == 4
-    assert [reference.ref_kind for reference in references].count("session") == 2
-    assert [reference.ref_kind for reference in references].count("paper_workspace") == 2
+    assert reference_count == expected_reference_count
+    assert [reference.ref_kind for reference in references].count("session") == 4
+    assert [reference.ref_kind for reference in references].count("paper_workspace") == 3
+    assert [reference.ref_kind for reference in references].count("workflow_job") == 2
+    assert [
+        reference.status
+        for reference in references
+        if reference.ref_kind == "workflow_job"
+    ] == ["released", "released"]
     assert {
         reference.ref_id for reference in references if reference.ref_kind == "session"
     } == expected_session_ids

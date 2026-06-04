@@ -238,14 +238,14 @@ The workflow job layer is intentionally narrow and Postgres-backed:
 - Workers claim jobs through repository lifecycle methods and run supported job
   kinds outside the request/response path.
 - REST and MCP expose enqueue, status, list, and cancel surfaces.
-- The current worker supports URL analysis jobs and selected-paper analysis
-  jobs.
+- The current worker supports URL analysis jobs, selected-paper analysis
+  jobs, and PDF blob analysis jobs.
 
 The blob storage layer persists PDF assets in S3-compatible storage and tracks
 usage through `blob_artifacts` and `blob_references`. It does not yet include
 paper cache versioning, automated cleanup, retry/backoff scheduling, process
-supervision, job budgets, async comparison or synthesis jobs, async PDF jobs,
-or page-image asset generation. Those are separate later hardening layers.
+supervision, job budgets, async comparison or synthesis jobs, automated blob
+cleanup, or page-image asset generation. Those are separate later hardening layers.
 
 ## External Dependency Resilience
 

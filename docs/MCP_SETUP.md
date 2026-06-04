@@ -102,8 +102,8 @@ Analyze /absolute/path/to/paper.pdf in this session. Use paper id local-paper-1.
 Claude should call `analyze_pdf` with `pdf_path` set to the absolute path.
 This tool reads a file from the MCP server machine, so use it only for
 trusted local files. REST clients should use multipart PDF upload instead
-of server-local paths. Uploaded/local PDF bytes are not persisted; only the
-resulting workspaces and chunks are stored.
+of server-local paths. Uploaded/local PDF bytes are persisted to configured
+blob storage with content-hash deduplication.
 
 Discovery flow:
 
@@ -181,7 +181,7 @@ create_session -> analyze_pdf -> ask_paper / compare_papers / synthesize_papers
 Async analysis workflow:
 
 ```text
-create_session -> enqueue_analyze_paper -> get_workflow_job / list_workflow_jobs
+create_session -> enqueue_analyze_paper / enqueue_analyze_selected / enqueue_analyze_pdf -> get_workflow_job / list_workflow_jobs
 ```
 
 A separate worker process must be running to process queued jobs. See
@@ -191,8 +191,7 @@ A separate worker process must be running to process queued jobs. See
 
 - Tool does not appear: restart Claude Desktop and verify the config path is absolute.
 - Analysis or discovery takes a long time: synchronous tools still run
-  inline. Use `enqueue_analyze_paper` or `enqueue_analyze_selected` with a
-  separate worker for async URL/selected-paper analysis. Local PDF analysis
-  is synchronous in v1.
+  inline. Use `enqueue_analyze_paper`, `enqueue_analyze_selected`, or
+  `enqueue_analyze_pdf` with a separate worker for async analysis.
 - Server exits immediately: run `.venv/bin/python -m mcp_server.server` from the repository root to see import/configuration errors.
 - JSON-RPC parse errors: ensure the MCP server is not writing logs to stdout.

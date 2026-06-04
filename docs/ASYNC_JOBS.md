@@ -134,6 +134,7 @@ The MCP server exposes these job tools:
 
 - `enqueue_analyze_paper(session_id, paper_url)`
 - `enqueue_analyze_selected(session_id)`
+- `enqueue_analyze_pdf(session_id, pdf_path, paper_id=None, skip_arxiv_metadata_fetch=False)`
 - `get_workflow_job(job_id)`
 - `list_workflow_jobs(session_id, limit)`
 - `cancel_workflow_job(job_id)`
@@ -145,7 +146,7 @@ Create a PaperIntel session and queue analysis for https://arxiv.org/abs/1706.03
 Then show me the workflow job status.
 ```
 
-The MCP client should call `create_session`, then `enqueue_analyze_paper`, then
+The MCP client should call `create_session`, then one enqueue tool, then
 `get_workflow_job` or `list_workflow_jobs`. The worker still needs to be running
 separately for queued jobs to complete.
 
@@ -168,17 +169,16 @@ options.
 
 ## Current Limits
 
-- No automatic retries or retry backoff yet.
+- Retry backoff exists for retryable worker failures, but there is no UI-level
+  progress percentage yet.
 - No progress percentages yet.
-- No job idempotency keys yet.
 - No job budget or quota enforcement yet.
 - No process supervisor, systemd unit, or Docker worker service yet.
-- Canceling a running job marks the job record canceled; it does not interrupt
-  an already running LLM, embedding, HTTP, or vector-store call.
+- Canceling a queued job completes it immediately. Canceling a running job
+  requests cooperative cancellation; it does not interrupt an already running
+  LLM, embedding, HTTP, or vector-store call.
 - No async comparison or synthesis jobs yet.
-- Local PDF analysis is synchronous through REST multipart upload, MCP local
-  path analysis, or direct service calls. Durable PDF object storage exists, but
-  the current async worker supports URL analysis jobs only; async PDF jobs need
-  a dedicated blob-reference job kind.
+- PDF analysis can run synchronously or through PDF workflow jobs backed by
+  durable blob storage.
 - Job results are stored in Postgres as JSON transport snapshots, not as a
   separate event stream.

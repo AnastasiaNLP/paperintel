@@ -190,9 +190,8 @@ Limits and errors:
   `unsupported_media_type`.
 - Service-level PDF validation failures return `400` with
   `invalid_pdf_input`.
-- The endpoint is synchronous and can take about a minute. Durable object
-  storage now exists, but async PDF jobs still require a dedicated workflow job
-  kind and are deferred.
+- The endpoint is synchronous and can take about a minute. For long-running
+  PDF analysis, use the async PDF workflow endpoints below.
 
 ## Async Job Example
 
@@ -229,12 +228,49 @@ Queue selected-paper analysis after discovery/selection:
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/analyze-selected"
 ```
 
+Queue PDF analysis with a direct multipart upload. The upload phase is
+synchronous, then analysis runs in a worker:
+
+```bash
+PDF_JOB_ID=$(
+  curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/analyze-pdf" \
+    -F "file=@/absolute/path/to/paper.pdf;type=application/pdf" \
+    -F "paper_id=local-paper-1" \
+    -F "skip_arxiv_metadata_fetch=true" \
+  | python -c "import sys,json; print(json.load(sys.stdin)['id'])"
+)
+
+curl -s "http://127.0.0.1:8000/jobs/$PDF_JOB_ID"
+```
+
+For client-managed uploads, use the presigned lifecycle:
+
+```bash
+UPLOAD_JSON=$(
+  curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/pdf-uploads" \
+    -H 'content-type: application/json' \
+    -d '{"expected_sha256":"<64 hex chars>","size_bytes":123456}'
+)
+# PUT the PDF bytes to upload_url with the returned upload_headers.
+# Then finalize and enqueue:
+UPLOAD_ID=$(python -c "import sys,json; print(json.load(sys.stdin)['upload']['id'])" <<< "$UPLOAD_JSON")
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/pdf-uploads/$UPLOAD_ID/finalize"
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/pdf-uploads/$UPLOAD_ID/jobs/analyze" \
+  -H 'content-type: application/json' \
+  -d '{"paper_id":"local-paper-1","skip_arxiv_metadata_fetch":true}'
+```
+
 ## Notes
 
 - `/analyze` is synchronous and can take 50-90 seconds. Use `/jobs/analyze-paper` plus a separate worker for async URL analysis.
 - `/analyze-pdf` is synchronous, accepts multipart PDF uploads only, deletes
   the temporary transport file after analysis, and persists PDF content to blob
-  storage. It does not enqueue async jobs.
+  storage.
+- `/jobs/analyze-pdf` accepts multipart PDF uploads, persists the PDF to blob
+  storage, enqueues analysis, and returns `202`. The upload phase is
+  synchronous; analysis completes only when a worker processes the job.
+- `/pdf-uploads` plus `/finalize` plus `/jobs/analyze` exposes the same PDF job
+  path for clients that need presigned object-store uploads.
 - `/discover` is synchronous and depends on arXiv availability.
 - `/ask` works only after a paper has been successfully analyzed and indexed in
   the same session.
