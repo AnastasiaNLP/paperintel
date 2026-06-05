@@ -141,6 +141,33 @@ class FakeStore:
         self.sessions[session_id] = updated
         return updated
 
+    def append_turn(
+        self,
+        session_id,
+        *,
+        role,
+        content,
+        intent=None,
+        referenced_paper_ids=None,
+        artifact_refs=None,
+        error=None,
+        metadata=None,
+    ):
+        if session_id not in self.sessions:
+            raise SessionNotFoundError(session_id)
+        turn = Turn(
+            session_id=session_id,
+            role=role,
+            content=content,
+            intent=intent,
+            referenced_paper_ids=referenced_paper_ids or [],
+            artifact_refs=artifact_refs or [],
+            error=error,
+            metadata=metadata or {},
+        )
+        self.turns[session_id].append(turn)
+        return turn
+
     def add_active_paper(self, session_id, paper_id):
         if session_id not in self.sessions:
             raise SessionNotFoundError(session_id)
@@ -221,6 +248,8 @@ class FakeArtifactRepository:
             comparison_markdown="# Comparison",
         )
         self.clone_calls = []
+        self.reusable_paper_ids = {}
+        self.reusable_paper_id_calls = []
         self.reusable_pdf_hashes = {}
         self.reusable_pdf_hash_calls = []
 
@@ -276,6 +305,25 @@ class FakeArtifactRepository:
             }
         )
         workspace = self.reusable_pdf_hashes.get((content_hash, pipeline_version))
+        if workspace is not None and workspace.session_id != exclude_session_id:
+            return workspace
+        return None
+
+    def find_reusable_workspace(
+        self,
+        *,
+        paper_id,
+        pipeline_version,
+        exclude_session_id=None,
+    ):
+        self.reusable_paper_id_calls.append(
+            {
+                "paper_id": paper_id,
+                "pipeline_version": pipeline_version,
+                "exclude_session_id": exclude_session_id,
+            }
+        )
+        workspace = self.reusable_paper_ids.get((paper_id, pipeline_version))
         if workspace is not None and workspace.session_id != exclude_session_id:
             return workspace
         return None
@@ -680,6 +728,188 @@ def test_service_analyze_paper_delegates_to_handler():
 
     assert result.response_text == "handled: https://arxiv.org/abs/1706.03762"
     assert handler.messages == [(session.id, "https://arxiv.org/abs/1706.03762")]
+
+
+def test_service_analyze_paper_reuses_arxiv_abs_url_cache_hit():
+    handler = FakeHandler()
+    retrieval_layer = FakeRetrievalLayer()
+    handler.retrieval_layer = retrieval_layer
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    artifact_repository.workspaces = [source_workspace]
+    artifact_repository.reusable_paper_ids[
+        (source_workspace.paper_id, "v1")
+    ] = source_workspace
+    chunk_repository = FakePaperChunkRepository([_cache_chunk()])
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        paper_chunk_repository=chunk_repository,
+    )
+    session = service.create_session()
+
+    result = service.analyze_paper(session.id, "https://arxiv.org/abs/1706.03762")
+
+    cloned_workspace = artifact_repository.get_workspace(session.id, "1706.03762")
+    assert cloned_workspace is not None
+    assert result.response_text == "# Cached Report"
+    assert result.intent == "analyze_paper"
+    assert result.phase == "qa"
+    assert result.user_turn_id == handler.store.turns[session.id][0].id
+    assert result.assistant_turn_id == handler.store.turns[session.id][1].id
+    assert result.artifact_refs == [f"paper_workspace:{cloned_workspace.id}"]
+    assert handler.messages == []
+    assert handler.analysis_input_calls == []
+    assert retrieval_layer.upsert_calls == [
+        chunk_repository.list_for_session_paper(session.id, "1706.03762")
+    ]
+    updated_session = handler.store.require_session(session.id)
+    assert updated_session.active_paper_ids == ["1706.03762"]
+    assert updated_session.phase == "qa"
+    turns = handler.store.turns[session.id]
+    assert [(turn.role, turn.content) for turn in turns] == [
+        ("user", "https://arxiv.org/abs/1706.03762"),
+        ("assistant", "# Cached Report"),
+    ]
+    assert turns[0].intent == "analyze_paper"
+    assert turns[1].intent == "analyze_paper"
+    assert turns[1].artifact_refs == result.artifact_refs
+
+
+def test_service_analyze_paper_reuses_arxiv_pdf_url_cache_hit():
+    handler = FakeHandler()
+    handler.retrieval_layer = FakeRetrievalLayer()
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    artifact_repository.workspaces = [source_workspace]
+    artifact_repository.reusable_paper_ids[
+        (source_workspace.paper_id, "v1")
+    ] = source_workspace
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        paper_chunk_repository=FakePaperChunkRepository([_cache_chunk()]),
+    )
+    session = service.create_session()
+
+    result = service.analyze_paper(
+        session.id,
+        "https://arxiv.org/pdf/1706.03762v7.pdf",
+    )
+
+    assert result.response_text == "# Cached Report"
+    assert artifact_repository.reusable_paper_id_calls == [
+        {
+            "paper_id": "1706.03762",
+            "pipeline_version": "v1",
+            "exclude_session_id": session.id,
+        }
+    ]
+    assert handler.messages == []
+
+
+def test_service_analyze_paper_cache_miss_delegates_to_handler():
+    handler = FakeHandler()
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+    )
+    session = service.create_session()
+
+    result = service.analyze_paper(session.id, "https://arxiv.org/abs/1706.03762")
+
+    assert result.response_text == "handled: https://arxiv.org/abs/1706.03762"
+    assert artifact_repository.reusable_paper_id_calls == [
+        {
+            "paper_id": "1706.03762",
+            "pipeline_version": "v1",
+            "exclude_session_id": session.id,
+        }
+    ]
+    assert handler.messages == [(session.id, "https://arxiv.org/abs/1706.03762")]
+
+
+def test_service_analyze_paper_non_arxiv_url_delegates_without_cache_lookup():
+    handler = FakeHandler()
+    artifact_repository = FakeArtifactRepository()
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+    )
+    session = service.create_session()
+
+    result = service.analyze_paper(session.id, "https://example.com/paper")
+
+    assert result.response_text == "handled: https://example.com/paper"
+    assert artifact_repository.reusable_paper_id_calls == []
+    assert handler.messages == [(session.id, "https://example.com/paper")]
+
+
+def test_service_analyze_paper_embedded_arxiv_url_delegates_without_cache_lookup():
+    handler = FakeHandler()
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    artifact_repository.reusable_paper_ids[
+        (source_workspace.paper_id, "v1")
+    ] = source_workspace
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+    )
+    session = service.create_session()
+    url = "https://example.com/redirect?u=https://arxiv.org/abs/1706.03762"
+
+    result = service.analyze_paper(session.id, url)
+
+    assert result.response_text == f"handled: {url}"
+    assert artifact_repository.reusable_paper_id_calls == []
+    assert handler.messages == [(session.id, url)]
+
+
+def test_service_analyze_paper_cache_hit_without_dependencies_delegates_to_handler():
+    handler = FakeHandler()
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    artifact_repository.reusable_paper_ids[
+        (source_workspace.paper_id, "v1")
+    ] = source_workspace
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+    )
+    session = service.create_session()
+
+    result = service.analyze_paper(session.id, "https://arxiv.org/abs/1706.03762")
+
+    assert result.response_text == "handled: https://arxiv.org/abs/1706.03762"
+    assert handler.messages == [(session.id, "https://arxiv.org/abs/1706.03762")]
+    assert handler.store.turns[session.id] == []
+
+
+def test_service_analyze_paper_cache_hit_with_empty_chunks_is_explicit_failure():
+    handler = FakeHandler()
+    handler.retrieval_layer = FakeRetrievalLayer()
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    artifact_repository.workspaces = [source_workspace]
+    artifact_repository.reusable_paper_ids[
+        (source_workspace.paper_id, "v1")
+    ] = source_workspace
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        paper_chunk_repository=FakePaperChunkRepository(),
+    )
+    session = service.create_session()
+
+    with pytest.raises(PaperCacheHydrationEmptyChunksError):
+        service.analyze_paper(session.id, "https://arxiv.org/abs/1706.03762")
+
+    assert handler.messages == []
+    assert handler.store.turns[session.id] == []
+    assert handler.retrieval_layer.upsert_calls == []
 
 
 def test_service_hydrates_reusable_workspace_without_analysis_runner():

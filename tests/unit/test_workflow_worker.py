@@ -240,6 +240,48 @@ def test_executor_analyze_paper_calls_service_and_serializes_result():
     assert result["search_warnings"] == ["s2 unavailable"]
 
 
+def test_executor_analyze_paper_serializes_reused_analysis_result():
+    class ReusedAnalysisService(FakeService):
+        def analyze_paper(self, session_id, paper_url):
+            self.analyze_calls.append((session_id, paper_url))
+            return HandlerResult(
+                session_id=session_id,
+                response_text="# Cached Report",
+                phase="qa",
+                intent="analyze_paper",
+                referenced_paper_ids=["1706.03762"],
+                artifact_refs=["paper_workspace:workspace-cache-hit"],
+                needs_analysis=False,
+                needs_discovery=False,
+                user_turn_id="user-turn-cache",
+                assistant_turn_id="assistant-turn-cache",
+            )
+
+    service = ReusedAnalysisService()
+    executor = WorkflowJobExecutor(service)
+
+    result = executor.execute(_job())
+
+    assert service.analyze_calls == [
+        ("session-1", "https://arxiv.org/abs/1706.03762")
+    ]
+    assert result == {
+        "session_id": "session-1",
+        "response_text": "# Cached Report",
+        "phase": "qa",
+        "intent": "analyze_paper",
+        "referenced_paper_ids": ["1706.03762"],
+        "artifact_refs": ["paper_workspace:workspace-cache-hit"],
+        "comparison_markdown": None,
+        "needs_analysis": False,
+        "needs_discovery": False,
+        "discovery_topic": None,
+        "discovery_candidate_count": None,
+        "selected_candidate_ids": [],
+        "search_warnings": [],
+    }
+
+
 def test_executor_analyze_paper_requires_paper_url():
     executor = WorkflowJobExecutor(FakeService())
 

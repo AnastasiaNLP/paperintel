@@ -1,7 +1,9 @@
 import hashlib
+import re
 from datetime import timedelta
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from agents.comparison_analyst import compare_workspaces
@@ -37,6 +39,10 @@ _FAILED_WORKSPACE_STAGES = {"failed", "paper_failure_finalize"}
 MAX_LOCAL_PDF_BYTES = 50 * 1024 * 1024
 MIN_UPLOAD_URL_EXPIRES_SECONDS = 60
 MAX_UPLOAD_URL_EXPIRES_SECONDS = 3600
+ARXIV_URL_PATTERNS = (
+    re.compile(r"arxiv\.org/abs/(\d{4}\.\d{4,5})(?:v\d+)?", re.IGNORECASE),
+    re.compile(r"arxiv\.org/pdf/(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?", re.IGNORECASE),
+)
 
 
 class InvalidPdfInputError(ValueError):
@@ -357,6 +363,30 @@ class PaperIntelService:
         return self.handler.handle_message(session_id, message)
 
     def analyze_paper(self, session_id: str, paper_url: str) -> HandlerResult:
+        self.handler.store.require_session(session_id)
+        paper_url = paper_url.strip() if isinstance(paper_url, str) else ""
+        paper_id = _extract_arxiv_paper_id_from_url(paper_url)
+        if paper_id is not None:
+            reusable_workspace = self._find_reusable_url_workspace(
+                session_id=session_id,
+                paper_id=paper_id,
+                pipeline_version="v1",
+            )
+            if reusable_workspace is not None:
+                try:
+                    result = self._hydrate_reusable_workspace(
+                        session_id,
+                        reusable_workspace,
+                        cache_reason="paper_id",
+                    )
+                except PaperCacheHydrationNotConfiguredError:
+                    pass
+                else:
+                    return self._record_reused_analysis_turns(
+                        session_id,
+                        user_content=paper_url,
+                        result=result,
+                    )
         return self.handler.handle_message(session_id, paper_url)
 
     def enqueue_analyze_paper(self, session_id: str, paper_url: str) -> WorkflowJob:
@@ -829,6 +859,21 @@ class PaperIntelService:
             exclude_session_id=session_id,
         )
 
+    def _find_reusable_url_workspace(
+        self,
+        *,
+        session_id: str,
+        paper_id: str,
+        pipeline_version: str,
+    ) -> PaperWorkspace | None:
+        if self.artifact_repository is None:
+            return None
+        return self.artifact_repository.find_reusable_workspace(
+            paper_id=paper_id,
+            pipeline_version=pipeline_version,
+            exclude_session_id=session_id,
+        )
+
     def _hydrate_reusable_workspace(
         self,
         session_id: str,
@@ -872,6 +917,36 @@ class PaperIntelService:
             ],
             user_turn_id="reused-analysis-user-turn",
             assistant_turn_id="reused-analysis-assistant-turn",
+        )
+
+    def _record_reused_analysis_turns(
+        self,
+        session_id: str,
+        *,
+        user_content: str,
+        result: HandlerResult,
+    ) -> HandlerResult:
+        user_turn = self.handler.store.append_turn(
+            session_id,
+            role="user",
+            content=user_content,
+            intent="analyze_paper",
+            referenced_paper_ids=result.referenced_paper_ids,
+            artifact_refs=result.artifact_refs,
+        )
+        assistant_turn = self.handler.store.append_turn(
+            session_id,
+            role="assistant",
+            content=result.response_text,
+            intent=result.intent,
+            referenced_paper_ids=result.referenced_paper_ids,
+            artifact_refs=result.artifact_refs,
+        )
+        return result.model_copy(
+            update={
+                "user_turn_id": user_turn.id,
+                "assistant_turn_id": assistant_turn.id,
+            }
         )
 
     def _paper_cache_dependencies(self):
@@ -1092,3 +1167,21 @@ def _looks_like_discovery_message(message: str) -> bool:
     return any(word in normalized for word in discovery_words) and any(
         word in normalized for word in target_words
     )
+
+
+def _extract_arxiv_paper_id_from_url(value: str) -> str | None:
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    hostname = parsed.hostname.casefold() if parsed.hostname is not None else ""
+    if hostname not in {"arxiv.org", "www.arxiv.org"}:
+        return None
+    normalized_path = parsed.path.strip("/")
+    if not normalized_path:
+        return None
+    path_for_match = f"arxiv.org/{normalized_path}"
+    for pattern in ARXIV_URL_PATTERNS:
+        match = pattern.fullmatch(path_for_match)
+        if match is not None:
+            return match.group(1)
+    return None
