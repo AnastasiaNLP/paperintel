@@ -62,6 +62,22 @@ run deletes the physical object first and only then marks the Postgres upload or
 blob artifact cleaned up. If object deletion fails, the registry row remains
 active for a later retry.
 
+Run one manual cleanup batch with:
+
+```bash
+python -m workers.blob_cleanup_worker --once
+```
+
+For local MinIO verification, run the cleanup smoke with explicit test
+endpoints:
+
+```bash
+PAPERINTEL_TEST_DATABASE_URL=postgresql+psycopg://paperintel:dev_password@localhost:5432/paperintel \
+PAPERINTEL_MINIO_TEST_URL=http://localhost:9000 \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+.venv/bin/python -m pytest tests/integration/test_minio_blob_store.py::test_real_minio_cleanup_deletes_staging_and_unref_ttl_objects -q
+```
+
 ## Current Limits
 
 - PDF uploads are loaded into memory before upload. The REST API limits uploads

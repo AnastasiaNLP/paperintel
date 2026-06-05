@@ -1,5 +1,6 @@
 import hashlib
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,14 +11,18 @@ from sqlalchemy import func, select
 
 from api.app_factory import _resolve_blob_store
 from models.artifacts import PaperWorkspace
+from models.pdf_uploads import PdfUpload
 from models.session import HandlerResult
+from services.blob_cleanup import BlobCleanupService
 from services.blob_store import S3BlobStore
 from services.paperintel_service import PaperIntelService
 from storage.db import make_engine, make_session_factory
 from storage.models import BlobArtifactORM
 from storage.repositories import (
     PostgresBlobArtifactRepository,
+    PostgresBlobCleanupRepository,
     PostgresPaperWorkspaceRepository,
+    PostgresPdfUploadRepository,
     PostgresSessionStore,
     clear_foundation_tables,
 )
@@ -25,6 +30,7 @@ from storage.repositories import (
 
 pytestmark = pytest.mark.db
 PDF_BYTES = b"%PDF-1.7\npaperintel real minio integration\n"
+PNG_BYTES = b"paperintel real minio cleanup png\n"
 
 
 def _minio_url() -> str | None:
@@ -196,6 +202,78 @@ def test_real_minio_and_postgres_durable_pdf_ingestion(tmp_path):
         try:
             if blob_store is not None and blob_store.exists(object_key):
                 blob_store.delete(object_key)
+        finally:
+            with session_factory() as db:
+                clear_foundation_tables(db)
+            engine.dispose()
+
+
+def test_real_minio_cleanup_deletes_staging_and_unref_ttl_objects():
+    database_url = _database_url()
+    if not database_url:
+        pytest.skip("PAPERINTEL_TEST_DATABASE_URL is required for MinIO cleanup test")
+    if not _minio_url():
+        pytest.skip("PAPERINTEL_MINIO_TEST_URL is required for MinIO cleanup test")
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "head")
+    engine = make_engine(database_url)
+    session_factory = make_session_factory(engine)
+    blob_store = _store()
+    blob_store.ensure_bucket()
+    now = datetime.now(timezone.utc)
+    staging_key = "uploads/minio-cleanup/expired.pdf"
+    ttl_hash = hashlib.sha256(PNG_BYTES).hexdigest()
+    ttl_key = f"page_images/sha256/{ttl_hash[:2]}/{ttl_hash}.png"
+
+    try:
+        with session_factory() as db:
+            clear_foundation_tables(db)
+
+        session = PostgresSessionStore(session_factory).create_session()
+        upload_repository = PostgresPdfUploadRepository(session_factory)
+        upload = upload_repository.create(
+            PdfUpload(
+                session_id=session.id,
+                object_key=staging_key,
+                expected_sha256=hashlib.sha256(PDF_BYTES).hexdigest(),
+                expires_at=now - timedelta(minutes=5),
+            )
+        )
+        blob_store.put_staging(
+            staging_key,
+            PDF_BYTES,
+            content_type="application/pdf",
+        )
+        blob_repository = PostgresBlobArtifactRepository(session_factory)
+        ttl_artifact = blob_repository.upsert_artifact(
+            blob_store.put(PNG_BYTES, kind="page_image", content_type="image/png"),
+            retention_policy="ttl",
+            expires_at=now - timedelta(hours=2),
+        )
+
+        summary = BlobCleanupService(
+            repository=PostgresBlobCleanupRepository(session_factory),
+            blob_store=blob_store,
+            blob_grace_period_seconds=3600,
+        ).run_once(now=now)
+
+        assert summary.expired_uploads == 1
+        assert summary.deleted_staging_objects == 1
+        assert summary.released_blobs == 1
+        assert summary.deleted_blob_objects == 1
+        assert summary.errors == []
+        assert upload_repository.get(upload.id).status == "expired"
+        assert blob_repository.get_artifact(ttl_artifact.id) is None
+        assert not blob_store.exists(staging_key)
+        assert not blob_store.exists(ttl_key)
+    finally:
+        try:
+            if blob_store.exists(staging_key):
+                blob_store.delete(staging_key)
+            if blob_store.exists(ttl_key):
+                blob_store.delete(ttl_key)
         finally:
             with session_factory() as db:
                 clear_foundation_tables(db)

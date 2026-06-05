@@ -332,3 +332,42 @@ def test_cleanup_workers_skip_locked_expired_upload(stack):
 
     assert second is None
     assert cleaned.id == upload.id
+
+
+@mock_aws
+def test_cleanup_workers_skip_locked_ttl_blob(stack):
+    _, blob_store = _blob_store()
+    repository = PostgresBlobArtifactRepository(stack)
+    artifact = repository.upsert_artifact(
+        blob_store.put(PNG_BYTES, kind="page_image", content_type="image/png"),
+        retention_policy="ttl",
+        expires_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    delete_started = Event()
+    release_delete = Event()
+
+    def blocking_delete(object_key):
+        delete_started.set()
+        assert release_delete.wait(timeout=5)
+
+    def first_cleanup():
+        return PostgresBlobCleanupRepository(stack).tombstone_next_ttl_blob(
+            cutoff=datetime.now(timezone.utc) - timedelta(hours=1),
+            now=datetime.now(timezone.utc),
+            delete_object=blocking_delete,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(first_cleanup)
+        assert delete_started.wait(timeout=5)
+        second = PostgresBlobCleanupRepository(stack).tombstone_next_ttl_blob(
+            cutoff=datetime.now(timezone.utc) - timedelta(hours=1),
+            now=datetime.now(timezone.utc),
+            delete_object=lambda _: None,
+        )
+        release_delete.set()
+        cleaned = first.result(timeout=5)
+
+    assert second is None
+    assert cleaned.id == artifact.id
+    assert repository.get_artifact(artifact.id) is None
