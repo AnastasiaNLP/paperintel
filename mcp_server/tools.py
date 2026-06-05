@@ -516,6 +516,9 @@ def _format_json_summary(payload: dict) -> str:
         return "{}"
     items = []
     for key, value in payload.items():
+        if key == "metadata" and isinstance(value, dict):
+            items.extend(_format_result_metadata(value))
+            continue
         if isinstance(value, (str, int, float, bool)) or value is None:
             items.append(f"- {key}: {value}")
         elif isinstance(value, list):
@@ -525,6 +528,15 @@ def _format_json_summary(payload: dict) -> str:
         else:
             items.append(f"- {key}: {type(value).__name__}")
     return "\n".join(items)
+
+
+def _format_result_metadata(metadata: dict) -> list[str]:
+    items = ["- metadata: object"]
+    if "analysis_reused" in metadata:
+        items.append(f"- analysis_reused: {metadata['analysis_reused']}")
+    if "reuse_source" in metadata:
+        items.append(f"- reuse_source: {metadata['reuse_source']}")
+    return items
 
 
 def _format_workspace_artifact_flags(workspace: PaperWorkspace) -> str:

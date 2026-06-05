@@ -93,6 +93,7 @@ class MessageResponse(BaseModel):
     discovery_topic: str | None = None
     discovery_candidate_count: int | None = None
     selected_candidate_ids: list[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
 
     @classmethod
     def from_handler_result(cls, result: HandlerResult) -> "MessageResponse":
@@ -110,6 +111,7 @@ class MessageResponse(BaseModel):
             discovery_topic=result.discovery_topic,
             discovery_candidate_count=result.discovery_candidate_count,
             selected_candidate_ids=result.selected_candidate_ids,
+            metadata=result.metadata,
         )
 
     @classmethod

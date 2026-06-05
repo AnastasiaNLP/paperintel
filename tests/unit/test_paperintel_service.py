@@ -755,6 +755,10 @@ def test_service_analyze_paper_reuses_arxiv_abs_url_cache_hit():
     assert result.response_text == "# Cached Report"
     assert result.intent == "analyze_paper"
     assert result.phase == "qa"
+    assert result.metadata == {
+        "analysis_reused": True,
+        "reuse_source": "paper_id",
+    }
     assert result.user_turn_id == handler.store.turns[session.id][0].id
     assert result.assistant_turn_id == handler.store.turns[session.id][1].id
     assert result.artifact_refs == [f"paper_workspace:{cloned_workspace.id}"]
@@ -798,6 +802,10 @@ def test_service_analyze_paper_reuses_arxiv_pdf_url_cache_hit():
     )
 
     assert result.response_text == "# Cached Report"
+    assert result.metadata == {
+        "analysis_reused": True,
+        "reuse_source": "paper_id",
+    }
     assert artifact_repository.reusable_paper_id_calls == [
         {
             "paper_id": "1706.03762",
@@ -1824,6 +1832,10 @@ def test_service_analyze_registered_pdf_blob_reuses_pdf_hash_cache_hit():
     assert result.response_text == "# Cached Report"
     assert result.intent == "analyze_paper"
     assert result.phase == "qa"
+    assert result.metadata == {
+        "analysis_reused": True,
+        "reuse_source": "pdf_hash",
+    }
     assert result.artifact_refs == [f"paper_workspace:{cloned_workspace.id}"]
     assert blob_store.materialized_paths == []
     assert handler.analysis_input_calls == []

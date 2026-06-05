@@ -18,6 +18,8 @@ from mcp_server.tools import (
     format_comparison_artifact,
     format_answer_result,
     format_discovery_result,
+    format_analysis_result,
+    format_workflow_job,
     format_paper_workspace,
     get_session_tool,
     get_workflow_job_tool,
@@ -402,6 +404,27 @@ def test_analyze_paper_tool_calls_service():
     ]
 
 
+def test_format_analysis_result_keeps_reuse_metadata_out_of_human_text():
+    result = HandlerResult(
+        session_id="session-1",
+        response_text="# Cached Report",
+        phase="qa",
+        intent="analyze_paper",
+        referenced_paper_ids=["1706.03762"],
+        artifact_refs=["paper_workspace:workspace-cache-hit"],
+        metadata={"analysis_reused": True, "reuse_source": "paper_id"},
+        user_turn_id="user-turn",
+        assistant_turn_id="assistant-turn",
+    )
+
+    text = format_analysis_result(result)
+
+    assert "Paper analysis completed." in text
+    assert "# Cached Report" in text
+    assert "analysis_reused" not in text
+    assert "reuse_source" not in text
+
+
 def test_analyze_paper_rejects_non_url():
     with pytest.raises(ValueError):
         asyncio.run(
@@ -612,6 +635,28 @@ def test_enqueue_analyze_paper_tool_calls_service():
     assert service.enqueue_analyze_paper_calls == [
         ("session-1", "https://arxiv.org/abs/1706.03762")
     ]
+
+
+def test_format_workflow_job_preserves_reuse_metadata_summary():
+    job = WorkflowJob(
+        id="job-1",
+        session_id="session-1",
+        kind="analyze_paper",
+        status="succeeded",
+        input_json={"paper_url": "https://arxiv.org/abs/1706.03762"},
+        result_json={
+            "intent": "analyze_paper",
+            "phase": "qa",
+            "metadata": {"analysis_reused": True, "reuse_source": "paper_id"},
+        },
+    )
+
+    text = format_workflow_job(job)
+
+    assert "Result:" in text
+    assert "- metadata: object" in text
+    assert "- analysis_reused: True" in text
+    assert "- reuse_source: paper_id" in text
 
 
 def test_enqueue_analyze_selected_tool_calls_service():

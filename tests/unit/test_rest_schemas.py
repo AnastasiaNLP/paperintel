@@ -60,6 +60,7 @@ def test_message_response_excludes_internal_handler_fields():
         phase="qa",
         intent="qa_factual",
         referenced_paper_ids=["1706.03762"],
+        metadata={"analysis_reused": True, "reuse_source": "paper_id"},
         needs_analysis=False,
         user_turn_id="turn-user",
         assistant_turn_id="turn-assistant",
@@ -69,6 +70,10 @@ def test_message_response_excludes_internal_handler_fields():
 
     assert payload["response_text"] == "Answer"
     assert payload["referenced_paper_ids"] == ["1706.03762"]
+    assert payload["metadata"] == {
+        "analysis_reused": True,
+        "reuse_source": "paper_id",
+    }
     assert "agent_runs" not in payload
     assert "errors" not in payload
     assert "raw" not in payload

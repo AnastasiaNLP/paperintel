@@ -881,7 +881,6 @@ class PaperIntelService:
         *,
         cache_reason: str,
     ) -> HandlerResult:
-        _ = cache_reason
         self.handler.store.require_session(session_id)
         artifact_repository, chunk_repository, retrieval_layer = (
             self._paper_cache_dependencies()
@@ -915,6 +914,10 @@ class PaperIntelService:
             artifact_refs=[
                 f"paper_workspace:{cloned_workspace.id}",
             ],
+            metadata={
+                "analysis_reused": True,
+                "reuse_source": cache_reason,
+            },
             user_turn_id="reused-analysis-user-turn",
             assistant_turn_id="reused-analysis-assistant-turn",
         )

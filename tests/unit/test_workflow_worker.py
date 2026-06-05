@@ -223,6 +223,7 @@ def test_serialize_handler_result_is_transport_safe():
         "discovery_candidate_count": None,
         "selected_candidate_ids": ["candidate-1"],
         "search_warnings": ["warning"],
+        "metadata": {},
     }
 
 
@@ -253,6 +254,10 @@ def test_executor_analyze_paper_serializes_reused_analysis_result():
                 artifact_refs=["paper_workspace:workspace-cache-hit"],
                 needs_analysis=False,
                 needs_discovery=False,
+                metadata={
+                    "analysis_reused": True,
+                    "reuse_source": "paper_id",
+                },
                 user_turn_id="user-turn-cache",
                 assistant_turn_id="assistant-turn-cache",
             )
@@ -279,6 +284,10 @@ def test_executor_analyze_paper_serializes_reused_analysis_result():
         "discovery_candidate_count": None,
         "selected_candidate_ids": [],
         "search_warnings": [],
+        "metadata": {
+            "analysis_reused": True,
+            "reuse_source": "paper_id",
+        },
     }
 
 

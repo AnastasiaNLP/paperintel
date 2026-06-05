@@ -357,6 +357,7 @@ def serialize_handler_result(result: HandlerResult) -> dict:
         "discovery_candidate_count": result.discovery_candidate_count,
         "selected_candidate_ids": list(result.selected_candidate_ids),
         "search_warnings": list(result.search_warnings),
+        "metadata": dict(result.metadata),
     }
 
 
