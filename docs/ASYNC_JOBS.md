@@ -14,6 +14,8 @@ The worker currently supports:
 - `analyze_paper`: analyze one paper URL.
 - `analyze_selected`: analyze papers selected from the current discovery
   shortlist.
+- `analyze_pdf_blob`: analyze one PDF that has already been persisted to blob
+  storage through multipart upload or the presigned upload lifecycle.
 
 Other job kinds may exist in the type model for future work, but the default
 worker only claims supported kinds. Unsupported jobs are not picked up by the
@@ -39,7 +41,7 @@ Limit the worker to one kind:
 
 ```bash
 .venv/bin/python -m dotenv run -- \
-.venv/bin/python -m workers --kind analyze_paper
+.venv/bin/python -m workers --kind analyze_pdf_blob
 ```
 
 Use a stable worker ID when running more than one worker process:
@@ -51,6 +53,20 @@ Use a stable worker ID when running more than one worker process:
 
 The worker must run separately from the REST API or MCP server. Starting the API
 creates jobs; it does not process them.
+
+Run one cleanup batch for expired PDF uploads and unreferenced TTL blob objects:
+
+```bash
+.venv/bin/python -m dotenv run -- \
+.venv/bin/python -m workers.blob_cleanup_worker --once
+```
+
+Preview cleanup candidates without deleting objects or changing Postgres state:
+
+```bash
+.venv/bin/python -m dotenv run -- \
+.venv/bin/python -m workers.blob_cleanup_worker --once --dry-run
+```
 
 ## Lifecycle Contract
 
@@ -100,6 +116,31 @@ Queue analysis for selected discovery candidates:
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/analyze-selected"
+```
+
+Queue local PDF analysis through multipart upload:
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/analyze-pdf" \
+  -F "file=@/path/to/paper.pdf;type=application/pdf" \
+  -F "paper_id=local-paper-1" \
+  -F "skip_arxiv_metadata_fetch=true"
+```
+
+Queue local PDF analysis through the presigned upload lifecycle:
+
+```bash
+UPLOAD_JSON=$(
+  curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/pdf-uploads" \
+    -H 'content-type: application/json' \
+    -d '{"expected_sha256":"<64 hex chars>","size_bytes":123456}'
+)
+UPLOAD_ID=$(python -c "import sys,json; print(json.load(sys.stdin)['upload']['id'])" <<< "$UPLOAD_JSON")
+# PUT the PDF bytes to upload_url with the returned upload_headers, then:
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/pdf-uploads/$UPLOAD_ID/finalize"
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/pdf-uploads/$UPLOAD_ID/jobs/analyze" \
+  -H 'content-type: application/json' \
+  -d '{"paper_id":"local-paper-1","skip_arxiv_metadata_fetch":true}'
 ```
 
 List jobs for a session:
@@ -152,8 +193,11 @@ separately for queued jobs to complete.
 
 ## Live Smoke
 
-The async jobs live smoke verifies REST enqueue, worker execution, REST status,
-MCP status, deterministic failure, and cancel behavior on the real stack.
+The async jobs live smoke verifies URL job REST enqueue, worker execution, REST
+status, MCP status, deterministic failure, and cancel behavior on the real
+stack. The blob storage live smoke verifies async PDF upload, PDF job execution,
+blob references, and cancel-before-claim behavior on the real Postgres,
+Qdrant, and MinIO stack.
 
 Run it with:
 
@@ -166,6 +210,15 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 
 The runbook in `tests/live/README.md` lists expected success markers and tracing
 options.
+
+Run the blob storage live smoke with:
+
+```bash
+PAPERINTEL_RUN_LIVE_BLOB_SMOKE=1 \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+.venv/bin/python -m dotenv run -- \
+.venv/bin/python -m pytest -s tests/live/test_blob_live_smoke.py
+```
 
 ## Current Limits
 
@@ -183,4 +236,5 @@ options.
 - Job results are stored in Postgres as JSON transport snapshots, not as a
   separate event stream.
 - Expired PDF upload cleanup and unreferenced TTL blob cleanup are available
-  through `BlobCleanupService`, but they are not scheduled automatically yet.
+  through `BlobCleanupService` and `workers.blob_cleanup_worker`, but they are
+  not scheduled automatically yet.

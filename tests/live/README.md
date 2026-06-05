@@ -168,7 +168,8 @@ real stack through the default application factory:
 - Postgres stores session, paper-workspace, and workflow-job references.
 - `/health` reports `blob_store=ok`.
 - Cleanup removes the temporary Qdrant collection, MinIO bucket, and Postgres
-  foundation rows.
+  foundation rows. Blob cleanup retention is also covered by the non-live
+  MinIO cleanup smoke in `tests/integration/test_minio_blob_store.py`.
 
 The test is skipped unless `PAPERINTEL_RUN_LIVE_BLOB_SMOKE=1` is set. It also
 requires the standard database, Qdrant, and provider variables plus:
@@ -218,6 +219,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 ```text
 LIVE_BLOB_RUN_ID=<run_id>
 LIVE_BLOB_REST_STATUS=200
+LIVE_BLOB_MCP_REUSED_ANALYSIS=true
 LIVE_BLOB_ASYNC_INITIATE_STATUS=201
 LIVE_BLOB_ASYNC_PUT_STATUS=200
 LIVE_BLOB_ASYNC_FINALIZE_STATUS=200
@@ -255,10 +257,9 @@ end-to-end on the real stack:
 The test is skipped unless `PAPERINTEL_RUN_ASYNC_JOBS_LIVE=1` is set.
 
 This smoke currently uses one arXiv URL job (`https://arxiv.org/abs/1706.03762`)
-because the current worker supports `analyze_paper` URL jobs. It can therefore
-exercise the arXiv metadata cache, process-local limiter, circuit breaker, and
-PDF fallback path when upstream services are slow or degraded. Local PDF async
-jobs are a separate future job kind.
+and therefore can exercise the arXiv metadata cache, process-local limiter,
+circuit breaker, and PDF fallback path when upstream services are slow or
+degraded. Async PDF jobs are covered by the blob storage live smoke.
 
 ### Run Without LangSmith Trace
 

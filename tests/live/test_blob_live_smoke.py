@@ -109,7 +109,8 @@ def test_blob_live_smoke_factory_rest_mcp_dedup_health_and_cleanup(monkeypatch):
         assert "Paper analysis completed." in mcp_output
         for marker in ("could not", "internal details", "Please try again."):
             assert marker not in mcp_output
-        _assert_workspace(stack.service, mcp_session.id, MCP_PAPER_ID)
+        _assert_workspace(stack.service, mcp_session.id, REST_PAPER_ID)
+        print("LIVE_BLOB_MCP_REUSED_ANALYSIS=true", flush=True)
         _assert_no_new_temp_paths(initial_temp_paths)
 
         async_session = stack.service.create_session(persona="engineer")
