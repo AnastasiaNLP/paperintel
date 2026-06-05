@@ -48,12 +48,19 @@ analysis pipeline runs against a verified temporary materialization.
 
 ## Retention
 
-PDF blobs currently use durable retention. Automated cleanup is not
-implemented, so object storage grows over time. Remove unused objects and their
-Postgres registry rows manually when required.
+PDF blobs use durable retention by default. The cleanup engine expires stale
+client-upload staging records and removes unreferenced TTL blob artifacts. It
+does not delete durable PDF blobs that still have active session, workspace, or
+workflow-job references.
 
 Do not delete S3 or MinIO objects without reconciling Postgres metadata.
 Deleting an object directly can leave an orphan `blob_artifacts` row.
+
+Cleanup is bounded and idempotent. `BlobCleanupService.run_once(dry_run=True)`
+lists candidates without deleting objects or changing Postgres state. A normal
+run deletes the physical object first and only then marks the Postgres upload or
+blob artifact cleaned up. If object deletion fails, the registry row remains
+active for a later retry.
 
 ## Current Limits
 
@@ -62,4 +69,5 @@ Deleting an object directly can leave an orphan `blob_artifacts` row.
 - Streaming uploads are not implemented.
 - Async PDF workflow jobs use durable blob references. Canceling a queued job
   does not delete the underlying PDF blob.
-- The cleanup engine and automated retention enforcement are not implemented.
+- Cleanup is available as a service API and manual worker command, but there is
+  no scheduler or REST endpoint yet.

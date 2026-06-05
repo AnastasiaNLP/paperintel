@@ -29,6 +29,7 @@ from storage.repositories import (
     PostgresAgentRunPersistence,
     PostgresArxivMetadataCacheRepository,
     PostgresBlobArtifactRepository,
+    PostgresBlobCleanupRepository,
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
     PostgresPdfUploadRepository,
@@ -1513,6 +1514,171 @@ def test_postgres_pdf_upload_repository_rejects_expired_finalize(session_factory
         repository.finalize(
             upload.id, blob_id="unused", actual_sha256="a" * 64, size_bytes=128
         )
+
+
+def test_postgres_blob_cleanup_repository_expires_uploads_safely(session_factory):
+    session = PostgresSessionStore(session_factory).create_session()
+    upload_repository = PostgresPdfUploadRepository(session_factory)
+    cleanup_repository = PostgresBlobCleanupRepository(session_factory)
+    now = datetime.now(timezone.utc)
+    expired = upload_repository.create(
+        PdfUpload(
+            session_id=session.id,
+            object_key=f"uploads/{session.id}/expired.pdf",
+            expected_sha256="a" * 64,
+            expires_at=now - timedelta(minutes=5),
+        )
+    )
+    active = upload_repository.create(
+        PdfUpload(
+            session_id=session.id,
+            object_key=f"uploads/{session.id}/active.pdf",
+            expected_sha256="b" * 64,
+            expires_at=now + timedelta(minutes=5),
+        )
+    )
+    finalized = upload_repository.create(
+        PdfUpload(
+            session_id=session.id,
+            object_key=f"uploads/{session.id}/finalized.pdf",
+            expected_sha256="c" * 64,
+            expires_at=now + timedelta(minutes=5),
+        )
+    )
+    artifact = PostgresBlobArtifactRepository(session_factory).upsert_artifact(
+        _stored_pdf(content_hash="c" * 64)
+    )
+    upload_repository.mark_uploaded(finalized.id)
+    upload_repository.finalize(
+        finalized.id,
+        blob_id=artifact.id,
+        actual_sha256="c" * 64,
+        size_bytes=128,
+    )
+    deleted = []
+
+    candidates = cleanup_repository.list_expired_upload_candidates(now=now, limit=10)
+    cleaned = cleanup_repository.expire_next_upload(
+        now=now,
+        delete_object=deleted.append,
+    )
+
+    assert [upload.id for upload in candidates] == [expired.id]
+    assert cleaned is not None
+    assert cleaned.id == expired.id
+    assert cleaned.status == "expired"
+    assert cleaned.error_json["code"] == "upload_expired"
+    assert deleted == [expired.object_key]
+    assert upload_repository.get(active.id).status == "initiated"
+    assert upload_repository.get(finalized.id).status == "finalized"
+    assert cleanup_repository.expire_next_upload(
+        now=now,
+        delete_object=deleted.append,
+    ) is None
+
+
+def test_postgres_blob_cleanup_repository_keeps_upload_active_on_delete_failure(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    upload_repository = PostgresPdfUploadRepository(session_factory)
+    cleanup_repository = PostgresBlobCleanupRepository(session_factory)
+    now = datetime.now(timezone.utc)
+    upload = upload_repository.create(
+        PdfUpload(
+            session_id=session.id,
+            object_key=f"uploads/{session.id}/delete-fails.pdf",
+            expected_sha256="d" * 64,
+            expires_at=now - timedelta(minutes=5),
+        )
+    )
+
+    def fail_delete(object_key):
+        raise RuntimeError("storage down")
+
+    with pytest.raises(RuntimeError, match="storage down"):
+        cleanup_repository.expire_next_upload(now=now, delete_object=fail_delete)
+
+    assert upload_repository.get(upload.id).status == "initiated"
+
+
+def test_postgres_blob_cleanup_repository_tombstones_unref_ttl_blobs_only(
+    session_factory,
+):
+    repository = PostgresBlobArtifactRepository(session_factory)
+    cleanup_repository = PostgresBlobCleanupRepository(session_factory)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=1)
+    expired_unref = repository.upsert_artifact(
+        _stored_pdf(content_hash="d" * 64),
+        retention_policy="ttl",
+        expires_at=cutoff - timedelta(minutes=5),
+    )
+    expired_ref = repository.upsert_artifact(
+        _stored_pdf(content_hash="e" * 64),
+        retention_policy="ttl",
+        expires_at=cutoff - timedelta(minutes=5),
+    )
+    repository.add_reference(expired_ref.id, ref_kind="session", ref_id="session-1")
+    fresh_ttl = repository.upsert_artifact(
+        _stored_pdf(content_hash="f" * 64),
+        retention_policy="ttl",
+        expires_at=cutoff + timedelta(minutes=5),
+    )
+    durable = repository.upsert_artifact(_stored_pdf(content_hash="1" * 64))
+    deleted = []
+
+    candidates = cleanup_repository.list_ttl_blob_cleanup_candidates(
+        cutoff=cutoff,
+        limit=10,
+    )
+    tombstoned = cleanup_repository.tombstone_next_ttl_blob(
+        cutoff=cutoff,
+        now=now,
+        delete_object=deleted.append,
+    )
+
+    assert [blob.id for blob in candidates] == [expired_unref.id]
+    assert tombstoned is not None
+    assert tombstoned.id == expired_unref.id
+    assert tombstoned.status == "deleted"
+    assert tombstoned.deleted_at is not None
+    assert tombstoned.cleanup_metadata["code"] == "ttl_blob_deleted"
+    assert deleted == [expired_unref.object_key]
+    assert repository.get_artifact(expired_unref.id) is None
+    assert repository.get_artifact(expired_ref.id) is not None
+    assert repository.get_artifact(fresh_ttl.id) is not None
+    assert repository.get_artifact(durable.id) is not None
+    assert cleanup_repository.tombstone_next_ttl_blob(
+        cutoff=cutoff,
+        now=now,
+        delete_object=deleted.append,
+    ) is None
+
+
+def test_postgres_blob_cleanup_repository_keeps_blob_active_on_delete_failure(
+    session_factory,
+):
+    repository = PostgresBlobArtifactRepository(session_factory)
+    cleanup_repository = PostgresBlobCleanupRepository(session_factory)
+    now = datetime.now(timezone.utc)
+    artifact = repository.upsert_artifact(
+        _stored_pdf(content_hash="2" * 64),
+        retention_policy="ttl",
+        expires_at=now - timedelta(hours=2),
+    )
+
+    def fail_delete(object_key):
+        raise RuntimeError("storage down")
+
+    with pytest.raises(RuntimeError, match="storage down"):
+        cleanup_repository.tombstone_next_ttl_blob(
+            cutoff=now - timedelta(hours=1),
+            now=now,
+            delete_object=fail_delete,
+        )
+
+    assert repository.get_artifact(artifact.id) is not None
 
 
 def test_postgres_pdf_upload_repository_serializes_competing_transitions(session_factory):

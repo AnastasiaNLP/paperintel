@@ -182,3 +182,5 @@ options.
   durable blob storage.
 - Job results are stored in Postgres as JSON transport snapshots, not as a
   separate event stream.
+- Expired PDF upload cleanup and unreferenced TTL blob cleanup are available
+  through `BlobCleanupService`, but they are not scheduled automatically yet.

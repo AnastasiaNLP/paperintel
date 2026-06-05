@@ -247,7 +247,7 @@ runs completed without failures.
   storage persists PDFs with content-hash deduplication. Completed paper
   analysis can be reused across sessions by cloning ready workspaces and
   retrieval chunks. A separate `paper_cache` table, advanced job
-  scheduling/retries, and automated blob cleanup remain later work.
+  scheduling/retries, and scheduled cleanup jobs remain later work.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
 - Authentication, distributed rate limiting, and deployment hardening are future work.

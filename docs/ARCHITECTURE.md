@@ -253,9 +253,10 @@ result with `metadata.analysis_reused=true`. PDF-derived reuse also preserves
 the blob reference from the target session to the cloned workspace.
 
 The system does not yet include a separate `paper_cache` table, automated
-cleanup, retry/backoff scheduling, process supervision, job budgets, async
-comparison or synthesis jobs, automated blob cleanup, or page-image asset
-generation. Those are separate later hardening layers. See
+cleanup for cloned cache artifacts, retry/backoff scheduling, process
+supervision, job budgets, async comparison or synthesis jobs, scheduled cleanup
+jobs, or page-image asset generation. Those are separate later hardening
+layers. See
 [PAPER_CACHE.md](PAPER_CACHE.md) for the current reuse contract and limits.
 
 ## External Dependency Resilience
