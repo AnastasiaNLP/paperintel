@@ -170,6 +170,8 @@ Full architecture details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - [docs/ASYNC_JOBS.md](docs/ASYNC_JOBS.md) — workflow job queue and worker operations.
 - [docs/RESILIENCE.md](docs/RESILIENCE.md) — arXiv/Semantic Scholar cache,
   limits, breakers, and fallback behavior.
+- [docs/PAPER_CACHE.md](docs/PAPER_CACHE.md) — cross-session paper analysis
+  reuse contract, public metadata, limitations, and verification checklist.
 - [docs/BLOB_STORAGE.md](docs/BLOB_STORAGE.md) — MinIO/S3 PDF storage, deduplication,
   retention, and current limits.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — common issues.
@@ -242,8 +244,10 @@ runs completed without failures.
   request-driven comparisons use `producer="comparison_analyst"`.
 - Postgres stores finalized reports, method extraction, benchmarks, readiness
   results, comparison reports, workflow jobs, and blob metadata. S3-compatible
-  storage persists PDFs with content-hash deduplication. Paper cache versioning,
-  advanced job scheduling/retries, and automated blob cleanup remain later work.
+  storage persists PDFs with content-hash deduplication. Completed paper
+  analysis can be reused across sessions by cloning ready workspaces and
+  retrieval chunks. A separate `paper_cache` table, advanced job
+  scheduling/retries, and automated blob cleanup remain later work.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
 - Authentication, distributed rate limiting, and deployment hardening are future work.

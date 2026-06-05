@@ -127,6 +127,21 @@ Successful analysis also writes durable artifact snapshots into Postgres. Use
 the finalized report, method extraction, benchmarks, readiness data, and
 markdown report without re-running analysis.
 
+When a completed analysis is reused from another session, the response remains a
+normal analysis result and includes structured metadata:
+
+```json
+{
+  "metadata": {
+    "analysis_reused": true,
+    "reuse_source": "paper_id"
+  }
+}
+```
+
+`reuse_source` is `paper_id` for arXiv URL reuse and `pdf_hash` for registered
+PDF reuse.
+
 If multiple selected papers are analyzed together, `/analyze-selected` may
 return `comparison_markdown`. This is a legacy batch comparison artifact
 produced by the analysis graph from structured paper outputs. It is persisted

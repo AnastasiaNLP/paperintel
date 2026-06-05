@@ -524,6 +524,19 @@ class MissingComparisonService(FakeService):
         raise ComparisonNotFoundError(session_id)
 
 
+class ReusedAnalysisService(FakeService):
+    def analyze_paper(self, session_id, paper_url):
+        self.get_session(session_id)
+        self.analyze_calls.append((session_id, paper_url))
+        return _handler_result(
+            session_id=session_id,
+            response_text="Analyzed paper.",
+            intent="analyze_paper",
+            referenced_paper_ids=["1706.03762"],
+            metadata={"analysis_reused": True, "reuse_source": "paper_id"},
+        )
+
+
 def _handler_result(
     *,
     session_id: str = "session-1",
@@ -535,6 +548,7 @@ def _handler_result(
     discovery_candidate_count: int | None = None,
     selected_candidate_ids: list[str] | None = None,
     comparison_markdown: str | None = None,
+    metadata: dict | None = None,
 ) -> HandlerResult:
     return HandlerResult(
         session_id=session_id,
@@ -546,6 +560,7 @@ def _handler_result(
         discovery_candidate_count=discovery_candidate_count,
         selected_candidate_ids=selected_candidate_ids or [],
         comparison_markdown=comparison_markdown,
+        metadata=metadata or {},
         user_turn_id="turn-user",
         assistant_turn_id="turn-assistant",
     )
@@ -1065,6 +1080,23 @@ def test_analyze_calls_service():
     assert response.json()["response_text"] == "Analyzed paper."
     assert service.analyze_calls[0][0] == "session-1"
     assert service.analyze_calls[0][1].startswith("https://arxiv.org/abs/1706.03762")
+
+
+def test_analyze_preserves_reuse_metadata():
+    service = ReusedAnalysisService()
+
+    response = _request(
+        service,
+        "POST",
+        "/sessions/session-1/analyze",
+        json={"paper_url": "https://arxiv.org/abs/1706.03762"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["metadata"] == {
+        "analysis_reused": True,
+        "reuse_source": "paper_id",
+    }
 
 
 def test_analyze_pdf_upload_returns_message_and_cleans_temp_file():

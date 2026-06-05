@@ -242,10 +242,21 @@ The workflow job layer is intentionally narrow and Postgres-backed:
   jobs, and PDF blob analysis jobs.
 
 The blob storage layer persists PDF assets in S3-compatible storage and tracks
-usage through `blob_artifacts` and `blob_references`. It does not yet include
-paper cache versioning, automated cleanup, retry/backoff scheduling, process
-supervision, job budgets, async comparison or synthesis jobs, automated blob
-cleanup, or page-image asset generation. Those are separate later hardening layers.
+usage through `blob_artifacts` and `blob_references`.
+
+Paper analysis reuse is workspace-based. For arXiv URL analysis, reusable
+identity is `(paper_id, pipeline_version)`; for registered PDF analysis it is
+`(source_pdf_hash, pipeline_version)`. A reuse hit clones the ready
+`PaperWorkspace`, clones target-session retrieval chunks, upserts those chunks
+into Qdrant, marks the paper active, and returns a normal analysis-shaped
+result with `metadata.analysis_reused=true`. PDF-derived reuse also preserves
+the blob reference from the target session to the cloned workspace.
+
+The system does not yet include a separate `paper_cache` table, automated
+cleanup, retry/backoff scheduling, process supervision, job budgets, async
+comparison or synthesis jobs, automated blob cleanup, or page-image asset
+generation. Those are separate later hardening layers. See
+[PAPER_CACHE.md](PAPER_CACHE.md) for the current reuse contract and limits.
 
 ## External Dependency Resilience
 
