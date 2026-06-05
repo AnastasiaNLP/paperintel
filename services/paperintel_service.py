@@ -115,6 +115,18 @@ class PdfUploadNotConfiguredError(RuntimeError):
         super().__init__("PDF uploads require blob storage and pdf_upload_repository.")
 
 
+class PaperCacheHydrationNotConfiguredError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("Reusable analysis is not available.")
+
+
+class PaperCacheHydrationEmptyChunksError(RuntimeError):
+    def __init__(self, *, session_id: str, paper_id: str) -> None:
+        super().__init__("Reusable analysis is incomplete.")
+        self.session_id = session_id
+        self.paper_id = paper_id
+
+
 
 class WorkflowJobNotConfiguredError(RuntimeError):
     def __init__(self) -> None:
@@ -768,6 +780,61 @@ class PaperIntelService:
             if workspace.id not in before_workspace_ids
         ]
         return new_workspaces[0] if len(new_workspaces) == 1 else None
+
+    def _hydrate_reusable_workspace(
+        self,
+        session_id: str,
+        source_workspace: PaperWorkspace,
+        *,
+        cache_reason: str,
+    ) -> HandlerResult:
+        _ = cache_reason
+        self.handler.store.require_session(session_id)
+        artifact_repository, chunk_repository, retrieval_layer = (
+            self._paper_cache_dependencies()
+        )
+        cloned_workspace = artifact_repository.clone_workspace(
+            source_workspace_id=source_workspace.id,
+            target_session_id=session_id,
+        )
+        cloned_chunks = chunk_repository.clone_for_session(
+            source_session_id=source_workspace.session_id,
+            target_session_id=session_id,
+            paper_id=source_workspace.paper_id,
+        )
+        if not cloned_chunks:
+            raise PaperCacheHydrationEmptyChunksError(
+                session_id=session_id,
+                paper_id=source_workspace.paper_id,
+        )
+        retrieval_layer.upsert_chunks(cloned_chunks)
+        self.handler.store.add_active_paper(session_id, cloned_workspace.paper_id)
+        self.handler.store.update_phase(session_id, "qa")
+        return HandlerResult(
+            session_id=session_id,
+            response_text=(
+                cloned_workspace.full_markdown_report
+                or f"Loaded analysis for {cloned_workspace.paper_id}."
+            ),
+            phase="qa",
+            intent="analyze_paper",
+            referenced_paper_ids=[cloned_workspace.paper_id],
+            artifact_refs=[
+                f"paper_workspace:{cloned_workspace.id}",
+            ],
+            user_turn_id="reused-analysis-user-turn",
+            assistant_turn_id="reused-analysis-assistant-turn",
+        )
+
+    def _paper_cache_dependencies(self):
+        retrieval_layer = getattr(self.handler, "retrieval_layer", None)
+        if (
+            self.artifact_repository is None
+            or self.paper_chunk_repository is None
+            or retrieval_layer is None
+        ):
+            raise PaperCacheHydrationNotConfiguredError()
+        return self.artifact_repository, self.paper_chunk_repository, retrieval_layer
 
     def ask_question(self, session_id: str, question: str) -> HandlerResult:
         return self.handler.handle_message(session_id, question)

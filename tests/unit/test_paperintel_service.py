@@ -18,6 +18,7 @@ from models.jobs import WorkflowJob
 from models.jobs import pdf_blob_idempotency_key
 from models.pdf_uploads import PdfUpload
 from models.registered_pdf_errors import RegisteredPdfBlobNotAuthorizedError
+from models.retrieval import ChunkSource, PaperChunk, UpsertChunksResult
 from models.session import utc_now
 from models.session import HandlerResult, Session, Turn
 from services.blob_store import BlobNotFoundError, BlobStoreUnavailableError
@@ -29,6 +30,8 @@ from services.paperintel_service import (
     NoActivePapersError,
     NotEnoughPapersForComparisonError,
     PaperIntelService,
+    PaperCacheHydrationEmptyChunksError,
+    PaperCacheHydrationNotConfiguredError,
     PaperWorkspaceNotFoundError,
     InvalidWorkflowJobInputError,
     PdfUploadChecksumMismatchError,
@@ -41,6 +44,7 @@ from services.selected_candidate_resolver import NoSelectedCandidatesError
 class FakeHandler:
     def __init__(self) -> None:
         self.store = FakeStore()
+        self.retrieval_layer = None
         self.created_sessions = []
         self.messages = []
         self.analysis_input_calls = []
@@ -130,6 +134,24 @@ class FakeStore:
             raise SessionNotFoundError(session_id)
         return self.turns[session_id][-limit:]
 
+    def update_phase(self, session_id, phase):
+        if session_id not in self.sessions:
+            raise SessionNotFoundError(session_id)
+        updated = self.sessions[session_id].model_copy(update={"phase": phase})
+        self.sessions[session_id] = updated
+        return updated
+
+    def add_active_paper(self, session_id, paper_id):
+        if session_id not in self.sessions:
+            raise SessionNotFoundError(session_id)
+        session = self.sessions[session_id]
+        active = list(session.active_paper_ids)
+        if paper_id not in active:
+            active.append(paper_id)
+        updated = session.model_copy(update={"active_paper_ids": active})
+        self.sessions[session_id] = updated
+        return updated
+
 
 class FakeHealthChecker:
     def __init__(self, status=None) -> None:
@@ -198,6 +220,7 @@ class FakeArtifactRepository:
             paper_ids=["1706.03762", "2401.00001"],
             comparison_markdown="# Comparison",
         )
+        self.clone_calls = []
 
     def list_workspaces(self, session_id):
         return [
@@ -212,6 +235,30 @@ class FakeArtifactRepository:
                 return workspace
         return None
 
+    def clone_workspace(self, *, source_workspace_id, target_session_id):
+        self.clone_calls.append(
+            {
+                "source_workspace_id": source_workspace_id,
+                "target_session_id": target_session_id,
+            }
+        )
+        source = next(
+            workspace
+            for workspace in self.workspaces
+            if workspace.id == source_workspace_id
+        )
+        existing = self.get_workspace(target_session_id, source.paper_id)
+        if existing is not None:
+            return existing
+        cloned = source.model_copy(
+            update={
+                "id": f"cloned:{target_session_id}:{source.id}",
+                "session_id": target_session_id,
+            },
+        )
+        self.workspaces.append(cloned)
+        return cloned
+
     def latest_comparison(self, session_id):
         if self.comparison.session_id == session_id:
             return self.comparison
@@ -220,6 +267,74 @@ class FakeArtifactRepository:
     def save_comparison(self, artifact):
         self.comparison = artifact
         return artifact
+
+
+class FakePaperChunkRepository:
+    def __init__(self, chunks=None) -> None:
+        self.chunks = list(chunks or [])
+        self.clone_calls = []
+
+    def upsert_many(self, chunks):
+        self.chunks.extend(chunks)
+        return UpsertChunksResult(inserted=len(chunks))
+
+    def list_for_session_paper(self, session_id, paper_id):
+        return [
+            chunk
+            for chunk in self.chunks
+            if chunk.source.session_id == session_id and chunk.paper_id == paper_id
+        ]
+
+    def clone_for_session(
+        self,
+        *,
+        source_session_id,
+        target_session_id,
+        paper_id,
+        target_paper_id=None,
+    ):
+        self.clone_calls.append(
+            {
+                "source_session_id": source_session_id,
+                "target_session_id": target_session_id,
+                "paper_id": paper_id,
+                "target_paper_id": target_paper_id,
+            }
+        )
+        cloned = [
+            chunk.model_copy(
+                deep=True,
+                update={
+                    "id": f"cloned:{target_session_id}:{chunk.id}",
+                    "paper_id": target_paper_id or paper_id,
+                    "source": chunk.source.model_copy(
+                        update={
+                            "session_id": target_session_id,
+                            "paper_id": target_paper_id or paper_id,
+                        }
+                    ),
+                    "metadata": {
+                        **chunk.metadata,
+                        "cache_hit": True,
+                        "cache_source_chunk_id": chunk.id,
+                    },
+                },
+            )
+            for chunk in self.chunks
+            if chunk.source.session_id == source_session_id
+            and chunk.paper_id == paper_id
+        ]
+        self.chunks.extend(cloned)
+        return cloned
+
+
+class FakeRetrievalLayer:
+    def __init__(self) -> None:
+        self.upsert_calls = []
+
+    def upsert_chunks(self, chunks):
+        self.upsert_calls.append(list(chunks))
+        return UpsertChunksResult(inserted=len(chunks))
 
 
 class FakeBlobStore:
@@ -479,6 +594,37 @@ def _candidate(candidate_id: str) -> SearchCandidate:
     )
 
 
+def _cache_workspace(session_id: str = "source-session") -> PaperWorkspace:
+    return PaperWorkspace(
+        id="workspace-source",
+        session_id=session_id,
+        paper_id="1706.03762",
+        title="Attention Is All You Need",
+        source_url="https://arxiv.org/abs/1706.03762",
+        pipeline_stage="chunk_and_index",
+        pipeline_version="pipeline-v1",
+        finalized_report_json={"recommended_action": "prototype"},
+        method_extraction_json={"method_name": "Transformer"},
+        benchmarks_json=[{"task": "translation", "metric": "BLEU"}],
+        readiness_json={"maturity_level": "prototype"},
+        full_markdown_report="# Cached Report",
+    )
+
+
+def _cache_chunk(session_id: str = "source-session") -> PaperChunk:
+    return PaperChunk(
+        id="source-chunk-0",
+        paper_id="1706.03762",
+        chunk_index=0,
+        text="Attention is all you need.",
+        source=ChunkSource(
+            paper_id="1706.03762",
+            session_id=session_id,
+            arxiv_id="1706.03762",
+        ),
+    )
+
+
 def test_service_create_session_delegates_to_handler_with_persona():
     handler = FakeHandler()
     service = PaperIntelService(handler=handler)
@@ -513,6 +659,116 @@ def test_service_analyze_paper_delegates_to_handler():
 
     assert result.response_text == "handled: https://arxiv.org/abs/1706.03762"
     assert handler.messages == [(session.id, "https://arxiv.org/abs/1706.03762")]
+
+
+def test_service_hydrates_reusable_workspace_without_analysis_runner():
+    handler = FakeHandler()
+    retrieval_layer = FakeRetrievalLayer()
+    handler.retrieval_layer = retrieval_layer
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    artifact_repository.workspaces = [source_workspace]
+    chunk_repository = FakePaperChunkRepository([_cache_chunk()])
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        paper_chunk_repository=chunk_repository,
+    )
+    target_session = service.create_session()
+
+    result = service._hydrate_reusable_workspace(
+        target_session.id,
+        source_workspace,
+        cache_reason="paper_id",
+    )
+
+    cloned_workspace = artifact_repository.get_workspace(
+        target_session.id,
+        source_workspace.paper_id,
+    )
+    assert cloned_workspace is not None
+    assert result.phase == "qa"
+    assert result.intent == "analyze_paper"
+    assert result.response_text == "# Cached Report"
+    assert result.referenced_paper_ids == ["1706.03762"]
+    assert result.artifact_refs == [
+        f"paper_workspace:{cloned_workspace.id}",
+    ]
+    assert result.search_warnings == []
+    assert retrieval_layer.upsert_calls == [
+        chunk_repository.list_for_session_paper(target_session.id, "1706.03762")
+    ]
+    updated_session = handler.store.require_session(target_session.id)
+    assert updated_session.active_paper_ids == [
+        "1706.03762"
+    ]
+    assert updated_session.phase == "qa"
+    assert handler.analysis_input_calls == []
+    assert handler.messages == []
+
+
+def test_service_hydrate_reusable_workspace_requires_dependencies():
+    service = PaperIntelService(handler=FakeHandler())
+    session = service.create_session()
+
+    with pytest.raises(PaperCacheHydrationNotConfiguredError):
+        service._hydrate_reusable_workspace(
+            session.id,
+            _cache_workspace(),
+            cache_reason="paper_id",
+        )
+
+
+def test_service_hydrate_reusable_workspace_rejects_empty_chunks():
+    handler = FakeHandler()
+    handler.retrieval_layer = FakeRetrievalLayer()
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    artifact_repository.workspaces = [source_workspace]
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        paper_chunk_repository=FakePaperChunkRepository(),
+    )
+    session = service.create_session()
+
+    with pytest.raises(PaperCacheHydrationEmptyChunksError):
+        service._hydrate_reusable_workspace(
+            session.id,
+            source_workspace,
+            cache_reason="paper_id",
+        )
+
+    assert handler.retrieval_layer.upsert_calls == []
+    assert handler.store.require_session(session.id).active_paper_ids == []
+
+
+def test_service_hydrate_reusable_workspace_propagates_workspace_conflict():
+    class ConflictArtifactRepository(FakeArtifactRepository):
+        def clone_workspace(self, *, source_workspace_id, target_session_id):
+            raise RuntimeError("workspace conflict")
+
+    handler = FakeHandler()
+    handler.retrieval_layer = FakeRetrievalLayer()
+    source_workspace = _cache_workspace()
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=ConflictArtifactRepository(
+            session_id=source_workspace.session_id
+        ),
+        paper_chunk_repository=FakePaperChunkRepository([_cache_chunk()]),
+    )
+    session = service.create_session()
+
+    with pytest.raises(RuntimeError, match="workspace conflict"):
+        service._hydrate_reusable_workspace(
+            session.id,
+            source_workspace,
+            cache_reason="paper_id",
+        )
+
+    assert handler.retrieval_layer.upsert_calls == []
+    assert handler.store.require_session(session.id).active_paper_ids == []
 
 
 def test_service_enqueue_analyze_paper_creates_queued_job():
