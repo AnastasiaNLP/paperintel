@@ -22,6 +22,10 @@ class FakeRetrievalLayer:
     pass
 
 
+class FakeChunkRepository:
+    pass
+
+
 class FakeBlobStore:
     def __init__(self) -> None:
         self.ensure_calls = 0
@@ -92,6 +96,7 @@ def test_app_factory_creates_paperintel_service_with_injected_dependencies():
     conversation_runner = FakeRunner({"response_text": "conversation"})
     analysis_runner = FakeRunner({"response_text": "analysis"})
     retrieval_layer = FakeRetrievalLayer()
+    paper_chunk_repository = FakeChunkRepository()
     blob_store = FakeBlobStore()
 
     service = create_paperintel_service(
@@ -99,6 +104,7 @@ def test_app_factory_creates_paperintel_service_with_injected_dependencies():
         conversation_runner=conversation_runner,
         analysis_runner=analysis_runner,
         retrieval_layer=retrieval_layer,
+        paper_chunk_repository=paper_chunk_repository,
         enable_health_checks=False,
         blob_store=blob_store,
     )
@@ -106,12 +112,31 @@ def test_app_factory_creates_paperintel_service_with_injected_dependencies():
     assert service.handler.conversation_runner is conversation_runner
     assert service.handler.analysis_runner is analysis_runner
     assert service.handler.retrieval_layer is retrieval_layer
+    assert service.paper_chunk_repository is paper_chunk_repository
     assert service.selected_candidate_resolver is not None
     assert service.candidate_repository is not None
     assert service.blob_store is blob_store
     assert service.blob_artifact_repository is not None
     assert blob_store.ensure_calls == 1
     assert service.health().checks == {"basic": "ok"}
+
+
+def test_app_factory_reuses_chunk_repository_from_retrieval_layer():
+    chunk_repository = FakeChunkRepository()
+    retrieval_layer = FakeRetrievalLayer()
+    retrieval_layer.chunk_repository = chunk_repository
+
+    service = create_paperintel_service(
+        database_url="sqlite:///:memory:",
+        conversation_runner=FakeRunner({"response_text": "conversation"}),
+        analysis_runner=FakeRunner({"response_text": "analysis"}),
+        retrieval_layer=retrieval_layer,
+        enable_health_checks=False,
+        enable_blob_storage=False,
+    )
+
+    assert service.handler.retrieval_layer is retrieval_layer
+    assert service.paper_chunk_repository is chunk_repository
 
 
 def test_app_factory_default_blob_storage_builds_from_settings(monkeypatch):

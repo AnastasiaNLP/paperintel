@@ -1,6 +1,8 @@
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Sequence, get_args
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import delete, exists, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -154,6 +156,29 @@ class BlobArtifactNotFoundError(ValueError):
     def __init__(self, blob_id: str) -> None:
         super().__init__(f"Blob artifact not found: {blob_id}")
         self.blob_id = blob_id
+
+
+class PaperWorkspaceCacheSourceNotFoundError(ValueError):
+    def __init__(self, workspace_id: str) -> None:
+        super().__init__(f"Reusable paper workspace not found: {workspace_id}")
+        self.workspace_id = workspace_id
+
+
+class PaperWorkspaceCacheSourceNotReadyError(ValueError):
+    def __init__(self, *, workspace_id: str, pipeline_stage: str) -> None:
+        super().__init__("Reusable workspace is incomplete or not ready.")
+        self.workspace_id = workspace_id
+        self.pipeline_stage = pipeline_stage
+
+
+class PaperWorkspaceCacheConflictError(ValueError):
+    def __init__(self, *, session_id: str, paper_id: str) -> None:
+        super().__init__(
+            "Target session already has an incompatible paper workspace: "
+            f"session_id={session_id} paper_id={paper_id}"
+        )
+        self.session_id = session_id
+        self.paper_id = paper_id
 
 
 class PostgresBlobArtifactRepository:
@@ -1420,6 +1445,40 @@ class PostgresPaperChunkRepository:
             )
             return [orm_to_paper_chunk(row) for row in rows]
 
+    def list_for_session_paper(self, session_id: str, paper_id: str) -> list[PaperChunk]:
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(PaperChunkORM)
+                    .where(PaperChunkORM.session_id == session_id)
+                    .where(PaperChunkORM.paper_id == paper_id)
+                    .order_by(PaperChunkORM.chunk_index.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [orm_to_paper_chunk(row) for row in rows]
+
+    def clone_for_session(
+        self,
+        *,
+        source_session_id: str,
+        target_session_id: str,
+        paper_id: str,
+        target_paper_id: str | None = None,
+    ) -> list[PaperChunk]:
+        source_chunks = self.list_for_session_paper(source_session_id, paper_id)
+        cloned_chunks = [
+            _clone_paper_chunk_for_session(
+                chunk,
+                target_session_id=target_session_id,
+                target_paper_id=target_paper_id or paper_id,
+            )
+            for chunk in source_chunks
+        ]
+        self.upsert_many(cloned_chunks)
+        return cloned_chunks
+
     def get_many_by_ids(self, chunk_ids: Sequence[str]) -> list[PaperChunk]:
         if not chunk_ids:
             return []
@@ -1595,6 +1654,110 @@ class PostgresPaperWorkspaceRepository:
             )
             return orm_to_paper_workspace(orm) if orm is not None else None
 
+    def find_reusable_workspace(
+        self,
+        *,
+        paper_id: str,
+        pipeline_version: str,
+        exclude_session_id: str | None = None,
+    ) -> PaperWorkspace | None:
+        with self.session_factory() as db:
+            query = (
+                select(PaperWorkspaceORM)
+                .where(PaperWorkspaceORM.paper_id == paper_id)
+                .where(PaperWorkspaceORM.pipeline_version == pipeline_version)
+                .where(_cacheable_workspace_predicate())
+                .order_by(PaperWorkspaceORM.updated_at.desc())
+            )
+            if exclude_session_id is not None:
+                query = query.where(PaperWorkspaceORM.session_id != exclude_session_id)
+            for orm in db.execute(query).scalars():
+                if _workspace_orm_ready_for_cache(orm):
+                    return orm_to_paper_workspace(orm)
+            return None
+
+    def find_reusable_workspace_by_pdf_hash(
+        self,
+        *,
+        content_hash: str,
+        pipeline_version: str,
+        exclude_session_id: str | None = None,
+    ) -> PaperWorkspace | None:
+        with self.session_factory() as db:
+            query = (
+                select(PaperWorkspaceORM)
+                .join(
+                    BlobReferenceORM,
+                    (BlobReferenceORM.ref_kind == "paper_workspace")
+                    & (BlobReferenceORM.ref_id == PaperWorkspaceORM.id)
+                    & (BlobReferenceORM.status == "active"),
+                )
+                .join(BlobArtifactORM, BlobArtifactORM.id == BlobReferenceORM.blob_id)
+                .where(BlobArtifactORM.kind == "pdf")
+                .where(BlobArtifactORM.content_hash == content_hash)
+                .where(BlobArtifactORM.status == "active")
+                .where(PaperWorkspaceORM.pipeline_version == pipeline_version)
+                .where(_cacheable_workspace_predicate())
+                .order_by(PaperWorkspaceORM.updated_at.desc())
+            )
+            if exclude_session_id is not None:
+                query = query.where(PaperWorkspaceORM.session_id != exclude_session_id)
+            for orm in db.execute(query).scalars():
+                if _workspace_orm_ready_for_cache(orm):
+                    return orm_to_paper_workspace(orm)
+            return None
+
+    def clone_workspace(
+        self,
+        *,
+        source_workspace_id: str,
+        target_session_id: str,
+    ) -> PaperWorkspace:
+        with self.session_factory() as db:
+            source = db.get(PaperWorkspaceORM, source_workspace_id)
+            if source is None:
+                raise PaperWorkspaceCacheSourceNotFoundError(source_workspace_id)
+            if not _workspace_orm_ready_for_cache(source):
+                raise PaperWorkspaceCacheSourceNotReadyError(
+                    workspace_id=source_workspace_id,
+                    pipeline_stage=source.pipeline_stage,
+                )
+            existing = (
+                db.execute(
+                    select(PaperWorkspaceORM)
+                    .where(PaperWorkspaceORM.session_id == target_session_id)
+                    .where(PaperWorkspaceORM.paper_id == source.paper_id)
+                )
+                .scalars()
+                .first()
+            )
+            if existing is not None:
+                if _workspace_orm_cache_compatible(existing, source):
+                    return orm_to_paper_workspace(existing)
+                raise PaperWorkspaceCacheConflictError(
+                    session_id=target_session_id,
+                    paper_id=source.paper_id,
+                )
+            now = _utc_now()
+            clone = PaperWorkspace(
+                session_id=target_session_id,
+                paper_id=source.paper_id,
+                title=source.title,
+                source_url=source.source_url,
+                pipeline_stage=source.pipeline_stage,
+                pipeline_version=source.pipeline_version,
+                finalized_report_json=deepcopy(source.finalized_report_json),
+                method_extraction_json=deepcopy(source.method_extraction_json),
+                benchmarks_json=deepcopy(source.benchmarks_json or []),
+                readiness_json=deepcopy(source.readiness_json),
+                full_markdown_report=source.full_markdown_report,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(paper_workspace_to_orm(clone))
+            db.commit()
+            return clone
+
     def save_comparison(
         self,
         artifact: ComparisonArtifact,
@@ -1617,6 +1780,85 @@ class PostgresPaperWorkspaceRepository:
                 .first()
             )
             return orm_to_comparison_artifact(orm) if orm is not None else None
+
+
+FAILED_WORKSPACE_STAGES = {"failed", "paper_failure_finalize"}
+
+
+def _cacheable_workspace_predicate():
+    return (
+        PaperWorkspaceORM.pipeline_stage.not_in(FAILED_WORKSPACE_STAGES)
+        & PaperWorkspaceORM.full_markdown_report.is_not(None)
+    )
+
+
+def _workspace_orm_ready_for_cache(workspace: PaperWorkspaceORM) -> bool:
+    return (
+        workspace.pipeline_stage not in FAILED_WORKSPACE_STAGES
+        and workspace.full_markdown_report is not None
+        and workspace.finalized_report_json is not None
+        and workspace.method_extraction_json is not None
+        and workspace.readiness_json is not None
+    )
+
+
+def _workspace_orm_cache_compatible(
+    candidate: PaperWorkspaceORM, source: PaperWorkspaceORM
+) -> bool:
+    return (
+        candidate.paper_id == source.paper_id
+        and candidate.title == source.title
+        and candidate.source_url == source.source_url
+        and candidate.pipeline_stage == source.pipeline_stage
+        and candidate.pipeline_version == source.pipeline_version
+        and candidate.finalized_report_json == source.finalized_report_json
+        and candidate.method_extraction_json == source.method_extraction_json
+        and (candidate.benchmarks_json or []) == (source.benchmarks_json or [])
+        and candidate.readiness_json == source.readiness_json
+        and candidate.full_markdown_report == source.full_markdown_report
+        and _workspace_orm_ready_for_cache(candidate)
+        and _workspace_orm_ready_for_cache(source)
+    )
+
+
+def _clone_paper_chunk_for_session(
+    chunk: PaperChunk, *, target_session_id: str, target_paper_id: str
+) -> PaperChunk:
+    source = chunk.source.model_copy(
+        update={"session_id": target_session_id, "paper_id": target_paper_id}
+    )
+    artifact_refs = [
+        artifact.model_copy(update={"paper_id": target_paper_id})
+        for artifact in chunk.artifact_refs
+    ]
+    metadata = dict(chunk.metadata)
+    metadata["cache_source_chunk_id"] = chunk.id
+    metadata["cache_source_session_id"] = chunk.source.session_id
+    metadata["cache_hit"] = True
+    return chunk.model_copy(
+        deep=True,
+        update={
+            "id": str(
+                uuid5(
+                    NAMESPACE_URL,
+                    ":".join(
+                        [
+                            "paperintel",
+                            "cache-chunk",
+                            target_session_id,
+                            target_paper_id,
+                            chunk.id,
+                        ]
+                    ),
+                )
+            ),
+            "paper_id": target_paper_id,
+            "source": source,
+            "artifact_refs": artifact_refs,
+            "metadata": metadata,
+            "created_at": _utc_now(),
+        }
+    )
 
 
 def clear_foundation_tables(db: DbSession) -> None:

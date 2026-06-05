@@ -18,11 +18,14 @@ from models.jobs import WorkflowJob
 from models.pdf_uploads import PdfUpload
 from models.registered_pdf_errors import RegisteredPdfBlobNotAuthorizedError
 from models.errors import ErrorCodes, make_error
-from models.retrieval import ChunkSource, PaperChunk
+from models.retrieval import ChunkSource, EvidenceArtifact, PaperChunk
 from storage.db import make_engine, make_session_factory
 from storage.models import BlobArtifactORM, BlobReferenceORM, WorkflowJobORM
 from storage.repositories import (
     BlobArtifactNotFoundError,
+    PaperWorkspaceCacheConflictError,
+    PaperWorkspaceCacheSourceNotFoundError,
+    PaperWorkspaceCacheSourceNotReadyError,
     PostgresAgentRunPersistence,
     PostgresArxivMetadataCacheRepository,
     PostgresBlobArtifactRepository,
@@ -38,6 +41,7 @@ from storage.repositories import (
     PostgresWorkflowJobRepository,
     clear_foundation_tables,
 )
+from services.qdrant_store import chunk_payload
 
 
 pytestmark = pytest.mark.db
@@ -295,6 +299,109 @@ def test_postgres_paper_chunk_repository_upserts_and_lists_by_paper(session_fact
     ]
 
 
+def test_postgres_paper_chunk_repository_clones_session_scoped_chunks(session_factory):
+    store = PostgresSessionStore(session_factory)
+    source_session = store.create_session()
+    target_session = store.create_session()
+    repository = PostgresPaperChunkRepository(session_factory)
+    chunks = [
+        PaperChunk(
+            id="source-chunk-0",
+            paper_id="1706.03762",
+            chunk_index=0,
+            text="Attention is all you need.",
+            source=ChunkSource(
+                paper_id="1706.03762",
+                session_id=source_session.id,
+                arxiv_id="1706.03762",
+            ),
+            metadata={"section": "abstract"},
+        ),
+        PaperChunk(
+            id="source-chunk-1",
+            paper_id="1706.03762",
+            chunk_index=1,
+            text="Transformer architecture.",
+            source=ChunkSource(
+                paper_id="1706.03762",
+                session_id=source_session.id,
+                arxiv_id="1706.03762",
+            ),
+        ),
+    ]
+    repository.upsert_many(chunks)
+
+    cloned = repository.clone_for_session(
+        source_session_id=source_session.id,
+        target_session_id=target_session.id,
+        paper_id="1706.03762",
+    )
+    cloned_again = repository.clone_for_session(
+        source_session_id=source_session.id,
+        target_session_id=target_session.id,
+        paper_id="1706.03762",
+    )
+    loaded_target = repository.list_for_session_paper(target_session.id, "1706.03762")
+
+    assert [chunk.chunk_index for chunk in cloned] == [0, 1]
+    assert [chunk.id for chunk in cloned] == [chunk.id for chunk in cloned_again]
+    assert [chunk.id for chunk in loaded_target] == [chunk.id for chunk in cloned]
+    assert all(chunk.source.session_id == target_session.id for chunk in cloned)
+    assert all(chunk.paper_id == "1706.03762" for chunk in cloned)
+    assert cloned[0].metadata["cache_source_chunk_id"] == "source-chunk-0"
+    assert cloned[0].metadata["cache_source_session_id"] == source_session.id
+    payload = chunk_payload(cloned[0])
+    assert payload["chunk_id"] == cloned[0].id
+    assert payload["paper_id"] == "1706.03762"
+    assert payload["session_id"] == target_session.id
+    assert payload["source"]["session_id"] == target_session.id
+    assert payload["metadata"]["cache_hit"] is True
+    source_chunks = repository.list_for_session_paper(source_session.id, "1706.03762")
+    assert source_chunks[0].id == "source-chunk-0"
+
+
+def test_postgres_paper_chunk_repository_clones_target_paper_artifacts(session_factory):
+    store = PostgresSessionStore(session_factory)
+    source_session = store.create_session()
+    target_session = store.create_session()
+    repository = PostgresPaperChunkRepository(session_factory)
+    repository.upsert_many(
+        [
+            PaperChunk(
+                id="source-local-chunk-0",
+                paper_id="local-paper",
+                chunk_index=0,
+                text="Local PDF evidence.",
+                source=ChunkSource(
+                    paper_id="local-paper",
+                    session_id=source_session.id,
+                ),
+                artifact_refs=[
+                    EvidenceArtifact(
+                        paper_id="local-paper",
+                        artifact_type="pdf",
+                        storage_ref="blob:source",
+                    )
+                ],
+            )
+        ]
+    )
+
+    cloned = repository.clone_for_session(
+        source_session_id=source_session.id,
+        target_session_id=target_session.id,
+        paper_id="local-paper",
+        target_paper_id="target-local-paper",
+    )
+
+    assert len(cloned) == 1
+    assert cloned[0].paper_id == "target-local-paper"
+    assert cloned[0].source.paper_id == "target-local-paper"
+    assert cloned[0].source.session_id == target_session.id
+    assert cloned[0].artifact_refs[0].paper_id == "target-local-paper"
+    assert cloned[0].artifact_refs[0].storage_ref == "blob:source"
+
+
 def test_postgres_search_candidate_repository_round_trip(session_factory):
     store = PostgresSessionStore(session_factory)
     session = store.create_session()
@@ -502,6 +609,339 @@ def test_postgres_paper_workspace_repository_returns_none_for_missing_artifacts(
 
     assert repository.get_workspace(session.id, "missing") is None
     assert repository.latest_comparison(session.id) is None
+
+
+def _ready_workspace(**overrides) -> PaperWorkspace:
+    data = {
+        "session_id": "session-1",
+        "paper_id": "1706.03762",
+        "title": "Ready Paper",
+        "source_url": "https://arxiv.org/abs/1706.03762",
+        "pipeline_stage": "chunk_and_index",
+        "pipeline_version": "pipeline-v1",
+        "finalized_report_json": {"recommended_action": "prototype"},
+        "method_extraction_json": {"method_name": "Method"},
+        "readiness_json": {"maturity_level": "prototype"},
+        "full_markdown_report": "# Report",
+    }
+    data.update(overrides)
+    return PaperWorkspace(**data)
+
+
+def test_postgres_paper_workspace_repository_finds_reusable_cache_candidate(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    source_session = store.create_session()
+    target_session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+    reusable = repository.upsert_workspace(
+        _ready_workspace(
+            session_id=source_session.id,
+            paper_id="1706.03762",
+            title="Attention Is All You Need",
+            method_extraction_json={"method_name": "Transformer"},
+        )
+    )
+    repository.upsert_workspace(
+        _ready_workspace(
+            session_id=source_session.id,
+            paper_id="1810.04805",
+            source_url="https://arxiv.org/abs/1810.04805",
+            pipeline_stage="failed",
+        )
+    )
+    repository.upsert_workspace(
+        _ready_workspace(
+            session_id=target_session.id,
+            paper_id="1706.03762",
+            pipeline_version="pipeline-v2",
+        )
+    )
+
+    hit = repository.find_reusable_workspace(
+        paper_id="1706.03762",
+        pipeline_version="pipeline-v1",
+        exclude_session_id=target_session.id,
+    )
+
+    assert hit is not None
+    assert hit.id == reusable.id
+    assert repository.find_reusable_workspace(
+        paper_id="1706.03762",
+        pipeline_version="pipeline-v2",
+        exclude_session_id=target_session.id,
+    ) is None
+    assert repository.find_reusable_workspace(
+        paper_id="1810.04805",
+        pipeline_version="pipeline-v1",
+    ) is None
+
+
+def test_postgres_paper_workspace_repository_scans_past_newer_incomplete_candidates(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    source_session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+    reusable = repository.upsert_workspace(
+        _ready_workspace(
+            session_id=source_session.id,
+            paper_id="scan-past-incomplete",
+            title="Reusable Older Workspace",
+        )
+    )
+    for index in range(12):
+        incomplete_session = store.create_session()
+        repository.upsert_workspace(
+            _ready_workspace(
+                session_id=incomplete_session.id,
+                paper_id="scan-past-incomplete",
+                title=f"Incomplete Newer Workspace {index}",
+                readiness_json=None,
+            )
+        )
+
+    hit = repository.find_reusable_workspace(
+        paper_id="scan-past-incomplete",
+        pipeline_version="pipeline-v1",
+    )
+
+    assert hit is not None
+    assert hit.id == reusable.id
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["finalized_report_json", "method_extraction_json", "readiness_json"],
+)
+def test_postgres_paper_workspace_repository_rejects_incomplete_cache_candidate(
+    session_factory, missing_field
+):
+    store = PostgresSessionStore(session_factory)
+    source_session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+    repository.upsert_workspace(
+        _ready_workspace(
+            session_id=source_session.id,
+            paper_id=f"missing-{missing_field}",
+            **{missing_field: None},
+        )
+    )
+
+    assert repository.find_reusable_workspace(
+        paper_id=f"missing-{missing_field}",
+        pipeline_version="pipeline-v1",
+    ) is None
+
+
+def test_postgres_paper_workspace_repository_clones_workspace_snapshot(session_factory):
+    store = PostgresSessionStore(session_factory)
+    source_session = store.create_session()
+    target_session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+    blob_repository = PostgresBlobArtifactRepository(session_factory)
+    source = repository.upsert_workspace(
+        _ready_workspace(
+            session_id=source_session.id,
+            paper_id="2305.16291",
+            title="Voyager",
+            source_url="https://arxiv.org/abs/2305.16291",
+            finalized_report_json={"recommended_action": "prototype"},
+            method_extraction_json={"method_name": "Voyager"},
+            benchmarks_json=[{"task": "Minecraft", "metric": "tech tree"}],
+            readiness_json={"maturity_level": "prototype"},
+            full_markdown_report="# Voyager",
+        )
+    )
+    artifact = blob_repository.upsert_artifact(
+        StoredBlobObject(
+            kind="pdf",
+            object_key="papers/sha256/cc/" + "c" * 64 + ".pdf",
+            bucket_name="paperintel-test",
+            content_hash="c" * 64,
+            content_type="application/pdf",
+            size_bytes=128,
+        )
+    )
+    blob_repository.add_reference(
+        artifact.id,
+        ref_kind="paper_workspace",
+        ref_id=source.id,
+        metadata={"paper_id": source.paper_id},
+    )
+
+    cloned = repository.clone_workspace(
+        source_workspace_id=source.id,
+        target_session_id=target_session.id,
+    )
+    cloned_again = repository.clone_workspace(
+        source_workspace_id=source.id,
+        target_session_id=target_session.id,
+    )
+    source_after = repository.get_workspace(source_session.id, "2305.16291")
+
+    assert cloned.id != source.id
+    assert cloned.id == cloned_again.id
+    assert cloned.session_id == target_session.id
+    assert cloned.paper_id == source.paper_id
+    assert cloned.pipeline_version == source.pipeline_version
+    assert cloned.full_markdown_report == source.full_markdown_report
+    assert source_after is not None
+    assert source_after.session_id == source_session.id
+    assert blob_repository.list_artifacts_for_reference(
+        ref_kind="paper_workspace",
+        ref_id=source.id,
+    ) == [artifact]
+    assert blob_repository.list_artifacts_for_reference(
+        ref_kind="paper_workspace",
+        ref_id=cloned.id,
+    ) == []
+
+
+def test_postgres_paper_workspace_repository_rejects_missing_cache_source(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    target_session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+
+    with pytest.raises(PaperWorkspaceCacheSourceNotFoundError):
+        repository.clone_workspace(
+            source_workspace_id="missing-workspace",
+            target_session_id=target_session.id,
+        )
+
+
+def test_postgres_paper_workspace_repository_rejects_not_ready_cache_source(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    source_session = store.create_session()
+    target_session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+    source = repository.upsert_workspace(
+        _ready_workspace(
+            session_id=source_session.id,
+            paper_id="not-ready-cache-source",
+            readiness_json=None,
+        )
+    )
+
+    with pytest.raises(PaperWorkspaceCacheSourceNotReadyError):
+        repository.clone_workspace(
+            source_workspace_id=source.id,
+            target_session_id=target_session.id,
+        )
+
+
+def test_postgres_paper_workspace_repository_rejects_incompatible_existing_clone(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    source_session = store.create_session()
+    target_session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+    source = repository.upsert_workspace(
+        _ready_workspace(
+            session_id=source_session.id,
+            paper_id="2305.16291",
+            pipeline_version="pipeline-v1",
+        )
+    )
+    repository.upsert_workspace(
+        _ready_workspace(
+            session_id=target_session.id,
+            paper_id="2305.16291",
+            pipeline_version="pipeline-v2",
+        )
+    )
+
+    with pytest.raises(PaperWorkspaceCacheConflictError):
+        repository.clone_workspace(
+            source_workspace_id=source.id,
+            target_session_id=target_session.id,
+        )
+
+
+def test_postgres_paper_workspace_repository_rejects_same_version_different_snapshot(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    source_session = store.create_session()
+    target_session = store.create_session()
+    repository = PostgresPaperWorkspaceRepository(session_factory)
+    source = repository.upsert_workspace(
+        _ready_workspace(
+            session_id=source_session.id,
+            paper_id="same-version-different-snapshot",
+            pipeline_version="pipeline-v1",
+            full_markdown_report="# Source Report",
+        )
+    )
+    repository.upsert_workspace(
+        _ready_workspace(
+            session_id=target_session.id,
+            paper_id="same-version-different-snapshot",
+            pipeline_version="pipeline-v1",
+            full_markdown_report="# Target Report",
+        )
+    )
+
+    with pytest.raises(PaperWorkspaceCacheConflictError):
+        repository.clone_workspace(
+            source_workspace_id=source.id,
+            target_session_id=target_session.id,
+        )
+
+
+def test_postgres_paper_workspace_repository_finds_reusable_pdf_workspace_by_hash(
+    session_factory,
+):
+    store = PostgresSessionStore(session_factory)
+    source_session = store.create_session()
+    target_session = store.create_session()
+    workspace_repository = PostgresPaperWorkspaceRepository(session_factory)
+    blob_repository = PostgresBlobArtifactRepository(session_factory)
+    artifact = blob_repository.upsert_artifact(
+        StoredBlobObject(
+            kind="pdf",
+            object_key="papers/sha256/aa/" + "a" * 64 + ".pdf",
+            bucket_name="paperintel-test",
+            content_hash="a" * 64,
+            content_type="application/pdf",
+            size_bytes=128,
+        )
+    )
+    workspace = workspace_repository.upsert_workspace(
+        _ready_workspace(
+            session_id=source_session.id,
+            paper_id="local-paper",
+            title="Local Paper",
+            source_url="file://local-paper.pdf",
+            method_extraction_json={"method_name": "Local"},
+            full_markdown_report="# Local",
+        )
+    )
+    blob_repository.add_reference(
+        artifact.id,
+        ref_kind="paper_workspace",
+        ref_id=workspace.id,
+        metadata={"paper_id": workspace.paper_id},
+    )
+
+    hit = workspace_repository.find_reusable_workspace_by_pdf_hash(
+        content_hash="a" * 64,
+        pipeline_version="pipeline-v1",
+        exclude_session_id=target_session.id,
+    )
+
+    assert hit is not None
+    assert hit.id == workspace.id
+    assert workspace_repository.find_reusable_workspace_by_pdf_hash(
+        content_hash="b" * 64,
+        pipeline_version="pipeline-v1",
+    ) is None
 
 
 def test_postgres_workflow_job_repository_lifecycle(session_factory):

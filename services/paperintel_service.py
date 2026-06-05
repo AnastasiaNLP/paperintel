@@ -26,6 +26,7 @@ from models.registered_pdf_errors import (
     RegisteredPdfBlobNotAuthorizedError,
     RegisteredPdfBlobNotFoundError,
 )
+from models.retrieval import PaperChunk, UpsertChunksResult
 from models.session import utc_now
 from models.session import HandlerResult, Persona, Session, Turn
 from models.synthesis import SynthesisAgentResult
@@ -170,10 +171,54 @@ class PaperWorkspaceRepository(Protocol):
     ) -> PaperWorkspace | None:
         ...
 
+    def find_reusable_workspace(
+        self,
+        *,
+        paper_id: str,
+        pipeline_version: str,
+        exclude_session_id: str | None = None,
+    ) -> PaperWorkspace | None:
+        ...
+
+    def find_reusable_workspace_by_pdf_hash(
+        self,
+        *,
+        content_hash: str,
+        pipeline_version: str,
+        exclude_session_id: str | None = None,
+    ) -> PaperWorkspace | None:
+        ...
+
+    def clone_workspace(
+        self,
+        *,
+        source_workspace_id: str,
+        target_session_id: str,
+    ) -> PaperWorkspace:
+        ...
+
     def latest_comparison(self, session_id: str) -> ComparisonArtifact | None:
         ...
 
     def save_comparison(self, artifact: ComparisonArtifact) -> ComparisonArtifact:
+        ...
+
+
+class PaperChunkRepository(Protocol):
+    def upsert_many(self, chunks: list[PaperChunk]) -> UpsertChunksResult:
+        ...
+
+    def list_for_session_paper(self, session_id: str, paper_id: str) -> list[PaperChunk]:
+        ...
+
+    def clone_for_session(
+        self,
+        *,
+        source_session_id: str,
+        target_session_id: str,
+        paper_id: str,
+        target_paper_id: str | None = None,
+    ) -> list[PaperChunk]:
         ...
 
 
@@ -269,6 +314,7 @@ class PaperIntelService:
         candidate_repository: SearchCandidateRepository | None = None,
         artifact_repository: PaperWorkspaceRepository | None = None,
         workflow_job_repository: WorkflowJobRepository | None = None,
+        paper_chunk_repository: PaperChunkRepository | None = None,
         blob_store: BlobStore | None = None,
         blob_artifact_repository: BlobArtifactRepository | None = None,
         pdf_upload_repository: PdfUploadRepository | None = None,
@@ -279,6 +325,7 @@ class PaperIntelService:
         self.candidate_repository = candidate_repository
         self.artifact_repository = artifact_repository
         self.workflow_job_repository = workflow_job_repository
+        self.paper_chunk_repository = paper_chunk_repository
         self.blob_store = blob_store
         self.blob_artifact_repository = blob_artifact_repository
         self.pdf_upload_repository = pdf_upload_repository

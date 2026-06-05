@@ -8,7 +8,7 @@ from services.arxiv_search_provider import ArxivSearchProvider
 from services.embeddings import OpenAIEmbeddingProvider
 from services.blob_store import BlobStore, S3BlobStore
 from services.health import HealthChecker
-from services.paperintel_service import PaperIntelService
+from services.paperintel_service import PaperChunkRepository, PaperIntelService
 from services.qdrant_store import QdrantChunkStore
 from services.retrieval_layer import RetrievalLayer
 from services.retrieval_layer import PostgresQdrantRetrievalLayer
@@ -78,6 +78,7 @@ def create_paperintel_service(
     qdrant_url: str | None = None,
     qdrant_collection: str | None = None,
     enable_health_checks: bool = True,
+    paper_chunk_repository: PaperChunkRepository | None = None,
     blob_store: BlobStore | None = None,
     enable_blob_storage: bool | None = None,
 ) -> PaperIntelService:
@@ -109,18 +110,25 @@ def create_paperintel_service(
 
     vector_store = None
     if retrieval_layer is None:
+        if paper_chunk_repository is None:
+            paper_chunk_repository = PostgresPaperChunkRepository(session_factory)
         vector_store = QdrantChunkStore.from_url(
             url=qdrant_url or settings.qdrant_url,
             collection_name=qdrant_collection or settings.qdrant_collection,
             timeout=settings.qdrant_timeout,
         )
         retrieval_layer = PostgresQdrantRetrievalLayer(
-            chunk_repository=PostgresPaperChunkRepository(session_factory),
+            chunk_repository=paper_chunk_repository,
             vector_store=vector_store,
             embedding_provider=OpenAIEmbeddingProvider(api_key=settings.openai_api_key),
         )
-    elif hasattr(retrieval_layer, "vector_store"):
-        vector_store = getattr(retrieval_layer, "vector_store")
+    else:
+        if paper_chunk_repository is None and hasattr(retrieval_layer, "chunk_repository"):
+            paper_chunk_repository = getattr(retrieval_layer, "chunk_repository")
+        if paper_chunk_repository is None:
+            paper_chunk_repository = PostgresPaperChunkRepository(session_factory)
+        if hasattr(retrieval_layer, "vector_store"):
+            vector_store = getattr(retrieval_layer, "vector_store")
 
     if conversation_runner is None:
         from graph_conversation import build_conversation_graph
@@ -182,6 +190,7 @@ def create_paperintel_service(
         candidate_repository=candidate_repository,
         artifact_repository=artifact_repository,
         workflow_job_repository=workflow_job_repository,
+        paper_chunk_repository=paper_chunk_repository,
         blob_store=resolved_blob_store,
         blob_artifact_repository=(
             blob_artifact_repository if resolved_blob_store is not None else None
