@@ -221,6 +221,8 @@ class FakeArtifactRepository:
             comparison_markdown="# Comparison",
         )
         self.clone_calls = []
+        self.reusable_pdf_hashes = {}
+        self.reusable_pdf_hash_calls = []
 
     def list_workspaces(self, session_id):
         return [
@@ -258,6 +260,25 @@ class FakeArtifactRepository:
         )
         self.workspaces.append(cloned)
         return cloned
+
+    def find_reusable_workspace_by_pdf_hash(
+        self,
+        *,
+        content_hash,
+        pipeline_version,
+        exclude_session_id=None,
+    ):
+        self.reusable_pdf_hash_calls.append(
+            {
+                "content_hash": content_hash,
+                "pipeline_version": pipeline_version,
+                "exclude_session_id": exclude_session_id,
+            }
+        )
+        workspace = self.reusable_pdf_hashes.get((content_hash, pipeline_version))
+        if workspace is not None and workspace.session_id != exclude_session_id:
+            return workspace
+        return None
 
     def latest_comparison(self, session_id):
         if self.comparison.session_id == session_id:
@@ -1533,12 +1554,148 @@ def test_service_analyze_registered_pdf_blob_does_not_upload_again():
     assert handler.analysis_input_calls[0]["pipeline_version"] == "pipeline-v2"
 
 
+def test_service_analyze_registered_pdf_blob_reuses_pdf_hash_cache_hit():
+    handler = FakeHandler()
+    retrieval_layer = FakeRetrievalLayer()
+    handler.retrieval_layer = retrieval_layer
+    blob_store = FakeBlobStore()
+    blob_repository = FakeBlobArtifactRepository()
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    artifact_repository.workspaces = [source_workspace]
+    chunk_repository = FakePaperChunkRepository([_cache_chunk()])
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        paper_chunk_repository=chunk_repository,
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
+    )
+    target_session = service.create_session()
+    stored = blob_store.put(b"%PDF-1.7\nregistered", kind="pdf")
+    artifact = blob_repository.upsert_artifact(stored)
+    blob_repository.add_reference(artifact.id, ref_kind="session", ref_id=target_session.id)
+    artifact_repository.reusable_pdf_hashes[
+        (stored.content_hash, "pipeline-v1")
+    ] = source_workspace
+
+    result = service.analyze_registered_pdf_blob(
+        target_session.id,
+        artifact.id,
+        paper_id="1706.03762",
+        pipeline_version="pipeline-v1",
+    )
+
+    cloned_workspace = artifact_repository.get_workspace(
+        target_session.id,
+        source_workspace.paper_id,
+    )
+    assert cloned_workspace is not None
+    assert result.response_text == "# Cached Report"
+    assert result.intent == "analyze_paper"
+    assert result.phase == "qa"
+    assert result.artifact_refs == [f"paper_workspace:{cloned_workspace.id}"]
+    assert blob_store.materialized_paths == []
+    assert handler.analysis_input_calls == []
+    assert retrieval_layer.upsert_calls == [
+        chunk_repository.list_for_session_paper(target_session.id, "1706.03762")
+    ]
+    assert blob_repository.accessed == [artifact.id]
+    assert [(ref.ref_kind, ref.ref_id) for ref in blob_repository.references] == [
+        ("session", target_session.id),
+        ("paper_workspace", cloned_workspace.id),
+    ]
+    assert blob_repository.references[-1].metadata == {
+        "paper_id": "1706.03762",
+        "source": "reused_analysis",
+    }
+    updated_session = handler.store.require_session(target_session.id)
+    assert updated_session.active_paper_ids == ["1706.03762"]
+    assert updated_session.phase == "qa"
+
+
+def test_service_analyze_registered_pdf_blob_pipeline_mismatch_uses_normal_path():
+    handler = FakeHandler()
+    handler.retrieval_layer = FakeRetrievalLayer()
+    blob_store = FakeBlobStore()
+    blob_repository = FakeBlobArtifactRepository()
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    artifact_repository.workspaces = [source_workspace]
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        paper_chunk_repository=FakePaperChunkRepository([_cache_chunk()]),
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
+    )
+    target_session = service.create_session()
+    stored = blob_store.put(b"%PDF-1.7\nregistered", kind="pdf")
+    artifact = blob_repository.upsert_artifact(stored)
+    blob_repository.add_reference(artifact.id, ref_kind="session", ref_id=target_session.id)
+    artifact_repository.reusable_pdf_hashes[
+        (stored.content_hash, "pipeline-v1")
+    ] = source_workspace
+
+    result = service.analyze_registered_pdf_blob(
+        target_session.id,
+        artifact.id,
+        paper_id="1706.03762",
+        pipeline_version="pipeline-v2",
+    )
+
+    assert result.response_text == "pdf analysis complete"
+    assert len(blob_store.materialized_paths) == 1
+    assert handler.analysis_input_calls[0]["pipeline_version"] == "pipeline-v2"
+    assert handler.retrieval_layer.upsert_calls == []
+
+
+def test_service_analyze_registered_pdf_blob_empty_cache_chunks_is_explicit_failure():
+    handler = FakeHandler()
+    handler.retrieval_layer = FakeRetrievalLayer()
+    blob_store = FakeBlobStore()
+    blob_repository = FakeBlobArtifactRepository()
+    source_workspace = _cache_workspace()
+    artifact_repository = FakeArtifactRepository(session_id=source_workspace.session_id)
+    artifact_repository.workspaces = [source_workspace]
+    service = PaperIntelService(
+        handler=handler,
+        artifact_repository=artifact_repository,
+        paper_chunk_repository=FakePaperChunkRepository(),
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
+    )
+    target_session = service.create_session()
+    stored = blob_store.put(b"%PDF-1.7\nregistered", kind="pdf")
+    artifact = blob_repository.upsert_artifact(stored)
+    blob_repository.add_reference(artifact.id, ref_kind="session", ref_id=target_session.id)
+    artifact_repository.reusable_pdf_hashes[
+        (stored.content_hash, "pipeline-v1")
+    ] = source_workspace
+
+    with pytest.raises(PaperCacheHydrationEmptyChunksError):
+        service.analyze_registered_pdf_blob(
+            target_session.id,
+            artifact.id,
+            paper_id="1706.03762",
+            pipeline_version="pipeline-v1",
+        )
+
+    assert blob_store.materialized_paths == []
+    assert handler.analysis_input_calls == []
+    assert handler.retrieval_layer.upsert_calls == []
+
+
 def test_service_analyze_registered_pdf_blob_rejects_missing_session_reference():
     handler = FakeHandler()
     blob_store = FakeBlobStore()
     blob_repository = FakeBlobArtifactRepository()
+    artifact_repository = FakeArtifactRepository()
     service = PaperIntelService(
-        handler=handler, blob_store=blob_store, blob_artifact_repository=blob_repository
+        handler=handler,
+        artifact_repository=artifact_repository,
+        blob_store=blob_store,
+        blob_artifact_repository=blob_repository,
     )
     session = service.create_session()
     stored = blob_store.put(b"%PDF-1.7\nregistered", kind="pdf")
@@ -1549,6 +1706,7 @@ def test_service_analyze_registered_pdf_blob_rejects_missing_session_reference()
         service.analyze_registered_pdf_blob(session.id, artifact.id)
 
     assert blob_store.materialized_paths == []
+    assert artifact_repository.reusable_pdf_hash_calls == []
 
 
 def test_service_finalize_pdf_upload_rejects_oversized_object_before_materialize(monkeypatch):

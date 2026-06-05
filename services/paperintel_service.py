@@ -615,6 +615,39 @@ class PaperIntelService:
             raise RegisteredPdfBlobNotAuthorizedError(
                 session_id=session_id, blob_id=blob_id
             )
+        reusable_workspace = self._find_reusable_pdf_workspace(
+            session_id=session_id,
+            content_hash=artifact.content_hash,
+            pipeline_version=pipeline_version,
+        )
+        if reusable_workspace is not None:
+            try:
+                result = self._hydrate_reusable_workspace(
+                    session_id,
+                    reusable_workspace,
+                    cache_reason="pdf_hash",
+                )
+            except PaperCacheHydrationNotConfiguredError:
+                pass
+            else:
+                artifact_repository.mark_accessed(artifact.id)
+                workspace = None
+                if self.artifact_repository is not None and result.referenced_paper_ids:
+                    workspace = self.artifact_repository.get_workspace(
+                        session_id,
+                        result.referenced_paper_ids[0],
+                    )
+                if workspace is not None:
+                    artifact_repository.add_reference(
+                        artifact.id,
+                        ref_kind="paper_workspace",
+                        ref_id=workspace.id,
+                        metadata={
+                            "paper_id": workspace.paper_id,
+                            "source": "reused_analysis",
+                        },
+                    )
+                return result
         before_workspace_ids = self._workspace_ids(session_id)
         with blob_store.materialize(
             artifact.object_key,
@@ -780,6 +813,21 @@ class PaperIntelService:
             if workspace.id not in before_workspace_ids
         ]
         return new_workspaces[0] if len(new_workspaces) == 1 else None
+
+    def _find_reusable_pdf_workspace(
+        self,
+        *,
+        session_id: str,
+        content_hash: str,
+        pipeline_version: str,
+    ) -> PaperWorkspace | None:
+        if self.artifact_repository is None:
+            return None
+        return self.artifact_repository.find_reusable_workspace_by_pdf_hash(
+            content_hash=content_hash,
+            pipeline_version=pipeline_version,
+            exclude_session_id=session_id,
+        )
 
     def _hydrate_reusable_workspace(
         self,
