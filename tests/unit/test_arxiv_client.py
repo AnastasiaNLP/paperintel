@@ -8,6 +8,20 @@ from tools import arxiv_client
 from tools.circuit_breaker import CircuitBreakerOpenError
 
 
+class FakeRateLimiter:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def acquire(self, provider, operation, *, interval_seconds):
+        self.calls.append(
+            {
+                "provider": provider,
+                "operation": operation,
+                "interval_seconds": interval_seconds,
+            }
+        )
+
+
 FEED = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>
@@ -60,10 +74,12 @@ class FakeMetadataCache:
 @pytest.fixture(autouse=True)
 def reset_arxiv_client():
     arxiv_client.configure_metadata_cache(None)
+    arxiv_client.configure_provider_rate_limiter(None)
     arxiv_client._last_request_at = 0.0
     arxiv_client.reset_circuit_breaker()
     yield
     arxiv_client.configure_metadata_cache(None)
+    arxiv_client.configure_provider_rate_limiter(None)
     arxiv_client._last_request_at = 0.0
     arxiv_client.reset_circuit_breaker()
 
@@ -171,6 +187,23 @@ def test_rate_limit_waits_between_process_local_requests(monkeypatch):
 
     assert sleeps == [pytest.approx(2.2)]
     assert arxiv_client._last_request_at == pytest.approx(103.2)
+
+
+def test_rate_limit_uses_configured_provider_limiter(monkeypatch):
+    limiter = FakeRateLimiter()
+    arxiv_client.configure_provider_rate_limiter(limiter)
+    monkeypatch.setattr(arxiv_client.time, "sleep", lambda seconds: None)
+
+    arxiv_client._rate_limit()
+
+    assert limiter.calls == [
+        {
+            "provider": "arxiv",
+            "operation": "api",
+            "interval_seconds": arxiv_client.RATE_LIMIT_DELAY,
+        }
+    ]
+    assert arxiv_client._last_request_at == 0.0
 
 
 def test_get_metadata_opens_breaker_after_repeated_external_failures(monkeypatch):

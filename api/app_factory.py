@@ -9,6 +9,7 @@ from services.embeddings import OpenAIEmbeddingProvider
 from services.blob_store import BlobStore, S3BlobStore
 from services.health import HealthChecker
 from services.paperintel_service import PaperChunkRepository, PaperIntelService
+from services.provider_rate_limiter import PostgresProviderRateLimiter
 from services.qdrant_store import QdrantChunkStore
 from services.retrieval_layer import RetrievalLayer
 from services.retrieval_layer import PostgresQdrantRetrievalLayer
@@ -23,11 +24,13 @@ from storage.repositories import (
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
     PostgresPdfUploadRepository,
+    PostgresProviderRateLimitRepository,
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
     PostgresWorkflowJobRepository,
 )
-from tools.arxiv_client import configure_metadata_cache
+from tools.arxiv_client import configure_metadata_cache, configure_provider_rate_limiter
+from tools.semantic_scholar_client import configure_provider_rate_limiter as configure_s2_rate_limiter
 
 
 def create_chat_handler(
@@ -41,12 +44,17 @@ def create_chat_handler(
     engine = make_engine(database_url)
     session_factory = make_session_factory(engine)
     configure_metadata_cache(PostgresArxivMetadataCacheRepository(session_factory))
+    provider_rate_limiter = PostgresProviderRateLimiter(
+        PostgresProviderRateLimitRepository(session_factory)
+    )
+    configure_provider_rate_limiter(provider_rate_limiter)
+    configure_s2_rate_limiter(provider_rate_limiter)
     session_store = PostgresSessionStore(session_factory)
     candidate_repository = PostgresSearchCandidateRepository(session_factory)
     artifact_repository = PostgresPaperWorkspaceRepository(session_factory)
     searcher = (
         Searcher(
-            provider=ArxivSearchProvider(),
+            provider=ArxivSearchProvider(rate_limiter=provider_rate_limiter),
             candidate_repository=candidate_repository,
         )
         if discovery_runner is not None
@@ -97,6 +105,11 @@ def create_paperintel_service(
     engine = make_engine(resolved_database_url)
     session_factory = make_session_factory(engine)
     configure_metadata_cache(PostgresArxivMetadataCacheRepository(session_factory))
+    provider_rate_limiter = PostgresProviderRateLimiter(
+        PostgresProviderRateLimitRepository(session_factory)
+    )
+    configure_provider_rate_limiter(provider_rate_limiter)
+    configure_s2_rate_limiter(provider_rate_limiter)
     blob_storage_required = _blob_storage_required(
         blob_store=blob_store,
         enable_blob_storage=enable_blob_storage,
@@ -149,7 +162,7 @@ def create_paperintel_service(
         discovery_runner = build_discovery_graph()
 
     searcher = Searcher(
-        provider=ArxivSearchProvider(),
+        provider=ArxivSearchProvider(rate_limiter=provider_rate_limiter),
         candidate_repository=candidate_repository,
     )
     session_store = PostgresSessionStore(session_factory)

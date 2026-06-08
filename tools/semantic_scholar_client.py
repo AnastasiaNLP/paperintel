@@ -5,6 +5,7 @@ import httpx
 from threading import Lock
 from typing import List
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from services.provider_rate_limiter import ProviderRateLimiter
 from services.provider_policy import FailureClass, classify_provider_exception
 from tools.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 
@@ -19,6 +20,7 @@ _timeout = httpx.Timeout(30.0, connect=5.0)
 _client = httpx.Client(timeout=_timeout, follow_redirects=True)
 _rate_limit_lock = Lock()
 _last_request_at = 0.0
+_provider_rate_limiter: ProviderRateLimiter | None = None
 _s2_breaker = CircuitBreaker(
     service_name="semantic_scholar",
     failure_threshold=3,
@@ -28,6 +30,11 @@ _s2_breaker = CircuitBreaker(
 
 def reset_circuit_breaker() -> None:
     _s2_breaker.reset()
+
+
+def configure_provider_rate_limiter(limiter: ProviderRateLimiter | None) -> None:
+    global _provider_rate_limiter
+    _provider_rate_limiter = limiter
 
 
 def _record_s2_success() -> None:
@@ -40,6 +47,13 @@ def _record_s2_failure(exc: Exception) -> None:
 
 
 def _rate_limit():
+    if _provider_rate_limiter is not None:
+        _provider_rate_limiter.acquire(
+            "semantic_scholar",
+            "api",
+            interval_seconds=RATE_LIMIT_DELAY,
+        )
+        return
     global _last_request_at
     with _rate_limit_lock:
         now = time.monotonic()

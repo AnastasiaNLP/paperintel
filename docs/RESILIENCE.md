@@ -67,17 +67,23 @@ circuit-breaker state after taxonomy and limiter semantics are stable.
 
 ## Rate Limiting
 
-Both clients use process-local lock/timestamp limiters before requests:
+arXiv and Semantic Scholar support a Postgres-backed distributed limiter for
+REST and worker processes created by the application factory:
 
 - arXiv: one request every `3.2` seconds.
 - Semantic Scholar: one request every `1.2` seconds.
 
-This is intentionally process-local. If you run multiple REST/worker processes,
-each process has its own limiter and the combined host/IP traffic can still
-exceed upstream limits. For early self-hosted deployments, run a single
-arXiv-using worker process unless you add a distributed limiter.
+Limiter rows are keyed by provider and operation in `provider_rate_limits`.
+arXiv metadata and discovery search share the `arxiv/api` key because both use
+the same upstream request budget. Semantic Scholar enrichment uses
+`semantic_scholar/api`. Reservation uses a transaction and row lock so
+concurrent processes receive distinct future slots. `429` responses remain
+retryable `rate_limited` events and do not count as breaker failures.
 
-A distributed Postgres-backed limiter is not implemented yet.
+If the Postgres limiter is unavailable, the runtime limiter fails open with a
+warning and applies a local interval sleep so analysis is not blocked by
+coordination failure. Direct module usage without factory wiring falls back to
+process-local limiting.
 
 ## Circuit Breakers
 
@@ -88,7 +94,7 @@ Current parameters:
 
 | Service | Opens after | Half-open after | Counted as failures | Not counted as failures |
 | --- | ---: | ---: | --- | --- |
-| arXiv | 5 consecutive external failures | 120 seconds | HTTP 5xx, 429, timeouts, connection errors | paper-not-found/404, local validation errors such as PDF too large |
+| arXiv | 5 consecutive external failures | 120 seconds | HTTP 5xx, timeouts, connection errors | 429, paper-not-found/404, local validation errors such as PDF too large |
 | Semantic Scholar | 3 consecutive external failures | 60 seconds | HTTP 5xx, timeouts, connection errors | 403, 404, 429 |
 
 When a breaker is open, calls fail fast with `CircuitBreakerOpenError` instead
@@ -127,8 +133,7 @@ breaker is open, ingestion continues without citation enrichment.
 - Process-local limiters and breakers are appropriate for the current local and
   early-OSS deployment shape. They are not a distributed coordination layer.
 - The workflow worker should be run conservatively when many jobs use arXiv URLs.
-- Worker retry decisions currently use a local helper in `workers.workflow_worker`;
-  DR.1 should replace that local list with the shared taxonomy above.
+- Worker retry decisions use the shared taxonomy in `services.provider_policy`.
 - For reproducible evaluation, prefer local PDFs plus golden metadata fallback
   where available.
 - The async jobs live smoke intentionally uses a real arXiv URL and therefore can
@@ -139,9 +144,6 @@ breaker is open, ingestion continues without citation enrichment.
 
 Deferred work:
 
-- distributed rate limiter for multiple REST/worker processes;
-- shared provider error taxonomy used by arXiv, Semantic Scholar, and workflow
-  worker retry decisions;
 - persistent or shared circuit breaker state if multi-process coordination is
   needed;
 - explicit `force_refresh` for arXiv metadata cache entries;

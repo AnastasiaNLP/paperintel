@@ -20,7 +20,12 @@ from models.registered_pdf_errors import RegisteredPdfBlobNotAuthorizedError
 from models.errors import ErrorCodes, make_error
 from models.retrieval import ChunkSource, EvidenceArtifact, PaperChunk
 from storage.db import make_engine, make_session_factory
-from storage.models import BlobArtifactORM, BlobReferenceORM, WorkflowJobORM
+from storage.models import (
+    BlobArtifactORM,
+    BlobReferenceORM,
+    ProviderRateLimitORM,
+    WorkflowJobORM,
+)
 from storage.repositories import (
     BlobArtifactNotFoundError,
     PaperWorkspaceCacheConflictError,
@@ -33,6 +38,7 @@ from storage.repositories import (
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
     PostgresPdfUploadRepository,
+    PostgresProviderRateLimitRepository,
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
     PostgresStructuredErrorRepository,
@@ -1293,6 +1299,64 @@ def test_postgres_arxiv_metadata_cache_repository_records_error_then_success(
     assert succeeded.error_count == 0
     assert succeeded.last_error_json is None
     assert succeeded.has_successful_fetch is True
+
+
+def test_postgres_provider_rate_limit_repository_reserves_sequential_slots(
+    session_factory,
+):
+    repository = PostgresProviderRateLimitRepository(session_factory)
+    now = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
+
+    first = repository.reserve_slot(
+        provider="arxiv",
+        operation="api",
+        interval_seconds=3.2,
+        now=now,
+    )
+    second = repository.reserve_slot(
+        provider="arxiv",
+        operation="api",
+        interval_seconds=3.2,
+        now=now,
+    )
+
+    assert first.delay_seconds == pytest.approx(0)
+    assert first.slot_at == now
+    assert first.next_allowed_at == now + timedelta(seconds=3.2)
+    assert second.delay_seconds == pytest.approx(3.2)
+    assert second.slot_at == now + timedelta(seconds=3.2)
+    assert second.next_allowed_at == now + timedelta(seconds=6.4)
+
+    with session_factory() as db:
+        row = db.get(ProviderRateLimitORM, ("arxiv", "api"))
+        assert row is not None
+        assert row.next_allowed_at == now + timedelta(seconds=6.4)
+
+
+def test_postgres_provider_rate_limit_repository_coordinates_instances(
+    session_factory,
+):
+    now = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
+    barrier = Barrier(2)
+
+    def reserve_slot():
+        repository = PostgresProviderRateLimitRepository(session_factory)
+        barrier.wait(timeout=5)
+        return repository.reserve_slot(
+            provider="semantic_scholar",
+            operation="api",
+            interval_seconds=1.2,
+            now=now,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        reservations = list(executor.map(lambda _: reserve_slot(), range(2)))
+
+    delays = sorted(reservation.delay_seconds for reservation in reservations)
+    slots = sorted(reservation.slot_at for reservation in reservations)
+
+    assert delays == pytest.approx([0, 1.2])
+    assert slots == [now, now + timedelta(seconds=1.2)]
 
 
 def _stored_pdf(*, content_hash: str = "a" * 64) -> StoredBlobObject:

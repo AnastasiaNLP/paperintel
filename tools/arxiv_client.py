@@ -9,6 +9,7 @@ from typing import List, Optional, Protocol
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.schemas import PaperMetadata
+from services.provider_rate_limiter import ProviderRateLimiter
 from services.provider_policy import classify_provider_exception
 from tools.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 
@@ -45,6 +46,7 @@ _client = httpx.Client(timeout=30, follow_redirects=True)
 _rate_limit_lock = Lock()
 _last_request_at = 0.0
 _metadata_cache_repository: MetadataCacheRepository | None = None
+_provider_rate_limiter: ProviderRateLimiter | None = None
 _arxiv_breaker = CircuitBreaker(
     service_name="arxiv",
     failure_threshold=5,
@@ -59,6 +61,11 @@ class ArxivPaperNotFoundError(ValueError):
 def configure_metadata_cache(repository: MetadataCacheRepository | None) -> None:
     global _metadata_cache_repository
     _metadata_cache_repository = repository
+
+
+def configure_provider_rate_limiter(limiter: ProviderRateLimiter | None) -> None:
+    global _provider_rate_limiter
+    _provider_rate_limiter = limiter
 
 
 def reset_circuit_breaker() -> None:
@@ -172,6 +179,13 @@ def _record_metadata_cache_error(arxiv_id: str, exc: Exception) -> None:
 
 
 def _rate_limit():
+    if _provider_rate_limiter is not None:
+        _provider_rate_limiter.acquire(
+            "arxiv",
+            "api",
+            interval_seconds=RATE_LIMIT_DELAY,
+        )
+        return
     global _last_request_at
     with _rate_limit_lock:
         now = time.monotonic()

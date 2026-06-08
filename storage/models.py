@@ -256,6 +256,18 @@ class ArxivMetadataCacheORM(TimestampMixin, Base):
     error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
+class ProviderRateLimitORM(TimestampMixin, Base):
+    __tablename__ = "provider_rate_limits"
+
+    provider: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(128), primary_key=True)
+    next_allowed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
+
+
 class BlobArtifactORM(TimestampMixin, Base):
     __tablename__ = "blob_artifacts"
     __table_args__ = (

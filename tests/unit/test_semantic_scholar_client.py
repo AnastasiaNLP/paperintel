@@ -10,9 +10,11 @@ from tools.circuit_breaker import CircuitBreakerOpenError
 @pytest.fixture(autouse=True)
 def reset_s2_client():
     s2._last_request_at = 0.0
+    s2.configure_provider_rate_limiter(None)
     s2.reset_circuit_breaker()
     yield
     s2._last_request_at = 0.0
+    s2.configure_provider_rate_limiter(None)
     s2.reset_circuit_breaker()
 
 
@@ -24,6 +26,20 @@ class FakeClient:
     def get(self, url, *, params=None, headers=None):
         self.calls.append({"url": url, "params": params, "headers": headers})
         return self.response
+
+
+class FakeRateLimiter:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def acquire(self, provider, operation, *, interval_seconds):
+        self.calls.append(
+            {
+                "provider": provider,
+                "operation": operation,
+                "interval_seconds": interval_seconds,
+            }
+        )
 
 
 def test_get_paper_sends_api_key_header(monkeypatch):
@@ -81,6 +97,23 @@ def test_rate_limit_waits_between_process_local_requests(monkeypatch):
 
     assert sleeps == [pytest.approx(0.2)]
     assert s2._last_request_at == 101.2
+
+
+def test_rate_limit_uses_configured_provider_limiter(monkeypatch):
+    limiter = FakeRateLimiter()
+    s2.configure_provider_rate_limiter(limiter)
+    monkeypatch.setattr(s2.time, "sleep", lambda seconds: None)
+
+    s2._rate_limit()
+
+    assert limiter.calls == [
+        {
+            "provider": "semantic_scholar",
+            "operation": "api",
+            "interval_seconds": s2.RATE_LIMIT_DELAY,
+        }
+    ]
+    assert s2._last_request_at == 0.0
 
 
 def test_get_paper_rate_limits_before_request(monkeypatch):

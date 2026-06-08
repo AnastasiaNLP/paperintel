@@ -77,6 +77,20 @@ class FakeClient:
         self.closed = True
 
 
+class FakeRateLimiter:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def acquire(self, provider, operation, *, interval_seconds):
+        self.calls.append(
+            {
+                "provider": provider,
+                "operation": operation,
+                "interval_seconds": interval_seconds,
+            }
+        )
+
+
 def _response(text=FEED, *, status_code=200):
     request = httpx.Request("GET", ARXIV_API_URL)
     return httpx.Response(status_code, text=text, request=request)
@@ -99,6 +113,23 @@ def test_search_builds_arxiv_query_params():
             },
         }
     ]
+
+
+def test_search_uses_configured_provider_rate_limiter():
+    client = FakeClient([_response()])
+    limiter = FakeRateLimiter()
+    provider = ArxivSearchProvider(
+        client=client,
+        rate_limit_delay=3.2,
+        rate_limiter=limiter,
+    )
+
+    provider.search(ResearchQuery(query="attention transformer", max_results=5))
+
+    assert limiter.calls == [
+        {"provider": "arxiv", "operation": "api", "interval_seconds": 3.2}
+    ]
+    assert len(client.calls) == 1
 
 
 def test_search_normalizes_query_whitespace():

@@ -3,7 +3,6 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from typing import Any
 
 import httpx
 from tenacity import (
@@ -14,6 +13,7 @@ from tenacity import (
 )
 
 from models.discovery import RawSearchResult, ResearchQuery
+from services.provider_rate_limiter import ProviderRateLimiter
 from services.provider_policy import classify_provider_exception
 
 
@@ -46,6 +46,7 @@ class ArxivSearchProvider:
         timeout: float = 30.0,
         max_results_cap: int = MAX_ARXIV_RESULTS,
         rate_limit_delay: float = RATE_LIMIT_DELAY,
+        rate_limiter: ProviderRateLimiter | None = None,
     ) -> None:
         self.client = client or httpx.Client(
             timeout=httpx.Timeout(timeout, connect=5.0),
@@ -53,6 +54,7 @@ class ArxivSearchProvider:
         )
         self.max_results_cap = max_results_cap
         self.rate_limit_delay = rate_limit_delay
+        self.rate_limiter = rate_limiter
 
     def search(self, query: ResearchQuery) -> list[RawSearchResult]:
         normalized_query = normalize_query(query.query)
@@ -68,14 +70,23 @@ class ArxivSearchProvider:
             "sortBy": "submittedDate",
             "sortOrder": "descending",
         }
+        self._acquire_rate_limit()
         t0 = time.perf_counter()
         response = self.client.get(ARXIV_API_URL, params=params)
         latency = time.perf_counter() - t0
         logger.info("arXiv search latency: %.2fs", latency)
         response.raise_for_status()
-        if self.rate_limit_delay > 0:
-            time.sleep(self.rate_limit_delay)
         return response
+
+    def _acquire_rate_limit(self) -> None:
+        if self.rate_limiter is not None:
+            self.rate_limiter.acquire(
+                "arxiv",
+                "api",
+                interval_seconds=self.rate_limit_delay,
+            )
+        elif self.rate_limit_delay > 0:
+            time.sleep(self.rate_limit_delay)
 
     def close(self) -> None:
         self.client.close()

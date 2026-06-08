@@ -44,6 +44,7 @@ def test_alembic_upgrade_and_downgrade_against_postgres():
             "blob_artifacts",
             "blob_references",
             "pdf_uploads",
+            "provider_rate_limits",
         }.issubset(inspector.get_table_names())
 
         with engine.begin() as conn:
@@ -63,7 +64,7 @@ def test_alembic_upgrade_and_downgrade_against_postgres():
                     "'queued', '{}'::jsonb, 0, 1)"
                 )
             )
-        assert version == "20260602_0009"
+        assert version == "20260608_0010"
     finally:
         command.downgrade(config, "base")
         engine.dispose()

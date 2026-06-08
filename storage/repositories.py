@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Sequence, get_args
 from uuid import NAMESPACE_URL, uuid5
@@ -71,12 +72,88 @@ from storage.models import (
     PaperChunkORM,
     PaperWorkspaceORM,
     PdfUploadORM,
+    ProviderRateLimitORM,
     SearchCandidateORM,
     SessionORM,
     StructuredErrorORM,
     TurnORM,
     WorkflowJobORM,
 )
+
+
+@dataclass(frozen=True)
+class ProviderRateLimitReservation:
+    provider: str
+    operation: str
+    delay_seconds: float
+    slot_at: datetime
+    next_allowed_at: datetime
+
+
+class PostgresProviderRateLimitRepository:
+    def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
+        self.session_factory = session_factory
+
+    def reserve_slot(
+        self,
+        *,
+        provider: str,
+        operation: str,
+        interval_seconds: float,
+        now: datetime | None = None,
+    ) -> ProviderRateLimitReservation:
+        if not provider:
+            raise ValueError("provider must not be empty.")
+        if not operation:
+            raise ValueError("operation must not be empty.")
+        if interval_seconds < 0:
+            raise ValueError("interval_seconds must not be negative.")
+
+        current = now or _utc_now()
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        interval = timedelta(seconds=interval_seconds)
+        with self.session_factory() as db:
+            db.execute(
+                pg_insert(ProviderRateLimitORM)
+                .values(
+                    provider=provider,
+                    operation=operation,
+                    next_allowed_at=current,
+                    updated_at=current,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        ProviderRateLimitORM.provider,
+                        ProviderRateLimitORM.operation,
+                    ]
+                )
+            )
+            orm = (
+                db.execute(
+                    select(ProviderRateLimitORM)
+                    .where(
+                        ProviderRateLimitORM.provider == provider,
+                        ProviderRateLimitORM.operation == operation,
+                    )
+                    .with_for_update()
+                )
+                .scalars()
+                .one()
+            )
+            slot_at = max(_as_utc(orm.next_allowed_at), current)
+            delay_seconds = max((slot_at - current).total_seconds(), 0.0)
+            next_allowed_at = slot_at + interval
+            orm.next_allowed_at = next_allowed_at
+            orm.updated_at = current
+            db.commit()
+            return ProviderRateLimitReservation(
+                provider=provider,
+                operation=operation,
+                delay_seconds=delay_seconds,
+                slot_at=slot_at,
+                next_allowed_at=next_allowed_at,
+            )
 
 
 class PostgresArxivMetadataCacheRepository:
@@ -1866,6 +1943,7 @@ def clear_foundation_tables(db: DbSession) -> None:
     db.execute(delete(BlobReferenceORM))
     db.execute(delete(BlobArtifactORM))
     db.execute(delete(WorkflowJobORM))
+    db.execute(delete(ProviderRateLimitORM))
     db.execute(delete(ArxivMetadataCacheORM))
     db.execute(delete(ComparisonArtifactORM))
     db.execute(delete(PaperWorkspaceORM))
@@ -1880,3 +1958,9 @@ def clear_foundation_tables(db: DbSession) -> None:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
