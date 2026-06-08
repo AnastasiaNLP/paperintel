@@ -42,7 +42,7 @@ Discovery-to-QA:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Check Postgres, Qdrant, blob storage, and LLM configuration. Returns `503` when degraded. |
+| `GET` | `/health` | Check Postgres, provider resilience storage, Qdrant, blob storage, and LLM configuration. Returns `503` when degraded. |
 | `POST` | `/sessions` | Create a session with persona `engineer`, `researcher`, or `techlead`. |
 | `GET` | `/sessions/{session_id}` | Get session state. |
 | `GET` | `/sessions/{session_id}/turns` | Get recent conversation turns. |

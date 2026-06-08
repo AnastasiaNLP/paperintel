@@ -60,10 +60,10 @@ Initial provider policy:
 | Blob store | PDF object put/get/delete/materialize | dependency/transport failure | No external-provider breaker in first slice | No for required PDF materialization; cleanup may retry later | `dependency_unavailable`, `provider_not_found` for missing object |
 | Workflow worker | job execution wrapper | shared taxonomy marks retryable provider/infra failures | N/A | N/A; retryable failures return to `queued` while attempts remain | same `failure_class` as source error |
 
-DR.1 should turn this table into a small shared taxonomy/API used by provider
-clients and worker retry decisions. DR.2 should add the Postgres-backed
-distributed limiter for arXiv and Semantic Scholar. DR.3 should add shared
-circuit-breaker state after taxonomy and limiter semantics are stable.
+The shared taxonomy in `services.provider_policy` is used by provider clients
+and worker retry decisions. Factory-created REST/worker processes use
+Postgres-backed limiter and circuit-breaker state for arXiv and Semantic
+Scholar.
 
 ## Rate Limiting
 
@@ -163,6 +163,11 @@ wording.
 - Process-local limiters and breakers are direct-module fallback modes. Factory
   created REST/worker processes use Postgres coordination for arXiv and
   Semantic Scholar.
+- `/health` reports `provider_resilience_store=ok` when Postgres-backed limiter
+  and breaker tables are reachable. Open provider breakers do not make the app
+  health check fail.
+- For operational SQL and response guidance, see
+  `docs/DISTRIBUTED_RESILIENCE_RUNBOOK.md`.
 - The workflow worker should be run conservatively when many jobs use arXiv URLs.
 - Worker retry decisions use the shared taxonomy in `services.provider_policy`
   plus provider delay hints such as `Retry-After`.

@@ -250,7 +250,9 @@ runs completed without failures.
   scheduling/retries, and scheduled cleanup jobs remain later work.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
-- Authentication, distributed rate limiting, and deployment hardening are future work.
+- Authentication and deployment hardening are future work. arXiv and Semantic
+  Scholar use Postgres-backed provider rate limiting and circuit-breaker state
+  when services are created through the application factory.
 
 ## License
 

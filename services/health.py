@@ -24,6 +24,7 @@ class HealthChecker:
     def check(self) -> HealthStatus:
         checks = {
             "postgres": self._check_postgres(),
+            "provider_resilience_store": self._check_provider_resilience_store(),
             "qdrant": self._check_qdrant(),
             "llm_provider": self._check_llm_provider(),
             "openai_embeddings": self._check_openai_embeddings(),
@@ -31,6 +32,7 @@ class HealthChecker:
         }
         healthy = (
             checks["postgres"] == "ok"
+            and checks["provider_resilience_store"] in {"ok", "not_configured"}
             and checks["qdrant"] == "ok"
             and checks["llm_provider"] == "configured"
             and checks["openai_embeddings"] == "configured"
@@ -50,6 +52,17 @@ class HealthChecker:
         try:
             with self.session_factory() as db:
                 db.execute(text("SELECT 1"))
+            return "ok"
+        except Exception as exc:
+            return f"error:{type(exc).__name__}"
+
+    def _check_provider_resilience_store(self) -> str:
+        if self.session_factory is None:
+            return "not_configured"
+        try:
+            with self.session_factory() as db:
+                db.execute(text("SELECT 1 FROM provider_rate_limits LIMIT 1"))
+                db.execute(text("SELECT 1 FROM provider_circuit_breakers LIMIT 1"))
             return "ok"
         except Exception as exc:
             return f"error:{type(exc).__name__}"

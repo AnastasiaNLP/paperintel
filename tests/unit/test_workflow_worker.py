@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import logging
 import time
 
 import httpx
@@ -568,6 +569,25 @@ def test_worker_run_once_passes_circuit_open_retry_after():
     assert repository.retries[0][1]["message"] == "Provider is temporarily unavailable"
     assert repository.retries[0][1]["retry_after_seconds"] == 30.0
     assert repository.retries[0][2] == 30.0
+
+
+def test_worker_failure_log_includes_retry_metadata(caplog):
+    service = FakeService()
+    service.analyze_error = CircuitBreakerOpenError("arxiv", 30.0)
+    repository = FakeRepository(jobs=[_job().model_copy(update={"max_attempts": 3})])
+
+    with caplog.at_level(logging.ERROR, logger="workers.workflow_worker"):
+        WorkflowWorker(
+            repository=repository,
+            executor=WorkflowJobExecutor(service),
+            worker_id="worker-1",
+        ).run_once()
+
+    message = caplog.records[-1].getMessage()
+    assert "failure_class=provider_unavailable" in message
+    assert "retryable=True" in message
+    assert "retry_after_seconds=30.0" in message
+    assert "attempts=1/3" in message
 
 
 def test_worker_error_payload_retryable_false_on_last_attempt():

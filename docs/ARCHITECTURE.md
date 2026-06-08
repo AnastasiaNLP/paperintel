@@ -262,18 +262,20 @@ layers. See
 ## External Dependency Resilience
 
 arXiv metadata lookups use a global Postgres cache keyed by `arxiv_id`. Cache
-hits avoid arXiv API calls. Cache misses still respect a process-local arXiv
-request limiter and an in-memory circuit breaker. If arXiv metadata is
-unavailable but the PDF can be parsed, ingestion continues with `pdf_fallback`
-metadata instead of failing the paper.
+hits avoid arXiv API calls. In factory-created REST/worker processes, cache
+misses respect Postgres-backed provider rate limiting and circuit-breaker state.
+Direct module usage falls back to process-local limiting and in-memory breaker
+state. If arXiv metadata is unavailable but the PDF can be parsed, ingestion
+continues with `pdf_fallback` metadata instead of failing the paper.
 
 Semantic Scholar enrichment is optional. Its client uses the same process-local
-limiter/breaker pattern, and failures degrade to missing citation enrichment
-rather than failing analysis.
+fallback and Postgres-backed factory-path limiter/breaker pattern, and failures
+degrade to missing citation enrichment rather than failing analysis.
 
-These protections are process-local, not distributed. Multiple REST/worker
-processes can still exceed upstream rate limits collectively. See
-[RESILIENCE.md](RESILIENCE.md) for operational details.
+Open provider breakers do not make `/health` fail; `/health` reports whether the
+provider resilience store is reachable. See [RESILIENCE.md](RESILIENCE.md) and
+[DISTRIBUTED_RESILIENCE_RUNBOOK.md](DISTRIBUTED_RESILIENCE_RUNBOOK.md) for
+operational details.
 
 ## AgentRun Contract
 
@@ -303,8 +305,8 @@ See [AGENT_CONTRACT.md](AGENT_CONTRACT.md) for implementation details.
   is available through workflow job enqueue/status surfaces and a separately
   running worker.
 - Discovery currently searches arXiv only.
-- Artifact persistence is session-scoped. Global paper reuse without re-analysis
-  is deferred to a future PaperCache layer.
+- Artifact persistence is session-scoped, while ready paper analysis can be
+  reused across sessions through the global paper reuse path.
 - Critic conflict resolution is deferred until structured claim provenance is
   added.
-- Authentication, distributed rate limiting, and deployment hardening are future work.
+- Authentication and deployment hardening are future work.

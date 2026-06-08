@@ -258,10 +258,19 @@ class WorkflowWorker:
             except WorkflowJobLeaseLostError as lease_exc:
                 return self._load_after_lease_loss(job, lease_exc)
             LOGGER.exception(
-                "Workflow job failed: id=%s kind=%s worker_id=%s",
+                (
+                    "Workflow job failed: id=%s kind=%s worker_id=%s "
+                    "failure_class=%s retryable=%s retry_after_seconds=%s "
+                    "attempts=%s/%s"
+                ),
                 job.id,
                 job.kind,
                 self.worker_id,
+                retry_decision.failure_class,
+                will_retry,
+                retry_decision.retry_after_seconds,
+                job.attempts,
+                job.max_attempts,
             )
             return failed
 

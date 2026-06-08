@@ -98,21 +98,27 @@ candidate from the discovery shortlist.
 
 ## arXiv or Semantic Scholar rate limits
 
-PaperIntel has process-local rate limiters and in-memory circuit breakers for
-arXiv and Semantic Scholar. arXiv metadata is cached in Postgres, and Semantic
-Scholar enrichment is optional. If a breaker opens, requests fail fast until the
+PaperIntel uses Postgres-backed provider rate limiters and circuit breakers for
+arXiv and Semantic Scholar when services are created through the application
+factory. Direct module usage falls back to process-local limiters and in-memory
+breakers. arXiv metadata is cached in Postgres, and Semantic Scholar enrichment
+is optional. If a breaker opens, requests fail fast internally until the
 half-open timeout instead of repeatedly calling the unhealthy upstream service.
 
-Current limitations:
+Things to check:
 
-- The limiter and breaker are process-local. Multiple REST/worker processes can
-  still exceed upstream limits collectively.
+- `/health` should report `provider_resilience_store=ok`.
+- Inspect `provider_rate_limits` for future `next_allowed_at` values under
+  worker load.
+- Inspect `provider_circuit_breakers` for `state`, `open_until`, and
+  `last_failure_class`.
 - arXiv metadata failures can degrade to PDF fallback metadata, but PDF download
   and parsing must still succeed for URL analysis to continue.
 - Semantic Scholar failures remove citation enrichment but should not fail
   analysis.
 
-See `docs/RESILIENCE.md` for details.
+See `docs/RESILIENCE.md` and `docs/DISTRIBUTED_RESILIENCE_RUNBOOK.md` for
+details.
 
 ## Asking questions returns weak or insufficient evidence
 

@@ -165,6 +165,31 @@ class PostgresProviderRateLimitRepository:
                 next_allowed_at=next_allowed_at,
             )
 
+    def list_rows(self, *, limit: int = 50) -> list[dict]:
+        bounded_limit = _bounded_diagnostic_limit(limit)
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(ProviderRateLimitORM)
+                    .order_by(
+                        ProviderRateLimitORM.provider.asc(),
+                        ProviderRateLimitORM.operation.asc(),
+                    )
+                    .limit(bounded_limit)
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                {
+                    "provider": row.provider,
+                    "operation": row.operation,
+                    "next_allowed_at": row.next_allowed_at,
+                    "updated_at": row.updated_at,
+                }
+                for row in rows
+            ]
+
 
 class PostgresProviderCircuitBreakerRepository:
     def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
@@ -305,6 +330,35 @@ class PostgresProviderCircuitBreakerRepository:
             orm.half_open_claimed_at = None
             orm.updated_at = now
             db.commit()
+
+    def list_rows(self, *, limit: int = 50) -> list[dict]:
+        bounded_limit = _bounded_diagnostic_limit(limit)
+        with self.session_factory() as db:
+            rows = (
+                db.execute(
+                    select(ProviderCircuitBreakerORM)
+                    .order_by(
+                        ProviderCircuitBreakerORM.provider.asc(),
+                        ProviderCircuitBreakerORM.operation.asc(),
+                    )
+                    .limit(bounded_limit)
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                {
+                    "provider": row.provider,
+                    "operation": row.operation,
+                    "state": row.state,
+                    "failure_count": row.failure_count,
+                    "failure_threshold": row.failure_threshold,
+                    "open_until": row.open_until,
+                    "last_failure_class": row.last_failure_class,
+                    "updated_at": row.updated_at,
+                }
+                for row in rows
+            ]
 
     def _require_for_update(
         self,
@@ -2196,6 +2250,12 @@ def _normalize_breaker_args(
         raise ValueError("recovery_timeout_seconds must be positive.")
     current = now or _utc_now()
     return _as_utc(current)
+
+
+def _bounded_diagnostic_limit(limit: int) -> int:
+    if not isinstance(limit, int) or limit <= 0:
+        return 50
+    return min(limit, 100)
 
 
 def _open_breaker(

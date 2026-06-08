@@ -4,8 +4,14 @@ from services.health import HealthChecker
 
 
 class FakeDbSession:
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        provider_resilience_error: Exception | None = None,
+    ) -> None:
         self.error = error
+        self.provider_resilience_error = provider_resilience_error
         self.executed = []
 
     def __enter__(self):
@@ -17,6 +23,11 @@ class FakeDbSession:
     def execute(self, query):
         if self.error is not None:
             raise self.error
+        if (
+            self.provider_resilience_error is not None
+            and "provider_" in str(query)
+        ):
+            raise self.provider_resilience_error
         self.executed.append(query)
 
 
@@ -72,6 +83,7 @@ def test_health_checker_reports_all_checks_ok():
     assert status.healthy is True
     assert status.checks == {
         "postgres": "ok",
+        "provider_resilience_store": "ok",
         "qdrant": "ok",
         "llm_provider": "configured",
         "openai_embeddings": "configured",
@@ -91,6 +103,23 @@ def test_health_checker_reports_postgres_error():
 
     assert status.healthy is False
     assert status.checks["postgres"] == "error:RuntimeError"
+    assert status.checks["provider_resilience_store"] == "error:RuntimeError"
+
+
+def test_health_checker_reports_provider_resilience_store_error():
+    checker = HealthChecker(
+        session_factory=lambda: FakeDbSession(
+            provider_resilience_error=RuntimeError("missing table")
+        ),
+        qdrant_store=FakeQdrantStore(),
+        settings=_settings(),
+    )
+
+    status = checker.check()
+
+    assert status.healthy is False
+    assert status.checks["postgres"] == "ok"
+    assert status.checks["provider_resilience_store"] == "error:RuntimeError"
 
 
 def test_health_checker_reports_qdrant_error():
@@ -128,6 +157,7 @@ def test_health_checker_reports_missing_optional_dependencies_as_not_configured(
 
     assert status.healthy is False
     assert status.checks["postgres"] == "not_configured"
+    assert status.checks["provider_resilience_store"] == "not_configured"
     assert status.checks["qdrant"] == "not_configured"
     assert status.checks["llm_provider"] == "not_configured"
     assert status.checks["openai_embeddings"] == "not_configured"

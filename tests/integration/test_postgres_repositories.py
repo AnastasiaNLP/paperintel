@@ -1361,6 +1361,27 @@ def test_postgres_provider_rate_limit_repository_coordinates_instances(
     assert slots == [now, now + timedelta(seconds=1.2)]
 
 
+def test_postgres_provider_rate_limit_repository_lists_diagnostic_rows(
+    session_factory,
+):
+    repository = PostgresProviderRateLimitRepository(session_factory)
+    now = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
+    repository.reserve_slot(
+        provider="arxiv",
+        operation="api",
+        interval_seconds=3.2,
+        now=now,
+    )
+
+    rows = repository.list_rows(limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "arxiv"
+    assert rows[0]["operation"] == "api"
+    assert rows[0]["next_allowed_at"] == now + timedelta(seconds=3.2)
+    assert rows[0]["updated_at"] is not None
+
+
 def test_postgres_provider_circuit_breaker_opens_and_denies_across_instances(
     session_factory,
 ):
@@ -1403,6 +1424,31 @@ def test_postgres_provider_circuit_breaker_opens_and_denies_across_instances(
     assert decision.allowed is False
     assert decision.state == "open"
     assert decision.retry_after_seconds == pytest.approx(119)
+
+
+def test_postgres_provider_circuit_breaker_repository_lists_diagnostic_rows(
+    session_factory,
+):
+    repository = PostgresProviderCircuitBreakerRepository(session_factory)
+    now = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
+    repository.record_failure(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=120,
+        failure_class="provider_unavailable",
+        now=now,
+    )
+
+    rows = repository.list_rows(limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "arxiv"
+    assert rows[0]["operation"] == "api"
+    assert rows[0]["state"] == "open"
+    assert rows[0]["failure_count"] == 1
+    assert rows[0]["failure_threshold"] == 1
+    assert rows[0]["last_failure_class"] == "provider_unavailable"
 
 
 def test_postgres_provider_circuit_breaker_allows_one_half_open_probe(
