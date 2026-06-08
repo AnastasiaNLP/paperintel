@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import time
 
+import httpx
 import pytest
 
 from models.jobs import WorkflowJob
@@ -16,9 +17,11 @@ from workers.workflow_worker import (
     WorkflowJobExecutionError,
     WorkflowJobExecutor,
     WorkflowWorker,
+    is_retryable_failure,
     serialize_exception,
     serialize_handler_result,
 )
+from tools.circuit_breaker import CircuitBreakerOpenError
 
 
 class FakeService:
@@ -535,7 +538,37 @@ def test_worker_run_once_records_retryable_blob_store_failure():
     ).run_once()
 
     assert repository.retries[0][1]["message"] == "blob store down"
+    assert repository.retries[0][1]["failure_class"] == "dependency_unavailable"
     assert repository.failed == []
+
+
+def test_worker_retry_policy_uses_shared_provider_taxonomy():
+    request = httpx.Request("GET", "https://provider.example/test")
+    rate_limited = httpx.HTTPStatusError(
+        "rate limited",
+        request=request,
+        response=httpx.Response(429, request=request),
+    )
+    not_found = httpx.HTTPStatusError(
+        "not found",
+        request=request,
+        response=httpx.Response(404, request=request),
+    )
+
+    assert is_retryable_failure(rate_limited) is True
+    assert is_retryable_failure(not_found) is False
+
+
+def test_worker_serializes_open_breaker_as_neutral_provider_failure():
+    job = _job()
+    exc = CircuitBreakerOpenError("arxiv", 30.0)
+
+    payload = serialize_exception(exc, job=job)
+
+    assert is_retryable_failure(exc) is False
+    assert payload["failure_class"] == "provider_unavailable"
+    assert payload["message"] == "Provider is temporarily unavailable"
+    assert "circuit breaker" not in payload["message"]
 
 
 def test_worker_run_once_heartbeats_during_execution():
@@ -604,6 +637,7 @@ def test_serialize_exception_includes_job_context():
     payload = serialize_exception(RuntimeError("boom"), job=job)
 
     assert payload["error"] == "exception"
+    assert payload["failure_class"] == "internal_error"
     assert payload["exception_type"] == "RuntimeError"
     assert payload["message"] == "boom"
     assert payload["job_kind"] == "analyze_paper"
@@ -636,4 +670,11 @@ def test_serialize_exception_maps_pdf_blob_failures(exc, error):
         },
     )
 
-    assert serialize_exception(exc, job=job)["error"] == error
+    payload = serialize_exception(exc, job=job)
+
+    assert payload["error"] == error
+    assert payload["failure_class"] in {
+        "provider_not_found",
+        "invalid_input",
+        "internal_error",
+    }

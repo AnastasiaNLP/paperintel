@@ -9,6 +9,7 @@ from typing import List, Optional, Protocol
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.schemas import PaperMetadata
+from services.provider_policy import classify_provider_exception
 from tools.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 
 logger = logging.getLogger(__name__)
@@ -65,11 +66,7 @@ def reset_circuit_breaker() -> None:
 
 
 def _should_retry_arxiv(exc: BaseException) -> bool:
-    if isinstance(exc, (ArxivPaperNotFoundError, CircuitBreakerOpenError)):
-        return False
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
-        return False
-    return True
+    return _classify_arxiv_exception(exc).retryable
 
 
 def _record_arxiv_success() -> None:
@@ -77,13 +74,21 @@ def _record_arxiv_success() -> None:
 
 
 def _record_arxiv_failure(exc: Exception) -> None:
-    if isinstance(exc, (ArxivPaperNotFoundError, CircuitBreakerOpenError)):
-        return
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
-        return
-    if isinstance(exc, ValueError):
-        return
-    _arxiv_breaker.record_failure()
+    if _classify_arxiv_exception(exc).breaker_failure:
+        _arxiv_breaker.record_failure()
+
+
+def _classify_arxiv_exception(exc: BaseException):
+    return classify_provider_exception(
+        "arxiv",
+        "metadata_or_search",
+        exc,
+        not_found_exception_types=(ArxivPaperNotFoundError,),
+        invalid_input_exception_types=(ValueError,),
+        circuit_open_exception_types=(CircuitBreakerOpenError,),
+        default_retryable=True,
+        default_breaker_failure=True,
+    )
 
 
 def _utc_now() -> datetime:

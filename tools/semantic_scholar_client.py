@@ -5,6 +5,7 @@ import httpx
 from threading import Lock
 from typing import List
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from services.provider_policy import FailureClass, classify_provider_exception
 from tools.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 
 logger = logging.getLogger(__name__)
@@ -14,8 +15,6 @@ S2_RECOMMENDATIONS_URL = "https://api.semanticscholar.org/recommendations/v1/pap
 S2_REQUEST_INTERVAL_SECONDS = 1.2
 # Backward-compatible alias for tests and older imports.
 RATE_LIMIT_DELAY = S2_REQUEST_INTERVAL_SECONDS
-RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
-
 _timeout = httpx.Timeout(30.0, connect=5.0)
 _client = httpx.Client(timeout=_timeout, follow_redirects=True)
 _rate_limit_lock = Lock()
@@ -36,11 +35,8 @@ def _record_s2_success() -> None:
 
 
 def _record_s2_failure(exc: Exception) -> None:
-    if isinstance(exc, CircuitBreakerOpenError):
-        return
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {403, 404, 429}:
-        return
-    _s2_breaker.record_failure()
+    if _classify_s2_exception(exc).breaker_failure:
+        _s2_breaker.record_failure()
 
 
 def _rate_limit():
@@ -64,11 +60,19 @@ def _headers() -> dict[str, str]:
 
 
 def _should_retry(exc: BaseException) -> bool:
-    if isinstance(exc, CircuitBreakerOpenError):
-        return False
-    if not isinstance(exc, httpx.HTTPStatusError):
-        return True
-    return exc.response.status_code in RETRYABLE_STATUS_CODES
+    return _classify_s2_exception(exc).retryable
+
+
+def _classify_s2_exception(exc: BaseException):
+    return classify_provider_exception(
+        "semantic_scholar",
+        "paper_enrichment",
+        exc,
+        degradation_allowed=True,
+        circuit_open_exception_types=(CircuitBreakerOpenError,),
+        default_retryable=True,
+        default_breaker_failure=True,
+    )
 
 
 def _handle_non_retryable_status(response: httpx.Response, arxiv_id: str) -> bool:
@@ -78,10 +82,29 @@ def _handle_non_retryable_status(response: httpx.Response, arxiv_id: str) -> boo
     if response.status_code == 403:
         logger.warning("S2 access forbidden for %s; continuing without enrichment", arxiv_id)
         return True
-    if response.status_code == 429:
-        logger.warning("S2 rate-limited for %s; continuing without enrichment", arxiv_id)
-        return True
     return False
+
+
+def _degrade_paper_after_retry(retry_state):
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    if exc is not None and _classify_s2_exception(exc).failure_class == FailureClass.RATE_LIMITED:
+        logger.warning("S2 rate-limited after retries; continuing without enrichment")
+        _record_s2_success()
+        return {}
+    if exc is not None:
+        raise exc
+    return {}
+
+
+def _degrade_related_after_retry(retry_state):
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    if exc is not None and _classify_s2_exception(exc).failure_class == FailureClass.RATE_LIMITED:
+        logger.warning("S2 rate-limited after retries; continuing without related papers")
+        _record_s2_success()
+        return []
+    if exc is not None:
+        raise exc
+    return []
 
 
 def _check_for_error(data: dict, arxiv_id: str):
@@ -123,6 +146,7 @@ def _parse_related(p: dict) -> dict:
     retry=retry_if_exception(_should_retry),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry_error_callback=_degrade_paper_after_retry,
 )
 def get_paper(arxiv_id: str) -> dict:
     logger.info(f"S2 get_paper: {arxiv_id}")
@@ -156,6 +180,7 @@ def get_paper(arxiv_id: str) -> dict:
     retry=retry_if_exception(_should_retry),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry_error_callback=_degrade_related_after_retry,
 )
 def get_related_papers(arxiv_id: str, limit: int = 5) -> List[dict]:
     logger.info(f"S2 related papers: {arxiv_id}")

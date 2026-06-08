@@ -53,8 +53,10 @@ def test_get_paper_returns_empty_dict_on_rate_limit(monkeypatch):
     client = FakeClient(response)
     monkeypatch.setattr(s2, "_client", client)
     monkeypatch.setattr(s2, "_rate_limit", lambda: None)
+    monkeypatch.setattr(s2.get_paper.retry, "sleep", lambda seconds: None)
 
     assert s2.get_paper("1706.03762") == {}
+    assert len(client.calls) == 3
 
 
 def test_get_related_papers_returns_empty_list_on_forbidden(monkeypatch):
@@ -99,15 +101,16 @@ def test_get_paper_rate_limits_before_request(monkeypatch):
     assert len(client.calls) == 1
 
 
-def test_non_retryable_rate_limit_does_not_sleep_twice(monkeypatch):
+def test_rate_limit_status_retries_before_degraded_fallback(monkeypatch):
     response = httpx.Response(429, request=httpx.Request("GET", "https://example.com"))
     client = FakeClient(response)
     calls = []
     monkeypatch.setattr(s2, "_client", client)
     monkeypatch.setattr(s2, "_rate_limit", lambda: calls.append("rate_limit"))
+    monkeypatch.setattr(s2.get_paper.retry, "sleep", lambda seconds: None)
 
     assert s2.get_paper("1706.03762") == {}
-    assert calls == ["rate_limit"]
+    assert calls == ["rate_limit", "rate_limit", "rate_limit"]
 
 
 def test_s2_enrichment_failure_is_non_fatal(monkeypatch):
@@ -144,7 +147,20 @@ def test_s2_rate_limit_status_does_not_open_breaker(monkeypatch):
     monkeypatch.setattr(s2, "_rate_limit", lambda: None)
 
     for _ in range(3):
-        assert s2.get_paper.__wrapped__("1706.03762") == {}
+        with pytest.raises(httpx.HTTPStatusError):
+            s2.get_paper.__wrapped__("1706.03762")
+
+    assert s2._s2_breaker.failure_count == 0
+
+
+def test_s2_rate_limit_status_is_retryable():
+    request = httpx.Request("GET", "https://example.com")
+    response = httpx.Response(429, request=request)
+    exc = httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    assert s2._should_retry(exc) is True
+
+    s2._record_s2_failure(exc)
 
     assert s2._s2_breaker.failure_count == 0
 
@@ -154,10 +170,11 @@ def test_s2_non_fatal_status_closes_half_open_breaker(monkeypatch):
     client = FakeClient(response)
     monkeypatch.setattr(s2, "_client", client)
     monkeypatch.setattr(s2, "_rate_limit", lambda: None)
+    monkeypatch.setattr(s2.get_paper.retry, "sleep", lambda seconds: None)
     s2._s2_breaker._state = "half_open"
     s2._s2_breaker._failure_count = 3
 
-    assert s2.get_paper.__wrapped__("1706.03762") == {}
+    assert s2.get_paper("1706.03762") == {}
 
     assert s2._s2_breaker.state == "closed"
     assert s2._s2_breaker.failure_count == 0

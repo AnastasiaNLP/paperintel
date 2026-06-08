@@ -6,8 +6,6 @@ from contextlib import contextmanager
 from threading import Event, Thread
 from typing import Protocol
 
-import httpx
-
 from agents.cancellation import WorkflowCancellationRequested
 from models.jobs import JobKind, WorkflowJob
 from models.pdf_upload_errors import PdfUploadStateError
@@ -23,8 +21,10 @@ from services.blob_store import (
     BlobStoreUnavailableError,
 )
 from services.paperintel_service import PaperIntelService
+from services.provider_policy import classify_provider_exception
 from services.qdrant_store import QdrantDependencyError
 from storage.repositories import WorkflowJobLeaseLostError
+from tools.circuit_breaker import CircuitBreakerOpenError
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_LEASE_SECONDS = 90
@@ -362,6 +362,7 @@ def serialize_handler_result(result: HandlerResult) -> dict:
 
 
 def serialize_exception(exc: Exception, *, job: WorkflowJob) -> dict:
+    classified = classify_workflow_failure(exc)
     error = "exception"
     if isinstance(exc, UnsupportedWorkflowJobKindError):
         error = "unsupported_job_kind"
@@ -379,8 +380,9 @@ def serialize_exception(exc: Exception, *, job: WorkflowJob) -> dict:
         error = "analysis_failed"
     return {
         "error": error,
+        "failure_class": classified.failure_class.value,
         "exception_type": type(exc).__name__,
-        "message": str(exc),
+        "message": _safe_exception_message(exc),
         "job_kind": job.kind,
         "job_id": job.id,
         "session_id": job.session_id,
@@ -388,11 +390,34 @@ def serialize_exception(exc: Exception, *, job: WorkflowJob) -> dict:
 
 
 def is_retryable_failure(exc: Exception) -> bool:
-    if isinstance(exc, (BlobStoreUnavailableError, httpx.TimeoutException, httpx.TransportError)):
-        return True
-    if isinstance(exc, QdrantDependencyError):
-        return True
-    return (
-        isinstance(exc, httpx.HTTPStatusError)
-        and exc.response.status_code in {429, 500, 502, 503, 504}
+    return classify_workflow_failure(exc).retryable
+
+
+def classify_workflow_failure(exc: Exception):
+    return classify_provider_exception(
+        "workflow",
+        "job_execution",
+        exc,
+        not_found_exception_types=(RegisteredPdfBlobNotFoundError,),
+        invalid_input_exception_types=(
+            UnsupportedWorkflowJobKindError,
+            WorkflowJobExecutionError,
+            BlobIntegrityError,
+            BlobSizeLimitError,
+            PdfUploadStateError,
+            RegisteredPdfBlobNotAuthorizedError,
+        ),
+        dependency_unavailable_exception_types=(
+            BlobStoreUnavailableError,
+            QdrantDependencyError,
+        ),
+        dependency_not_found_exception_types=(BlobNotFoundError,),
+        circuit_open_exception_types=(CircuitBreakerOpenError,),
+        canceled_exception_types=(WorkflowCancellationRequested,),
     )
+
+
+def _safe_exception_message(exc: Exception) -> str:
+    if isinstance(exc, CircuitBreakerOpenError):
+        return "Provider is temporarily unavailable"
+    return str(exc)

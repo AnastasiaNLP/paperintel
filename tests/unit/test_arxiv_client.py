@@ -197,6 +197,18 @@ def test_get_metadata_opens_breaker_after_repeated_external_failures(monkeypatch
     assert len(cache.errors) == 5
 
 
+def test_rate_limit_status_is_retryable_but_not_breaker_failure():
+    request = httpx.Request("GET", arxiv_client.ARXIV_API_URL)
+    response = httpx.Response(429, request=request)
+    exc = httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    assert arxiv_client._should_retry_arxiv(exc) is True
+
+    arxiv_client._record_arxiv_failure(exc)
+
+    assert arxiv_client._arxiv_breaker.failure_count == 0
+
+
 def test_paper_not_found_does_not_open_breaker(monkeypatch):
     empty_feed = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom"></feed>

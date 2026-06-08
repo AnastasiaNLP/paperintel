@@ -14,6 +14,7 @@ from tenacity import (
 )
 
 from models.discovery import RawSearchResult, ResearchQuery
+from services.provider_policy import classify_provider_exception
 
 
 logger = logging.getLogger(__name__)
@@ -25,12 +26,7 @@ RATE_LIMIT_DELAY = 0.4
 
 
 def _should_retry(exc: BaseException) -> bool:
-    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-        return status == 429 or status >= 500
-    return False
+    return classify_provider_exception("arxiv", "search", exc).retryable
 
 
 def _retry():
