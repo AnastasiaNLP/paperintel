@@ -1236,6 +1236,7 @@ class PostgresWorkflowJobRepository:
         worker_id: str,
         error_json: dict,
         retryable: bool,
+        retry_after_seconds: float | None = None,
     ) -> WorkflowJob:
         with self.session_factory() as db:
             orm = self._require_orm_for_update(db, job_id)
@@ -1253,11 +1254,16 @@ class PostgresWorkflowJobRepository:
                 orm.status = "queued"
                 orm.error_json = error_json
                 orm.next_attempt_at = now + timedelta(
-                    seconds=_retry_delay_seconds(orm)
+                    seconds=_retry_delay_seconds(
+                        orm,
+                        retry_after_seconds=retry_after_seconds,
+                    )
                 )
                 _clear_workflow_job_lock(orm)
                 orm.updated_at = now
             else:
+                if retryable and isinstance(error_json, dict):
+                    error_json = {**error_json, "retryable": False}
                 _finish_workflow_job(
                     db, orm, status="failed", now=now, error_json=error_json
                 )
@@ -1505,7 +1511,11 @@ def _finish_workflow_job(
     _release_workflow_job_reference(db, job_id=orm.id, released_at=now)
 
 
-def _retry_delay_seconds(orm: WorkflowJobORM) -> float:
+def _retry_delay_seconds(
+    orm: WorkflowJobORM,
+    *,
+    retry_after_seconds: float | None = None,
+) -> float:
     policy = orm.retry_policy_json or {}
     base_delay = policy.get("base_delay_seconds", 5)
     max_delay = policy.get("max_delay_seconds", 300)
@@ -1513,7 +1523,13 @@ def _retry_delay_seconds(orm: WorkflowJobORM) -> float:
         base_delay = 5
     if not isinstance(max_delay, (int, float)) or max_delay < 0:
         max_delay = 300
-    return min(float(max_delay), float(base_delay) * (2 ** max(orm.attempts - 1, 0)))
+    backoff_delay = min(
+        float(max_delay),
+        float(base_delay) * (2 ** max(orm.attempts - 1, 0)),
+    )
+    if not isinstance(retry_after_seconds, (int, float)) or retry_after_seconds < 0:
+        return backoff_delay
+    return max(backoff_delay, float(retry_after_seconds))
 
 
 def _job_canceled_error() -> dict:

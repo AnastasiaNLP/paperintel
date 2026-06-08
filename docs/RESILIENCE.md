@@ -137,13 +137,35 @@ Fallback metadata contains:
 Semantic Scholar enrichment is non-fatal. If S2 fails, rate-limits, or the
 breaker is open, ingestion continues without citation enrichment.
 
+## Worker Retry Semantics
+
+Workflow job retry decisions use the shared provider taxonomy. Retryable classes
+are `rate_limited`, `provider_unavailable`, `provider_timeout`, and
+`dependency_unavailable`. `provider_not_found`, `invalid_input`, `canceled`, and
+`internal_error` fail fast by default.
+
+Job error JSON includes `failure_class` and `retryable`. The `retryable` field
+means the current job will actually be retried; it is false on terminal failed
+jobs after the retry budget is exhausted. When the provider gives a delay hint,
+the worker also records `retry_after_seconds` for retried attempts and passes it
+to the Postgres workflow job repository. The repository schedules the next
+attempt using the larger of the normal exponential backoff and the provider
+delay hint. This prevents fast retry loops when a provider is rate-limited or a
+shared breaker is open.
+
+Open circuit breakers are stored as retryable workflow failures while attempts
+remain. Public/job messages stay neutral, for example
+`Provider is temporarily unavailable`, and must not expose internal breaker
+wording.
+
 ## Operational Notes
 
 - Process-local limiters and breakers are direct-module fallback modes. Factory
   created REST/worker processes use Postgres coordination for arXiv and
   Semantic Scholar.
 - The workflow worker should be run conservatively when many jobs use arXiv URLs.
-- Worker retry decisions use the shared taxonomy in `services.provider_policy`.
+- Worker retry decisions use the shared taxonomy in `services.provider_policy`
+  plus provider delay hints such as `Retry-After`.
 - For reproducible evaluation, prefer local PDFs plus golden metadata fallback
   where available.
 - The async jobs live smoke intentionally uses a real arXiv URL and therefore can

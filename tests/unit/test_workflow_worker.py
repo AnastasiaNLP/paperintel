@@ -17,6 +17,7 @@ from workers.workflow_worker import (
     WorkflowJobExecutionError,
     WorkflowJobExecutor,
     WorkflowWorker,
+    decide_workflow_retry,
     is_retryable_failure,
     serialize_exception,
     serialize_handler_result,
@@ -150,9 +151,17 @@ class FakeRepository:
             attempts=1,
         )
 
-    def record_failure(self, job_id, *, worker_id, error_json, retryable):
+    def record_failure(
+        self,
+        job_id,
+        *,
+        worker_id,
+        error_json,
+        retryable,
+        retry_after_seconds=None,
+    ):
         target = self.retries if retryable else self.failed
-        target.append((job_id, error_json))
+        target.append((job_id, error_json, retry_after_seconds))
         return WorkflowJob(
             id=job_id,
             session_id="session-1",
@@ -529,7 +538,7 @@ def test_worker_run_once_completes_requested_cancel_before_execution():
 def test_worker_run_once_records_retryable_blob_store_failure():
     service = FakeService()
     service.analyze_error = BlobStoreUnavailableError("blob store down")
-    repository = FakeRepository(jobs=[_job()])
+    repository = FakeRepository(jobs=[_job().model_copy(update={"max_attempts": 3})])
 
     WorkflowWorker(
         repository=repository,
@@ -539,7 +548,44 @@ def test_worker_run_once_records_retryable_blob_store_failure():
 
     assert repository.retries[0][1]["message"] == "blob store down"
     assert repository.retries[0][1]["failure_class"] == "dependency_unavailable"
+    assert repository.retries[0][2] is None
     assert repository.failed == []
+
+
+def test_worker_run_once_passes_circuit_open_retry_after():
+    service = FakeService()
+    service.analyze_error = CircuitBreakerOpenError("arxiv", 30.0)
+    repository = FakeRepository(jobs=[_job().model_copy(update={"max_attempts": 3})])
+
+    WorkflowWorker(
+        repository=repository,
+        executor=WorkflowJobExecutor(service),
+        worker_id="worker-1",
+    ).run_once()
+
+    assert repository.retries[0][1]["failure_class"] == "provider_unavailable"
+    assert repository.retries[0][1]["retryable"] is True
+    assert repository.retries[0][1]["message"] == "Provider is temporarily unavailable"
+    assert repository.retries[0][1]["retry_after_seconds"] == 30.0
+    assert repository.retries[0][2] == 30.0
+
+
+def test_worker_error_payload_retryable_false_on_last_attempt():
+    service = FakeService()
+    service.analyze_error = CircuitBreakerOpenError("arxiv", 30.0)
+    exhausted_job = _job().model_copy(update={"attempts": 2, "max_attempts": 3})
+    repository = FakeRepository(jobs=[exhausted_job])
+
+    WorkflowWorker(
+        repository=repository,
+        executor=WorkflowJobExecutor(service),
+        worker_id="worker-1",
+    ).run_once()
+
+    assert repository.retries[0][1]["failure_class"] == "provider_unavailable"
+    assert repository.retries[0][1]["retryable"] is False
+    assert "retry_after_seconds" not in repository.retries[0][1]
+    assert repository.retries[0][2] == 30.0
 
 
 def test_worker_retry_policy_uses_shared_provider_taxonomy():
@@ -559,15 +605,32 @@ def test_worker_retry_policy_uses_shared_provider_taxonomy():
     assert is_retryable_failure(not_found) is False
 
 
+def test_workflow_retry_decision_reads_retry_after_header():
+    request = httpx.Request("GET", "https://provider.example/test")
+    exc = httpx.HTTPStatusError(
+        "rate limited",
+        request=request,
+        response=httpx.Response(429, headers={"Retry-After": "12"}, request=request),
+    )
+
+    decision = decide_workflow_retry(exc)
+
+    assert decision.retryable is True
+    assert decision.failure_class == "rate_limited"
+    assert decision.retry_after_seconds == 12.0
+
+
 def test_worker_serializes_open_breaker_as_neutral_provider_failure():
     job = _job()
     exc = CircuitBreakerOpenError("arxiv", 30.0)
 
     payload = serialize_exception(exc, job=job)
 
-    assert is_retryable_failure(exc) is False
+    assert is_retryable_failure(exc) is True
     assert payload["failure_class"] == "provider_unavailable"
+    assert payload["retryable"] is True
     assert payload["message"] == "Provider is temporarily unavailable"
+    assert payload["retry_after_seconds"] == 30.0
     assert "circuit breaker" not in payload["message"]
 
 
@@ -638,6 +701,7 @@ def test_serialize_exception_includes_job_context():
 
     assert payload["error"] == "exception"
     assert payload["failure_class"] == "internal_error"
+    assert payload["retryable"] is False
     assert payload["exception_type"] == "RuntimeError"
     assert payload["message"] == "boom"
     assert payload["job_kind"] == "analyze_paper"

@@ -2337,6 +2337,96 @@ def test_postgres_workflow_job_repository_retry_respects_schedule(session_factor
     assert repository.claim_next(worker_id="worker-2") is None
 
 
+def test_postgres_workflow_job_repository_uses_retry_after_lower_bound(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={},
+            max_attempts=3,
+            retry_policy_json={"base_delay_seconds": 5},
+        )
+    )
+    running = repository.claim_next(worker_id="worker-1")
+    before_failure = datetime.now(timezone.utc)
+
+    retry = repository.record_failure(
+        running.id,
+        worker_id="worker-1",
+        error_json={"error": "provider_unavailable"},
+        retryable=True,
+        retry_after_seconds=30,
+    )
+
+    assert retry.next_attempt_at is not None
+    assert retry.next_attempt_at >= before_failure + timedelta(seconds=30)
+
+
+def test_postgres_workflow_job_repository_retry_after_does_not_shorten_backoff(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={},
+            max_attempts=3,
+            retry_policy_json={"base_delay_seconds": 60},
+        )
+    )
+    running = repository.claim_next(worker_id="worker-1")
+    before_failure = datetime.now(timezone.utc)
+
+    retry = repository.record_failure(
+        running.id,
+        worker_id="worker-1",
+        error_json={"error": "provider_unavailable"},
+        retryable=True,
+        retry_after_seconds=10,
+    )
+
+    assert retry.next_attempt_at is not None
+    assert retry.next_attempt_at >= before_failure + timedelta(seconds=60)
+
+
+def test_postgres_workflow_job_repository_terminal_failure_retryable_false(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={},
+            max_attempts=1,
+        )
+    )
+    running = repository.claim_next(worker_id="worker-1")
+
+    failed = repository.record_failure(
+        running.id,
+        worker_id="worker-1",
+        error_json={
+            "error": "provider_unavailable",
+            "failure_class": "provider_unavailable",
+            "retryable": True,
+        },
+        retryable=True,
+        retry_after_seconds=30,
+    )
+
+    assert failed.status == "failed"
+    assert failed.next_attempt_at is None
+    assert failed.error_json["retryable"] is False
+
+
 def test_postgres_workflow_job_success_commit_honors_cancel_request(session_factory):
     session = PostgresSessionStore(session_factory).create_session()
     repository = PostgresWorkflowJobRepository(session_factory)

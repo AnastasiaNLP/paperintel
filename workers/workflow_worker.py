@@ -3,8 +3,13 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 from threading import Event, Thread
 from typing import Protocol
+
+import httpx
 
 from agents.cancellation import WorkflowCancellationRequested
 from models.jobs import JobKind, WorkflowJob
@@ -61,6 +66,7 @@ class WorkflowJobRepository(Protocol):
         worker_id: str,
         error_json: dict,
         retryable: bool,
+        retry_after_seconds: float | None = None,
     ) -> WorkflowJob:
         ...
 
@@ -234,12 +240,20 @@ class WorkflowWorker:
         except WorkflowJobLeaseLostError as exc:
             return self._load_after_lease_loss(job, exc)
         except Exception as exc:
+            retry_decision = decide_workflow_retry(exc)
+            will_retry = retry_decision.retryable and job.attempts < job.max_attempts
             try:
                 failed = self.repository.record_failure(
                     job.id,
                     worker_id=self.worker_id,
-                    error_json=serialize_exception(exc, job=job),
-                    retryable=is_retryable_failure(exc),
+                    error_json=serialize_exception(
+                        exc,
+                        job=job,
+                        retry_decision=retry_decision,
+                        will_retry=will_retry,
+                    ),
+                    retryable=retry_decision.retryable,
+                    retry_after_seconds=retry_decision.retry_after_seconds,
                 )
             except WorkflowJobLeaseLostError as lease_exc:
                 return self._load_after_lease_loss(job, lease_exc)
@@ -361,8 +375,23 @@ def serialize_handler_result(result: HandlerResult) -> dict:
     }
 
 
-def serialize_exception(exc: Exception, *, job: WorkflowJob) -> dict:
+@dataclass(frozen=True)
+class WorkflowRetryDecision:
+    retryable: bool
+    failure_class: str
+    retry_after_seconds: float | None = None
+
+
+def serialize_exception(
+    exc: Exception,
+    *,
+    job: WorkflowJob,
+    retry_decision: WorkflowRetryDecision | None = None,
+    will_retry: bool | None = None,
+) -> dict:
     classified = classify_workflow_failure(exc)
+    decision = retry_decision or decide_workflow_retry(exc)
+    actual_retryable = decision.retryable if will_retry is None else will_retry
     error = "exception"
     if isinstance(exc, UnsupportedWorkflowJobKindError):
         error = "unsupported_job_kind"
@@ -381,16 +410,32 @@ def serialize_exception(exc: Exception, *, job: WorkflowJob) -> dict:
     return {
         "error": error,
         "failure_class": classified.failure_class.value,
+        "retryable": actual_retryable,
         "exception_type": type(exc).__name__,
         "message": _safe_exception_message(exc),
         "job_kind": job.kind,
         "job_id": job.id,
         "session_id": job.session_id,
+        **(
+            {"retry_after_seconds": decision.retry_after_seconds}
+            if actual_retryable and decision.retry_after_seconds is not None
+            else {}
+        ),
     }
 
 
 def is_retryable_failure(exc: Exception) -> bool:
-    return classify_workflow_failure(exc).retryable
+    return decide_workflow_retry(exc).retryable
+
+
+def decide_workflow_retry(exc: Exception) -> WorkflowRetryDecision:
+    classified = classify_workflow_failure(exc)
+    retry_after_seconds = _retry_after_seconds_from_exception(exc)
+    return WorkflowRetryDecision(
+        retryable=classified.retryable or isinstance(exc, CircuitBreakerOpenError),
+        failure_class=classified.failure_class.value,
+        retry_after_seconds=retry_after_seconds,
+    )
 
 
 def classify_workflow_failure(exc: Exception):
@@ -421,3 +466,30 @@ def _safe_exception_message(exc: Exception) -> str:
     if isinstance(exc, CircuitBreakerOpenError):
         return "Provider is temporarily unavailable"
     return str(exc)
+
+
+def _retry_after_seconds_from_exception(exc: Exception) -> float | None:
+    if isinstance(exc, CircuitBreakerOpenError):
+        return exc.retry_after_seconds
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+        return _parse_retry_after_header(exc.response.headers.get("Retry-After"))
+    return None
+
+
+def _parse_retry_after_header(value: str | None) -> float | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        seconds = float(stripped)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(stripped)
+        except (TypeError, ValueError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+    return max(seconds, 0.0)
