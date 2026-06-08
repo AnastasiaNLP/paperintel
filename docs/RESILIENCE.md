@@ -28,11 +28,22 @@ breaker state.
 
 ## Provider Policy Contract
 
-The current code has several local classifiers: arXiv metadata/search,
-Semantic Scholar enrichment, OpenAI embeddings, blob storage, Qdrant, and the
-workflow worker retry wrapper. The distributed-resilience work should converge
-those classifiers on the policy below before adding shared limiter or breaker
-state.
+The provider clients and workflow worker share a provider-neutral failure
+taxonomy. arXiv and Semantic Scholar also share Postgres-backed limiter and
+circuit-breaker state in factory-created REST/worker processes.
+
+Implementation status:
+
+- DR.1 shared provider taxonomy is implemented.
+- DR.2 Postgres-backed provider rate limiter is implemented for arXiv and
+  Semantic Scholar factory-created REST/worker paths.
+- DR.3 Postgres-backed provider circuit breaker is implemented for arXiv and
+  Semantic Scholar factory-created REST/worker paths.
+- DR.4 workflow retry scheduling uses taxonomy and provider delay hints.
+- DR.5 health, diagnostics, and runbook coverage are implemented.
+
+Distributed breaker coverage for LLM and embedding providers, authentication,
+and production deployment hardening are outside this block.
 
 Failure classes are intentionally provider-neutral:
 

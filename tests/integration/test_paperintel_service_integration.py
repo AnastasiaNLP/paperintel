@@ -18,8 +18,11 @@ from models.retrieval import (
     ChunkSource,
     PaperChunk,
 )
-from services.qdrant_store import QdrantChunkStore
+from services.arxiv_search_provider import ArxivSearchProvider
 from services.paperintel_service import PaperIntelService
+from services.provider_circuit_breaker import PostgresProviderCircuitBreaker
+from services.provider_rate_limiter import PostgresProviderRateLimiter
+from services.qdrant_store import QdrantChunkStore
 from services.retrieval_layer import PostgresQdrantRetrievalLayer
 from storage.db import make_engine, make_session_factory
 from storage.repositories import (
@@ -29,6 +32,8 @@ from storage.repositories import (
     PostgresSessionStore,
     clear_foundation_tables,
 )
+import tools.arxiv_client as arxiv_client
+import tools.semantic_scholar_client as semantic_scholar_client
 
 
 class DeterministicEmbeddingProvider:
@@ -332,6 +337,34 @@ def test_app_factory_reuses_chunk_repository_from_retrieval_layer():
 
     assert service.handler.retrieval_layer is retrieval_layer
     assert service.paper_chunk_repository is chunk_repository
+
+
+def test_app_factory_health_includes_provider_resilience_store(postgres_session_factory):
+    service = create_paperintel_service(
+        database_url=_database_url(),
+        conversation_runner=FakeRunner({"response_text": "conversation"}),
+        analysis_runner=FakeRunner({"response_text": "analysis"}),
+        retrieval_layer=FakeRetrievalLayer(),
+        enable_health_checks=True,
+        enable_blob_storage=False,
+    )
+
+    status = service.health()
+
+    assert status.checks["postgres"] == "ok"
+    assert status.checks["provider_resilience_store"] == "ok"
+
+    search_provider = service.handler.searcher.provider
+    assert isinstance(search_provider, ArxivSearchProvider)
+    assert isinstance(search_provider.rate_limiter, PostgresProviderRateLimiter)
+    assert isinstance(search_provider.circuit_breaker, PostgresProviderCircuitBreaker)
+    assert arxiv_client._provider_rate_limiter is search_provider.rate_limiter
+    assert semantic_scholar_client._provider_rate_limiter is search_provider.rate_limiter
+    assert arxiv_client._provider_circuit_breaker is search_provider.circuit_breaker
+    assert (
+        semantic_scholar_client._provider_circuit_breaker
+        is search_provider.circuit_breaker
+    )
 
 
 def test_app_factory_default_blob_storage_builds_from_settings(monkeypatch):

@@ -73,6 +73,44 @@ Worker job error JSON includes:
 `retryable=true` means the current job will actually be retried. Terminal failed
 jobs after exhausting attempts persist `retryable=false`.
 
+Example retried provider failure:
+
+```json
+{
+  "error": "exception",
+  "failure_class": "provider_unavailable",
+  "retryable": true,
+  "retry_after_seconds": 30.0,
+  "message": "Provider is temporarily unavailable"
+}
+```
+
+## Verification Commands
+
+Run unit checks without auto-loaded local plugins:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest tests/unit/test_provider_policy.py tests/unit/test_provider_rate_limiter.py tests/unit/test_provider_circuit_breaker.py tests/unit/test_health.py tests/unit/test_workflow_worker.py -q
+```
+
+Run Postgres-backed limiter, breaker, and worker retry proofs:
+
+```bash
+PAPERINTEL_TEST_DATABASE_URL='postgresql+psycopg://paperintel:dev_password@localhost:5432/paperintel' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest tests/integration/test_postgres_repositories.py -k 'provider_rate_limit or provider_circuit_breaker or retry_after or retry_respects_schedule or terminal_failure_retryable_false or retry_delay_blocks_other_worker_claims' -q
+```
+
+Run the app-factory health proof for the shared provider resilience store:
+
+```bash
+PAPERINTEL_TEST_DATABASE_URL='postgresql+psycopg://paperintel:dev_password@localhost:5432/paperintel' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest tests/integration/test_paperintel_service_integration.py -k 'app_factory_health_includes_provider_resilience_store' -q
+```
+
+Run migration smoke after schema changes:
+
+```bash
+PAPERINTEL_TEST_DATABASE_URL='postgresql+psycopg://paperintel:dev_password@localhost:5432/paperintel' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest tests/integration/test_postgres_migration_smoke.py -q
+```
+
 ## Development Notes
 
 Do not run multiple Alembic-backed pytest processes against the same Postgres

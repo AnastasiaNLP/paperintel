@@ -51,9 +51,16 @@ from storage.repositories import (
     clear_foundation_tables,
 )
 from services.qdrant_store import chunk_payload
+from tools.circuit_breaker import CircuitBreakerOpenError
+from workers.workflow_worker import WorkflowJobExecutor, WorkflowWorker
 
 
 pytestmark = pytest.mark.db
+
+
+class FailingAnalyzeService:
+    def analyze_paper(self, session_id: str, paper_url: str):
+        raise CircuitBreakerOpenError("arxiv", 30.0)
 
 
 def _database_url() -> str | None:
@@ -2471,6 +2478,45 @@ def test_postgres_workflow_job_repository_terminal_failure_retryable_false(
     assert failed.status == "failed"
     assert failed.next_attempt_at is None
     assert failed.error_json["retryable"] is False
+
+
+def test_postgres_workflow_worker_retry_delay_blocks_other_worker_claims(
+    session_factory,
+):
+    session = PostgresSessionStore(session_factory).create_session()
+    repository = PostgresWorkflowJobRepository(session_factory)
+    job = repository.create(
+        WorkflowJob(
+            session_id=session.id,
+            kind="analyze_paper",
+            input_json={"paper_url": "https://arxiv.org/abs/1706.03762"},
+            max_attempts=3,
+            retry_policy_json={"base_delay_seconds": 5},
+        )
+    )
+    worker_one = WorkflowWorker(
+        repository=repository,
+        executor=WorkflowJobExecutor(FailingAnalyzeService()),
+        worker_id="worker-1",
+    )
+    worker_two = WorkflowWorker(
+        repository=repository,
+        executor=WorkflowJobExecutor(FailingAnalyzeService()),
+        worker_id="worker-2",
+    )
+    before_failure = datetime.now(timezone.utc)
+
+    retried = worker_one.run_once()
+    second_claim = worker_two.run_once()
+
+    assert retried.id == job.id
+    assert retried.status == "queued"
+    assert retried.error_json["failure_class"] == "provider_unavailable"
+    assert retried.error_json["retryable"] is True
+    assert retried.error_json["retry_after_seconds"] == 30.0
+    assert retried.next_attempt_at is not None
+    assert retried.next_attempt_at >= before_failure + timedelta(seconds=30)
+    assert second_claim is None
 
 
 def test_postgres_workflow_job_success_commit_honors_cancel_request(session_factory):
