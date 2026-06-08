@@ -14,10 +14,28 @@ analyzed and finalized.
 
 ## Embedding Contract
 
-- Model: `text-embedding-3-small`
-- Dimensions: `1536`
-- The chunk metadata stores the expected model and dimensions so Qdrant
-  collections can be validated before indexing.
+PaperIntel currently uses OpenAI embeddings for retrieval.
+
+| Field | Current default | Runtime owner | Persisted where | Change impact |
+| --- | --- | --- | --- | --- |
+| embedding provider | OpenAI | `OpenAIEmbeddingProvider` | not persisted directly | Changing provider requires proving vector compatibility and retry/error behavior. |
+| embedding model | `text-embedding-3-small` | `models.retrieval.DEFAULT_EMBEDDING_MODEL` | Postgres `paper_chunks.embedding_model`, Qdrant payload `embedding_model` | Changing model is an indexing contract change. |
+| embedding dimensions | `1536` | `models.retrieval.DEFAULT_EMBEDDING_DIMENSIONS` | Postgres `paper_chunks.embedding_dimensions`, Qdrant payload `embedding_dimensions`, Qdrant collection vector size | Changing dimensions requires a new Qdrant collection or a full reindex. |
+| vector distance | `Cosine` | `QdrantChunkStore` | Qdrant collection config | Changing distance requires a new Qdrant collection or a full reindex. |
+
+The Postgres chunk row and Qdrant payload both store `embedding_model` and
+`embedding_dimensions` so retrieval artifacts can be inspected after indexing.
+The Qdrant collection itself has one vector size. PaperIntel must not mix
+different embedding dimensions in the same collection.
+
+Changing embedding model, dimensions, or vector distance without creating a new
+Qdrant collection or running a full reindex is an operator error. The system does
+not promise automatic migration or automatic reindexing for embedding changes.
+Collection mismatch checks should fail explicitly instead of silently writing
+incompatible vectors.
+
+DBE.1 will move the model and dimensions from code constants into application
+settings. Until then, the defaults above are the runtime contract.
 
 ## Paper Identity
 
