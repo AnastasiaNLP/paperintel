@@ -9,6 +9,7 @@ from services.embeddings import OpenAIEmbeddingProvider
 from services.blob_store import BlobStore, S3BlobStore
 from services.health import HealthChecker
 from services.paperintel_service import PaperChunkRepository, PaperIntelService
+from services.provider_circuit_breaker import PostgresProviderCircuitBreaker
 from services.provider_rate_limiter import PostgresProviderRateLimiter
 from services.qdrant_store import QdrantChunkStore
 from services.retrieval_layer import RetrievalLayer
@@ -24,13 +25,16 @@ from storage.repositories import (
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
     PostgresPdfUploadRepository,
+    PostgresProviderCircuitBreakerRepository,
     PostgresProviderRateLimitRepository,
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
     PostgresWorkflowJobRepository,
 )
 from tools.arxiv_client import configure_metadata_cache, configure_provider_rate_limiter
+from tools.arxiv_client import configure_provider_circuit_breaker
 from tools.semantic_scholar_client import configure_provider_rate_limiter as configure_s2_rate_limiter
+from tools.semantic_scholar_client import configure_provider_circuit_breaker as configure_s2_circuit_breaker
 
 
 def create_chat_handler(
@@ -47,14 +51,22 @@ def create_chat_handler(
     provider_rate_limiter = PostgresProviderRateLimiter(
         PostgresProviderRateLimitRepository(session_factory)
     )
+    provider_circuit_breaker = PostgresProviderCircuitBreaker(
+        PostgresProviderCircuitBreakerRepository(session_factory)
+    )
     configure_provider_rate_limiter(provider_rate_limiter)
+    configure_provider_circuit_breaker(provider_circuit_breaker)
     configure_s2_rate_limiter(provider_rate_limiter)
+    configure_s2_circuit_breaker(provider_circuit_breaker)
     session_store = PostgresSessionStore(session_factory)
     candidate_repository = PostgresSearchCandidateRepository(session_factory)
     artifact_repository = PostgresPaperWorkspaceRepository(session_factory)
     searcher = (
         Searcher(
-            provider=ArxivSearchProvider(rate_limiter=provider_rate_limiter),
+            provider=ArxivSearchProvider(
+                rate_limiter=provider_rate_limiter,
+                circuit_breaker=provider_circuit_breaker,
+            ),
             candidate_repository=candidate_repository,
         )
         if discovery_runner is not None
@@ -108,8 +120,13 @@ def create_paperintel_service(
     provider_rate_limiter = PostgresProviderRateLimiter(
         PostgresProviderRateLimitRepository(session_factory)
     )
+    provider_circuit_breaker = PostgresProviderCircuitBreaker(
+        PostgresProviderCircuitBreakerRepository(session_factory)
+    )
     configure_provider_rate_limiter(provider_rate_limiter)
+    configure_provider_circuit_breaker(provider_circuit_breaker)
     configure_s2_rate_limiter(provider_rate_limiter)
+    configure_s2_circuit_breaker(provider_circuit_breaker)
     blob_storage_required = _blob_storage_required(
         blob_store=blob_store,
         enable_blob_storage=enable_blob_storage,
@@ -162,7 +179,10 @@ def create_paperintel_service(
         discovery_runner = build_discovery_graph()
 
     searcher = Searcher(
-        provider=ArxivSearchProvider(rate_limiter=provider_rate_limiter),
+        provider=ArxivSearchProvider(
+            rate_limiter=provider_rate_limiter,
+            circuit_breaker=provider_circuit_breaker,
+        ),
         candidate_repository=candidate_repository,
     )
     session_store = PostgresSessionStore(session_factory)

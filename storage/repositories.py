@@ -72,6 +72,7 @@ from storage.models import (
     PaperChunkORM,
     PaperWorkspaceORM,
     PdfUploadORM,
+    ProviderCircuitBreakerORM,
     ProviderRateLimitORM,
     SearchCandidateORM,
     SessionORM,
@@ -88,6 +89,15 @@ class ProviderRateLimitReservation:
     delay_seconds: float
     slot_at: datetime
     next_allowed_at: datetime
+
+
+@dataclass(frozen=True)
+class ProviderCircuitBreakerDecision:
+    provider: str
+    operation: str
+    allowed: bool
+    state: str
+    retry_after_seconds: float = 0.0
 
 
 class PostgresProviderRateLimitRepository:
@@ -154,6 +164,191 @@ class PostgresProviderRateLimitRepository:
                 slot_at=slot_at,
                 next_allowed_at=next_allowed_at,
             )
+
+
+class PostgresProviderCircuitBreakerRepository:
+    def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
+        self.session_factory = session_factory
+
+    def before_request(
+        self,
+        *,
+        provider: str,
+        operation: str,
+        failure_threshold: int,
+        recovery_timeout_seconds: float,
+        now: datetime | None = None,
+    ) -> ProviderCircuitBreakerDecision:
+        current = _normalize_breaker_args(
+            provider=provider,
+            operation=operation,
+            failure_threshold=failure_threshold,
+            recovery_timeout_seconds=recovery_timeout_seconds,
+            now=now,
+        )
+        with self.session_factory() as db:
+            orm = self._require_for_update(
+                db,
+                provider=provider,
+                operation=operation,
+                failure_threshold=failure_threshold,
+                recovery_timeout_seconds=recovery_timeout_seconds,
+                now=current,
+            )
+            if orm.state == "closed":
+                db.commit()
+                return _breaker_decision(orm, allowed=True)
+
+            if orm.state == "open":
+                open_until = _as_utc(orm.open_until) if orm.open_until else current
+                if current < open_until:
+                    db.commit()
+                    return _breaker_decision(
+                        orm,
+                        allowed=False,
+                        retry_after_seconds=(open_until - current).total_seconds(),
+                    )
+                orm.state = "half_open"
+                orm.half_open_claimed_at = current
+                orm.updated_at = current
+                db.commit()
+                return _breaker_decision(orm, allowed=True)
+
+            db.commit()
+            return _breaker_decision(
+                orm,
+                allowed=False,
+                retry_after_seconds=recovery_timeout_seconds,
+            )
+
+    def record_success(
+        self,
+        *,
+        provider: str,
+        operation: str,
+        failure_threshold: int,
+        recovery_timeout_seconds: float,
+        now: datetime | None = None,
+    ) -> None:
+        current = _normalize_breaker_args(
+            provider=provider,
+            operation=operation,
+            failure_threshold=failure_threshold,
+            recovery_timeout_seconds=recovery_timeout_seconds,
+            now=now,
+        )
+        with self.session_factory() as db:
+            orm = self._require_for_update(
+                db,
+                provider=provider,
+                operation=operation,
+                failure_threshold=failure_threshold,
+                recovery_timeout_seconds=recovery_timeout_seconds,
+                now=current,
+            )
+            orm.state = "closed"
+            orm.failure_count = 0
+            orm.opened_at = None
+            orm.open_until = None
+            orm.half_open_claimed_at = None
+            orm.last_success_at = current
+            orm.updated_at = current
+            db.commit()
+
+    def record_failure(
+        self,
+        *,
+        provider: str,
+        operation: str,
+        failure_threshold: int,
+        recovery_timeout_seconds: float,
+        failure_class: str | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        current = _normalize_breaker_args(
+            provider=provider,
+            operation=operation,
+            failure_threshold=failure_threshold,
+            recovery_timeout_seconds=recovery_timeout_seconds,
+            now=now,
+        )
+        with self.session_factory() as db:
+            orm = self._require_for_update(
+                db,
+                provider=provider,
+                operation=operation,
+                failure_threshold=failure_threshold,
+                recovery_timeout_seconds=recovery_timeout_seconds,
+                now=current,
+            )
+            orm.last_failure_at = current
+            orm.last_failure_class = failure_class
+            if orm.state == "half_open":
+                _open_breaker(orm, now=current, recovery_timeout_seconds=recovery_timeout_seconds)
+            else:
+                orm.failure_count += 1
+                if orm.failure_count >= failure_threshold:
+                    _open_breaker(orm, now=current, recovery_timeout_seconds=recovery_timeout_seconds)
+            orm.updated_at = current
+            db.commit()
+
+    def reset(self, *, provider: str, operation: str) -> None:
+        with self.session_factory() as db:
+            orm = db.get(ProviderCircuitBreakerORM, (provider, operation))
+            if orm is None:
+                return
+            now = _utc_now()
+            orm.state = "closed"
+            orm.failure_count = 0
+            orm.opened_at = None
+            orm.open_until = None
+            orm.half_open_claimed_at = None
+            orm.updated_at = now
+            db.commit()
+
+    def _require_for_update(
+        self,
+        db: DbSession,
+        *,
+        provider: str,
+        operation: str,
+        failure_threshold: int,
+        recovery_timeout_seconds: float,
+        now: datetime,
+    ) -> ProviderCircuitBreakerORM:
+        db.execute(
+            pg_insert(ProviderCircuitBreakerORM)
+            .values(
+                provider=provider,
+                operation=operation,
+                state="closed",
+                failure_count=0,
+                failure_threshold=failure_threshold,
+                recovery_timeout_seconds=recovery_timeout_seconds,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    ProviderCircuitBreakerORM.provider,
+                    ProviderCircuitBreakerORM.operation,
+                ]
+            )
+        )
+        orm = (
+            db.execute(
+                select(ProviderCircuitBreakerORM)
+                .where(
+                    ProviderCircuitBreakerORM.provider == provider,
+                    ProviderCircuitBreakerORM.operation == operation,
+                )
+                .with_for_update()
+            )
+            .scalars()
+            .one()
+        )
+        orm.failure_threshold = failure_threshold
+        orm.recovery_timeout_seconds = recovery_timeout_seconds
+        return orm
 
 
 class PostgresArxivMetadataCacheRepository:
@@ -1943,6 +2138,7 @@ def clear_foundation_tables(db: DbSession) -> None:
     db.execute(delete(BlobReferenceORM))
     db.execute(delete(BlobArtifactORM))
     db.execute(delete(WorkflowJobORM))
+    db.execute(delete(ProviderCircuitBreakerORM))
     db.execute(delete(ProviderRateLimitORM))
     db.execute(delete(ArxivMetadataCacheORM))
     db.execute(delete(ComparisonArtifactORM))
@@ -1964,3 +2160,50 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _normalize_breaker_args(
+    *,
+    provider: str,
+    operation: str,
+    failure_threshold: int,
+    recovery_timeout_seconds: float,
+    now: datetime | None,
+) -> datetime:
+    if not provider:
+        raise ValueError("provider must not be empty.")
+    if not operation:
+        raise ValueError("operation must not be empty.")
+    if failure_threshold <= 0:
+        raise ValueError("failure_threshold must be positive.")
+    if recovery_timeout_seconds <= 0:
+        raise ValueError("recovery_timeout_seconds must be positive.")
+    current = now or _utc_now()
+    return _as_utc(current)
+
+
+def _open_breaker(
+    orm: ProviderCircuitBreakerORM,
+    *,
+    now: datetime,
+    recovery_timeout_seconds: float,
+) -> None:
+    orm.state = "open"
+    orm.opened_at = now
+    orm.open_until = now + timedelta(seconds=recovery_timeout_seconds)
+    orm.half_open_claimed_at = None
+
+
+def _breaker_decision(
+    orm: ProviderCircuitBreakerORM,
+    *,
+    allowed: bool,
+    retry_after_seconds: float = 0.0,
+) -> ProviderCircuitBreakerDecision:
+    return ProviderCircuitBreakerDecision(
+        provider=orm.provider,
+        operation=orm.operation,
+        allowed=allowed,
+        state=orm.state,
+        retry_after_seconds=max(retry_after_seconds, 0.0),
+    )

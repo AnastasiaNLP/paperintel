@@ -4,6 +4,7 @@ from typing import Any
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -266,6 +267,48 @@ class ProviderRateLimitORM(TimestampMixin, Base):
         nullable=False,
         index=True,
     )
+
+
+class ProviderCircuitBreakerORM(TimestampMixin, Base):
+    __tablename__ = "provider_circuit_breakers"
+    __table_args__ = (
+        CheckConstraint(
+            "state in ('closed', 'open', 'half_open')",
+            name="ck_provider_circuit_breakers_state",
+        ),
+        CheckConstraint(
+            "failure_count >= 0",
+            name="ck_provider_circuit_breakers_failure_count_nonnegative",
+        ),
+    )
+
+    provider: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(128), primary_key=True)
+    state: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="closed",
+        server_default="closed",
+        index=True,
+    )
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failure_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+    recovery_timeout_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    open_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    half_open_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_failure_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_failure_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class BlobArtifactORM(TimestampMixin, Base):

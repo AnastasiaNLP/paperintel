@@ -87,8 +87,9 @@ process-local limiting.
 
 ## Circuit Breakers
 
-PaperIntel uses in-memory circuit breakers for external API health. Breaker
-state is process-local and resets when the process restarts.
+PaperIntel supports Postgres-backed circuit breakers for external API health in
+REST and worker processes created by the application factory. Breaker rows are
+keyed by provider and operation in `provider_circuit_breakers`.
 
 Current parameters:
 
@@ -97,10 +98,18 @@ Current parameters:
 | arXiv | 5 consecutive external failures | 120 seconds | HTTP 5xx, timeouts, connection errors | 429, paper-not-found/404, local validation errors such as PDF too large |
 | Semantic Scholar | 3 consecutive external failures | 60 seconds | HTTP 5xx, timeouts, connection errors | 403, 404, 429 |
 
-When a breaker is open, calls fail fast with `CircuitBreakerOpenError` instead
-of repeatedly calling a known-unhealthy upstream service. After the recovery
-timeout, one half-open probe is allowed. A reachable non-fatal response closes
-the breaker; another external failure opens it again.
+arXiv metadata, download, and discovery search share the `arxiv/api` breaker
+key. Semantic Scholar enrichment uses `semantic_scholar/api`. When a breaker is
+open, calls fail fast internally with `CircuitBreakerOpenError` instead of
+repeatedly calling a known-unhealthy upstream service. Public/job output must
+surface this as `failure_class=provider_unavailable` with neutral text, not
+internal breaker wording.
+
+After the recovery timeout, one shared half-open probe is allowed. Other
+processes continue to receive open decisions until the probe records success or
+failure. A reachable non-fatal response closes the breaker; another external
+failure opens it again. Direct module usage without factory wiring falls back to
+the in-memory process-local breaker.
 
 ## Graceful Degradation
 
@@ -130,8 +139,9 @@ breaker is open, ingestion continues without citation enrichment.
 
 ## Operational Notes
 
-- Process-local limiters and breakers are appropriate for the current local and
-  early-OSS deployment shape. They are not a distributed coordination layer.
+- Process-local limiters and breakers are direct-module fallback modes. Factory
+  created REST/worker processes use Postgres coordination for arXiv and
+  Semantic Scholar.
 - The workflow worker should be run conservatively when many jobs use arXiv URLs.
 - Worker retry decisions use the shared taxonomy in `services.provider_policy`.
 - For reproducible evaluation, prefer local PDFs plus golden metadata fallback
@@ -144,8 +154,6 @@ breaker is open, ingestion continues without citation enrichment.
 
 Deferred work:
 
-- persistent or shared circuit breaker state if multi-process coordination is
-  needed;
 - explicit `force_refresh` for arXiv metadata cache entries;
 - richer provider observability and standardized trace labels;
 - distributed resilience coverage for LLM and embedding providers after

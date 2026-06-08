@@ -5,6 +5,7 @@ import httpx
 from threading import Lock
 from typing import List
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from services.provider_circuit_breaker import ProviderCircuitBreaker
 from services.provider_rate_limiter import ProviderRateLimiter
 from services.provider_policy import FailureClass, classify_provider_exception
 from tools.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
@@ -21,6 +22,7 @@ _client = httpx.Client(timeout=_timeout, follow_redirects=True)
 _rate_limit_lock = Lock()
 _last_request_at = 0.0
 _provider_rate_limiter: ProviderRateLimiter | None = None
+_provider_circuit_breaker: ProviderCircuitBreaker | None = None
 _s2_breaker = CircuitBreaker(
     service_name="semantic_scholar",
     failure_threshold=3,
@@ -37,13 +39,49 @@ def configure_provider_rate_limiter(limiter: ProviderRateLimiter | None) -> None
     _provider_rate_limiter = limiter
 
 
+def configure_provider_circuit_breaker(breaker: ProviderCircuitBreaker | None) -> None:
+    global _provider_circuit_breaker
+    _provider_circuit_breaker = breaker
+
+
 def _record_s2_success() -> None:
+    if _provider_circuit_breaker is not None:
+        _provider_circuit_breaker.record_success(
+            "semantic_scholar",
+            "api",
+            failure_threshold=_s2_breaker.failure_threshold,
+            recovery_timeout_seconds=_s2_breaker.recovery_timeout_seconds,
+        )
+        return
     _s2_breaker.record_success()
 
 
 def _record_s2_failure(exc: Exception) -> None:
-    if _classify_s2_exception(exc).breaker_failure:
+    classified = _classify_s2_exception(exc)
+    if not classified.breaker_failure:
+        return
+    if _provider_circuit_breaker is not None:
+        _provider_circuit_breaker.record_failure(
+            "semantic_scholar",
+            "api",
+            failure_threshold=_s2_breaker.failure_threshold,
+            recovery_timeout_seconds=_s2_breaker.recovery_timeout_seconds,
+            failure_class=classified.failure_class.value,
+        )
+    else:
         _s2_breaker.record_failure()
+
+
+def _before_s2_request() -> None:
+    if _provider_circuit_breaker is not None:
+        _provider_circuit_breaker.before_request(
+            "semantic_scholar",
+            "api",
+            failure_threshold=_s2_breaker.failure_threshold,
+            recovery_timeout_seconds=_s2_breaker.recovery_timeout_seconds,
+        )
+        return
+    _s2_breaker.before_request()
 
 
 def _rate_limit():
@@ -171,7 +209,7 @@ def get_paper(arxiv_id: str) -> dict:
 
     t0 = time.perf_counter()
     try:
-        _s2_breaker.before_request()
+        _before_s2_request()
         response = _get(url, params=params)
         if _handle_non_retryable_status(response, arxiv_id):
             _record_s2_success()
@@ -206,7 +244,7 @@ def get_related_papers(arxiv_id: str, limit: int = 5) -> List[dict]:
 
     t0 = time.perf_counter()
     try:
-        _s2_breaker.before_request()
+        _before_s2_request()
         response = _get(S2_RECOMMENDATIONS_URL, params=params)
         latency = time.perf_counter() - t0
         logger.info(f"S2 related latency: {latency:.2f}s")

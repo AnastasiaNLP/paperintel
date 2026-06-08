@@ -91,6 +91,20 @@ class FakeRateLimiter:
         )
 
 
+class FakeCircuitBreaker:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def before_request(self, provider, operation, **kwargs):
+        self.calls.append(("before_request", provider, operation, kwargs))
+
+    def record_success(self, provider, operation, **kwargs):
+        self.calls.append(("record_success", provider, operation, kwargs))
+
+    def record_failure(self, provider, operation, **kwargs):
+        self.calls.append(("record_failure", provider, operation, kwargs))
+
+
 def _response(text=FEED, *, status_code=200):
     request = httpx.Request("GET", ARXIV_API_URL)
     return httpx.Response(status_code, text=text, request=request)
@@ -130,6 +144,38 @@ def test_search_uses_configured_provider_rate_limiter():
         {"provider": "arxiv", "operation": "api", "interval_seconds": 3.2}
     ]
     assert len(client.calls) == 1
+
+
+def test_search_uses_configured_provider_circuit_breaker():
+    client = FakeClient([_response()])
+    breaker = FakeCircuitBreaker()
+    provider = ArxivSearchProvider(
+        client=client,
+        rate_limit_delay=0,
+        circuit_breaker=breaker,
+    )
+
+    provider.search(ResearchQuery(query="attention transformer", max_results=5))
+
+    assert breaker.calls[0][0:3] == ("before_request", "arxiv", "api")
+    assert breaker.calls[-1][0:3] == ("record_success", "arxiv", "api")
+
+
+def test_search_records_provider_circuit_breaker_failure():
+    first = _response("server error", status_code=503)
+    client = FakeClient([first])
+    breaker = FakeCircuitBreaker()
+    provider = ArxivSearchProvider(
+        client=client,
+        rate_limit_delay=0,
+        circuit_breaker=breaker,
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        provider._request.__wrapped__(provider, "attention", max_results=5)
+
+    assert breaker.calls[-1][0:3] == ("record_failure", "arxiv", "api")
+    assert breaker.calls[-1][3]["failure_class"] == "provider_unavailable"
 
 
 def test_search_normalizes_query_whitespace():

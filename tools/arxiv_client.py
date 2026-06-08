@@ -9,6 +9,7 @@ from typing import List, Optional, Protocol
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from models.external_metadata import ArxivMetadataCacheEntry
 from models.schemas import PaperMetadata
+from services.provider_circuit_breaker import ProviderCircuitBreaker
 from services.provider_rate_limiter import ProviderRateLimiter
 from services.provider_policy import classify_provider_exception
 from tools.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
@@ -47,6 +48,7 @@ _rate_limit_lock = Lock()
 _last_request_at = 0.0
 _metadata_cache_repository: MetadataCacheRepository | None = None
 _provider_rate_limiter: ProviderRateLimiter | None = None
+_provider_circuit_breaker: ProviderCircuitBreaker | None = None
 _arxiv_breaker = CircuitBreaker(
     service_name="arxiv",
     failure_threshold=5,
@@ -68,6 +70,11 @@ def configure_provider_rate_limiter(limiter: ProviderRateLimiter | None) -> None
     _provider_rate_limiter = limiter
 
 
+def configure_provider_circuit_breaker(breaker: ProviderCircuitBreaker | None) -> None:
+    global _provider_circuit_breaker
+    _provider_circuit_breaker = breaker
+
+
 def reset_circuit_breaker() -> None:
     _arxiv_breaker.reset()
 
@@ -77,12 +84,43 @@ def _should_retry_arxiv(exc: BaseException) -> bool:
 
 
 def _record_arxiv_success() -> None:
+    if _provider_circuit_breaker is not None:
+        _provider_circuit_breaker.record_success(
+            "arxiv",
+            "api",
+            failure_threshold=_arxiv_breaker.failure_threshold,
+            recovery_timeout_seconds=_arxiv_breaker.recovery_timeout_seconds,
+        )
+        return
     _arxiv_breaker.record_success()
 
 
 def _record_arxiv_failure(exc: Exception) -> None:
-    if _classify_arxiv_exception(exc).breaker_failure:
+    classified = _classify_arxiv_exception(exc)
+    if not classified.breaker_failure:
+        return
+    if _provider_circuit_breaker is not None:
+        _provider_circuit_breaker.record_failure(
+            "arxiv",
+            "api",
+            failure_threshold=_arxiv_breaker.failure_threshold,
+            recovery_timeout_seconds=_arxiv_breaker.recovery_timeout_seconds,
+            failure_class=classified.failure_class.value,
+        )
+    else:
         _arxiv_breaker.record_failure()
+
+
+def _before_arxiv_request() -> None:
+    if _provider_circuit_breaker is not None:
+        _provider_circuit_breaker.before_request(
+            "arxiv",
+            "api",
+            failure_threshold=_arxiv_breaker.failure_threshold,
+            recovery_timeout_seconds=_arxiv_breaker.recovery_timeout_seconds,
+        )
+        return
+    _arxiv_breaker.before_request()
 
 
 def _classify_arxiv_exception(exc: BaseException):
@@ -256,7 +294,7 @@ def search_papers(query: str, max_results: int = 10) -> List[dict]:
     }
 
     try:
-        _arxiv_breaker.before_request()
+        _before_arxiv_request()
         t0 = time.perf_counter()
         response = _get(ARXIV_API_URL, params=params)
         response.raise_for_status()
@@ -288,7 +326,7 @@ def get_metadata(arxiv_id: str) -> PaperMetadata:
     params = {"id_list": arxiv_id}
 
     try:
-        _arxiv_breaker.before_request()
+        _before_arxiv_request()
         t0 = time.perf_counter()
         response = _get(ARXIV_API_URL, params=params)
         response.raise_for_status()
@@ -342,7 +380,7 @@ def download_pdf(arxiv_id: str, save_dir: str = "tmp") -> str:
     logger.info(f"Downloading PDF: {url}")
 
     try:
-        _arxiv_breaker.before_request()
+        _before_arxiv_request()
         t0 = time.perf_counter()
         with _stream("GET", url, follow_redirects=True) as response:
             response.raise_for_status()

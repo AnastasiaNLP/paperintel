@@ -22,6 +22,20 @@ class FakeRateLimiter:
         )
 
 
+class FakeCircuitBreaker:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def before_request(self, provider, operation, **kwargs):
+        self.calls.append(("before_request", provider, operation, kwargs))
+
+    def record_success(self, provider, operation, **kwargs):
+        self.calls.append(("record_success", provider, operation, kwargs))
+
+    def record_failure(self, provider, operation, **kwargs):
+        self.calls.append(("record_failure", provider, operation, kwargs))
+
+
 FEED = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>
@@ -75,11 +89,13 @@ class FakeMetadataCache:
 def reset_arxiv_client():
     arxiv_client.configure_metadata_cache(None)
     arxiv_client.configure_provider_rate_limiter(None)
+    arxiv_client.configure_provider_circuit_breaker(None)
     arxiv_client._last_request_at = 0.0
     arxiv_client.reset_circuit_breaker()
     yield
     arxiv_client.configure_metadata_cache(None)
     arxiv_client.configure_provider_rate_limiter(None)
+    arxiv_client.configure_provider_circuit_breaker(None)
     arxiv_client._last_request_at = 0.0
     arxiv_client.reset_circuit_breaker()
 
@@ -228,6 +244,32 @@ def test_get_metadata_opens_breaker_after_repeated_external_failures(monkeypatch
 
     assert len(calls) == 5
     assert len(cache.errors) == 5
+
+
+def test_get_metadata_uses_configured_provider_circuit_breaker(monkeypatch):
+    breaker = FakeCircuitBreaker()
+    arxiv_client.configure_provider_circuit_breaker(breaker)
+    monkeypatch.setattr(arxiv_client, "_get", lambda url, *, params=None: _response())
+
+    metadata = arxiv_client.get_metadata.__wrapped__("1706.03762")
+
+    assert metadata.title == "Attention Is All You Need"
+    assert breaker.calls[0][0:3] == ("before_request", "arxiv", "api")
+    assert breaker.calls[-1][0:3] == ("record_success", "arxiv", "api")
+
+
+def test_external_failure_records_configured_provider_circuit_breaker(monkeypatch):
+    breaker = FakeCircuitBreaker()
+    arxiv_client.configure_provider_circuit_breaker(breaker)
+    request = httpx.Request("GET", arxiv_client.ARXIV_API_URL)
+    response = httpx.Response(500, request=request)
+    monkeypatch.setattr(arxiv_client, "_get", lambda url, *, params=None: response)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        arxiv_client.get_metadata.__wrapped__("1706.03762")
+
+    assert breaker.calls[-1][0:3] == ("record_failure", "arxiv", "api")
+    assert breaker.calls[-1][3]["failure_class"] == "provider_unavailable"
 
 
 def test_rate_limit_status_is_retryable_but_not_breaker_failure():

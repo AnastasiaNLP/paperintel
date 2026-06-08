@@ -13,6 +13,7 @@ from tenacity import (
 )
 
 from models.discovery import RawSearchResult, ResearchQuery
+from services.provider_circuit_breaker import ProviderCircuitBreaker
 from services.provider_rate_limiter import ProviderRateLimiter
 from services.provider_policy import classify_provider_exception
 
@@ -23,6 +24,8 @@ ARXIV_API_URL = "https://export.arxiv.org/api/query"
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 MAX_ARXIV_RESULTS = 25
 RATE_LIMIT_DELAY = 0.4
+BREAKER_FAILURE_THRESHOLD = 5
+BREAKER_RECOVERY_TIMEOUT_SECONDS = 120.0
 
 
 def _should_retry(exc: BaseException) -> bool:
@@ -47,6 +50,7 @@ class ArxivSearchProvider:
         max_results_cap: int = MAX_ARXIV_RESULTS,
         rate_limit_delay: float = RATE_LIMIT_DELAY,
         rate_limiter: ProviderRateLimiter | None = None,
+        circuit_breaker: ProviderCircuitBreaker | None = None,
     ) -> None:
         self.client = client or httpx.Client(
             timeout=httpx.Timeout(timeout, connect=5.0),
@@ -55,6 +59,7 @@ class ArxivSearchProvider:
         self.max_results_cap = max_results_cap
         self.rate_limit_delay = rate_limit_delay
         self.rate_limiter = rate_limiter
+        self.circuit_breaker = circuit_breaker
 
     def search(self, query: ResearchQuery) -> list[RawSearchResult]:
         normalized_query = normalize_query(query.query)
@@ -70,12 +75,18 @@ class ArxivSearchProvider:
             "sortBy": "submittedDate",
             "sortOrder": "descending",
         }
-        self._acquire_rate_limit()
-        t0 = time.perf_counter()
-        response = self.client.get(ARXIV_API_URL, params=params)
-        latency = time.perf_counter() - t0
-        logger.info("arXiv search latency: %.2fs", latency)
-        response.raise_for_status()
+        self._before_request()
+        try:
+            self._acquire_rate_limit()
+            t0 = time.perf_counter()
+            response = self.client.get(ARXIV_API_URL, params=params)
+            latency = time.perf_counter() - t0
+            logger.info("arXiv search latency: %.2fs", latency)
+            response.raise_for_status()
+        except Exception as exc:
+            self._record_failure(exc)
+            raise
+        self._record_success()
         return response
 
     def _acquire_rate_limit(self) -> None:
@@ -87,6 +98,35 @@ class ArxivSearchProvider:
             )
         elif self.rate_limit_delay > 0:
             time.sleep(self.rate_limit_delay)
+
+    def _before_request(self) -> None:
+        if self.circuit_breaker is not None:
+            self.circuit_breaker.before_request(
+                "arxiv",
+                "api",
+                failure_threshold=BREAKER_FAILURE_THRESHOLD,
+                recovery_timeout_seconds=BREAKER_RECOVERY_TIMEOUT_SECONDS,
+            )
+
+    def _record_success(self) -> None:
+        if self.circuit_breaker is not None:
+            self.circuit_breaker.record_success(
+                "arxiv",
+                "api",
+                failure_threshold=BREAKER_FAILURE_THRESHOLD,
+                recovery_timeout_seconds=BREAKER_RECOVERY_TIMEOUT_SECONDS,
+            )
+
+    def _record_failure(self, exc: Exception) -> None:
+        classified = classify_provider_exception("arxiv", "search", exc)
+        if self.circuit_breaker is not None and classified.breaker_failure:
+            self.circuit_breaker.record_failure(
+                "arxiv",
+                "api",
+                failure_threshold=BREAKER_FAILURE_THRESHOLD,
+                recovery_timeout_seconds=BREAKER_RECOVERY_TIMEOUT_SECONDS,
+                failure_class=classified.failure_class.value,
+            )
 
     def close(self) -> None:
         self.client.close()

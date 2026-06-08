@@ -11,10 +11,12 @@ from tools.circuit_breaker import CircuitBreakerOpenError
 def reset_s2_client():
     s2._last_request_at = 0.0
     s2.configure_provider_rate_limiter(None)
+    s2.configure_provider_circuit_breaker(None)
     s2.reset_circuit_breaker()
     yield
     s2._last_request_at = 0.0
     s2.configure_provider_rate_limiter(None)
+    s2.configure_provider_circuit_breaker(None)
     s2.reset_circuit_breaker()
 
 
@@ -40,6 +42,20 @@ class FakeRateLimiter:
                 "interval_seconds": interval_seconds,
             }
         )
+
+
+class FakeCircuitBreaker:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def before_request(self, provider, operation, **kwargs):
+        self.calls.append(("before_request", provider, operation, kwargs))
+
+    def record_success(self, provider, operation, **kwargs):
+        self.calls.append(("record_success", provider, operation, kwargs))
+
+    def record_failure(self, provider, operation, **kwargs):
+        self.calls.append(("record_failure", provider, operation, kwargs))
 
 
 def test_get_paper_sends_api_key_header(monkeypatch):
@@ -171,6 +187,36 @@ def test_get_paper_opens_breaker_after_repeated_retryable_failures(monkeypatch):
         s2.get_paper.__wrapped__("1706.03762")
 
     assert len(client.calls) == 3
+
+
+def test_get_paper_uses_configured_provider_circuit_breaker(monkeypatch):
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://example.com"),
+        json={"paperId": "paper-1", "citationCount": 1},
+    )
+    breaker = FakeCircuitBreaker()
+    monkeypatch.setattr(s2, "_client", FakeClient(response))
+    monkeypatch.setattr(s2, "_rate_limit", lambda: None)
+    s2.configure_provider_circuit_breaker(breaker)
+
+    assert s2.get_paper("1706.03762")["citation_count"] == 1
+    assert breaker.calls[0][0:3] == ("before_request", "semantic_scholar", "api")
+    assert breaker.calls[-1][0:3] == ("record_success", "semantic_scholar", "api")
+
+
+def test_s2_external_failure_records_configured_provider_circuit_breaker(monkeypatch):
+    response = httpx.Response(500, request=httpx.Request("GET", "https://example.com"))
+    breaker = FakeCircuitBreaker()
+    monkeypatch.setattr(s2, "_client", FakeClient(response))
+    monkeypatch.setattr(s2, "_rate_limit", lambda: None)
+    s2.configure_provider_circuit_breaker(breaker)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        s2.get_paper.__wrapped__("1706.03762")
+
+    assert breaker.calls[-1][0:3] == ("record_failure", "semantic_scholar", "api")
+    assert breaker.calls[-1][3]["failure_class"] == "provider_unavailable"
 
 
 def test_s2_rate_limit_status_does_not_open_breaker(monkeypatch):

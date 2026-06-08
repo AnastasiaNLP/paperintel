@@ -23,6 +23,7 @@ from storage.db import make_engine, make_session_factory
 from storage.models import (
     BlobArtifactORM,
     BlobReferenceORM,
+    ProviderCircuitBreakerORM,
     ProviderRateLimitORM,
     WorkflowJobORM,
 )
@@ -38,6 +39,7 @@ from storage.repositories import (
     PostgresPaperChunkRepository,
     PostgresPaperWorkspaceRepository,
     PostgresPdfUploadRepository,
+    PostgresProviderCircuitBreakerRepository,
     PostgresProviderRateLimitRepository,
     PostgresSearchCandidateRepository,
     PostgresSessionStore,
@@ -1357,6 +1359,192 @@ def test_postgres_provider_rate_limit_repository_coordinates_instances(
 
     assert delays == pytest.approx([0, 1.2])
     assert slots == [now, now + timedelta(seconds=1.2)]
+
+
+def test_postgres_provider_circuit_breaker_opens_and_denies_across_instances(
+    session_factory,
+):
+    first = PostgresProviderCircuitBreakerRepository(session_factory)
+    second = PostgresProviderCircuitBreakerRepository(session_factory)
+    now = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
+
+    assert first.before_request(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=2,
+        recovery_timeout_seconds=120,
+        now=now,
+    ).allowed is True
+    first.record_failure(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=2,
+        recovery_timeout_seconds=120,
+        failure_class="provider_unavailable",
+        now=now,
+    )
+    first.record_failure(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=2,
+        recovery_timeout_seconds=120,
+        failure_class="provider_unavailable",
+        now=now + timedelta(seconds=1),
+    )
+
+    decision = second.before_request(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=2,
+        recovery_timeout_seconds=120,
+        now=now + timedelta(seconds=2),
+    )
+
+    assert decision.allowed is False
+    assert decision.state == "open"
+    assert decision.retry_after_seconds == pytest.approx(119)
+
+
+def test_postgres_provider_circuit_breaker_allows_one_half_open_probe(
+    session_factory,
+):
+    repository = PostgresProviderCircuitBreakerRepository(session_factory)
+    opened_at = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
+    probe_at = opened_at + timedelta(seconds=61)
+
+    repository.record_failure(
+        provider="semantic_scholar",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=60,
+        failure_class="provider_unavailable",
+        now=opened_at,
+    )
+
+    first = repository.before_request(
+        provider="semantic_scholar",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=60,
+        now=probe_at,
+    )
+    second = repository.before_request(
+        provider="semantic_scholar",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=60,
+        now=probe_at,
+    )
+
+    assert first.allowed is True
+    assert first.state == "half_open"
+    assert second.allowed is False
+    assert second.state == "half_open"
+
+
+def test_postgres_provider_circuit_breaker_half_open_probe_is_shared_under_concurrency(
+    session_factory,
+):
+    repository = PostgresProviderCircuitBreakerRepository(session_factory)
+    opened_at = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
+    probe_at = opened_at + timedelta(seconds=61)
+    repository.record_failure(
+        provider="semantic_scholar",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=60,
+        failure_class="provider_unavailable",
+        now=opened_at,
+    )
+    barrier = Barrier(2)
+
+    def before_request():
+        instance = PostgresProviderCircuitBreakerRepository(session_factory)
+        barrier.wait(timeout=5)
+        return instance.before_request(
+            provider="semantic_scholar",
+            operation="api",
+            failure_threshold=1,
+            recovery_timeout_seconds=60,
+            now=probe_at,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        decisions = list(executor.map(lambda _: before_request(), range(2)))
+
+    assert sorted(decision.allowed for decision in decisions) == [False, True]
+    assert {decision.state for decision in decisions} == {"half_open"}
+
+
+def test_postgres_provider_circuit_breaker_success_closes_and_resets(
+    session_factory,
+):
+    repository = PostgresProviderCircuitBreakerRepository(session_factory)
+    now = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
+    repository.record_failure(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=120,
+        failure_class="provider_unavailable",
+        now=now,
+    )
+
+    repository.record_success(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=120,
+        now=now + timedelta(seconds=121),
+    )
+
+    with session_factory() as db:
+        row = db.get(ProviderCircuitBreakerORM, ("arxiv", "api"))
+        assert row is not None
+        assert row.state == "closed"
+        assert row.failure_count == 0
+        assert row.open_until is None
+
+
+def test_postgres_provider_circuit_breaker_half_open_failure_reopens(
+    session_factory,
+):
+    repository = PostgresProviderCircuitBreakerRepository(session_factory)
+    now = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
+    repository.record_failure(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=120,
+        failure_class="provider_unavailable",
+        now=now,
+    )
+    repository.before_request(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=120,
+        now=now + timedelta(seconds=121),
+    )
+    repository.record_failure(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=120,
+        failure_class="provider_unavailable",
+        now=now + timedelta(seconds=122),
+    )
+
+    decision = repository.before_request(
+        provider="arxiv",
+        operation="api",
+        failure_threshold=1,
+        recovery_timeout_seconds=120,
+        now=now + timedelta(seconds=123),
+    )
+
+    assert decision.allowed is False
+    assert decision.state == "open"
 
 
 def _stored_pdf(*, content_hash: str = "a" * 64) -> StoredBlobObject:
