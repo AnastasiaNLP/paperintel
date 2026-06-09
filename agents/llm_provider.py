@@ -5,6 +5,7 @@ import anthropic
 import httpx
 
 from config.settings import settings
+from services.observability import emit_event
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,14 @@ def call_text_llm(
                 len(raw or ""),
                 model,
             )
+            emit_event(
+                logger,
+                "llm.call.completed",
+                provider="openai",
+                model=model,
+                result_size=len(raw or ""),
+                timeout_seconds=timeout_seconds,
+            )
             return raw, None
         except httpx.HTTPStatusError as exc:
             response = exc.response
@@ -112,6 +121,14 @@ def call_text_llm(
                 headers,
                 body,
             )
+            emit_event(
+                logger,
+                "llm.call.failed",
+                level=logging.ERROR,
+                provider="openai",
+                model=model,
+                timeout_seconds=timeout_seconds,
+            )
             return None, (
                 f"{context_label} call failed: status="
                 f"{response.status_code if response is not None else 'unknown'} "
@@ -124,9 +141,25 @@ def call_text_llm(
                 model,
                 timeout,
             )
+            emit_event(
+                logger,
+                "llm.call.timeout",
+                level=logging.WARNING,
+                provider="openai",
+                model=model,
+                timeout_seconds=timeout,
+            )
             return None, f"{context_label} call timed out"
         except Exception as exc:
             logger.exception("%s call failed via OpenAI", context_label)
+            emit_event(
+                logger,
+                "llm.call.failed",
+                level=logging.ERROR,
+                provider="openai",
+                model=model,
+                timeout_seconds=timeout_seconds,
+            )
             return None, f"{context_label} call failed: {exc}"
 
     model = requested_model or settings.haiku_model
@@ -149,6 +182,14 @@ def call_text_llm(
             len(raw or ""),
             model,
         )
+        emit_event(
+            logger,
+            "llm.call.completed",
+            provider="anthropic",
+            model=model,
+            result_size=len(raw or ""),
+            timeout_seconds=timeout_seconds,
+        )
         return raw, None
     except (anthropic.APITimeoutError, httpx.TimeoutException, TimeoutError):
         logger.warning(
@@ -157,7 +198,23 @@ def call_text_llm(
             model,
             timeout_seconds,
         )
+        emit_event(
+            logger,
+            "llm.call.timeout",
+            level=logging.WARNING,
+            provider="anthropic",
+            model=model,
+            timeout_seconds=timeout_seconds,
+        )
         return None, f"{context_label} call timed out"
     except Exception as exc:
         logger.exception("%s call failed via Anthropic", context_label)
+        emit_event(
+            logger,
+            "llm.call.failed",
+            level=logging.ERROR,
+            provider="anthropic",
+            model=model,
+            timeout_seconds=timeout_seconds,
+        )
         return None, f"{context_label} call failed: {exc}"

@@ -25,6 +25,7 @@ from services.blob_store import (
     BlobSizeLimitError,
     BlobStoreUnavailableError,
 )
+from services.observability import emit_event
 from services.paperintel_service import PaperIntelService
 from services.provider_policy import classify_provider_exception
 from services.qdrant_store import QdrantDependencyError
@@ -207,6 +208,16 @@ class WorkflowWorker:
             job.kind,
             self.worker_id,
         )
+        emit_event(
+            LOGGER,
+            "workflow.job.started",
+            job_id=job.id,
+            session_id=job.session_id,
+            kind=job.kind,
+            worker_id=self.worker_id,
+            attempts=job.attempts,
+            max_attempts=job.max_attempts,
+        )
         cancellation_callback = lambda: self._raise_if_canceled(job.id)
         try:
             cancellation_callback()
@@ -235,6 +246,18 @@ class WorkflowWorker:
                 job.id,
                 job.kind,
                 self.worker_id,
+            )
+            emit_event(
+                LOGGER,
+                "workflow.job.failed",
+                job_id=job.id,
+                session_id=job.session_id,
+                kind=job.kind,
+                worker_id=self.worker_id,
+                status="canceled",
+                retryable=False,
+                attempts=job.attempts,
+                max_attempts=job.max_attempts,
             )
             return canceled
         except WorkflowJobLeaseLostError as exc:
@@ -272,6 +295,20 @@ class WorkflowWorker:
                 job.attempts,
                 job.max_attempts,
             )
+            emit_event(
+                LOGGER,
+                "workflow.job.failed",
+                level=logging.ERROR,
+                job_id=job.id,
+                session_id=job.session_id,
+                kind=job.kind,
+                worker_id=self.worker_id,
+                failure_class=retry_decision.failure_class,
+                retryable=will_retry,
+                retry_after_seconds=retry_decision.retry_after_seconds,
+                attempts=job.attempts,
+                max_attempts=job.max_attempts,
+            )
             return failed
 
         try:
@@ -287,12 +324,34 @@ class WorkflowWorker:
                 job.kind,
                 self.worker_id,
             )
+            emit_event(
+                LOGGER,
+                "workflow.job.failed",
+                job_id=job.id,
+                session_id=job.session_id,
+                kind=job.kind,
+                worker_id=self.worker_id,
+                status="canceled",
+                retryable=False,
+                attempts=job.attempts,
+                max_attempts=job.max_attempts,
+            )
             return succeeded
         LOGGER.info(
             "Workflow job succeeded: id=%s kind=%s worker_id=%s",
             job.id,
             job.kind,
             self.worker_id,
+        )
+        emit_event(
+            LOGGER,
+            "workflow.job.completed",
+            job_id=job.id,
+            session_id=job.session_id,
+            kind=job.kind,
+            worker_id=self.worker_id,
+            attempts=job.attempts,
+            max_attempts=job.max_attempts,
         )
         return succeeded
 

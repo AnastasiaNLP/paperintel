@@ -9,17 +9,17 @@ PaperIntel observability has three goals:
 - keep public/API/MCP output neutral and free of secrets, raw prompts, raw PDF
   text, tracebacks, and internal graph details.
 
-This document is the OBS.0 contract and audit. It does not introduce a metrics
-backend, dashboard, or tracing vendor requirement.
+This document defines the public observability contract. It does not introduce
+a metrics backend, dashboard, or tracing vendor requirement.
 
 ## Current State
 
 | Surface | Current behavior | Gap |
 | --- | --- | --- |
 | `AgentRun` | Durable per-agent execution record with `session_id`, `job_id`, `agent_name`, `model`, lifecycle status, `termination_reason`, counts, refs, and `details`. | Trace correlation is not standardized. Raw prompt/output policy is documented but not centrally enforced. |
-| Agent policies | Agents record `details.policy_applied`, pass `AgentRuntimePolicy.timeout_seconds` to LLM calls, and normalize final timeout outcomes for production-shaped agent runs. | Older pipeline-style agents that do not use the production `AgentRun` policy contract may still need cleanup. |
-| LLM provider | `call_text_llm()` logs provider/model and response length or exception, and accepts `timeout_seconds` for bounded provider calls. | No canonical event names, duration field, or trace/correlation payload. |
-| Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; logs include attempts and retry metadata. | Event names are log text rather than a shared structured event contract. |
+| Agent policies | Agents record `details.policy_applied`, pass `AgentRuntimePolicy.timeout_seconds` to LLM calls, and normalize final timeout outcomes for production-shaped agent runs. | Older agents that do not use the production `AgentRun` policy contract may still need cleanup. |
+| LLM provider | `call_text_llm()` logs provider/model and emits `llm.call.completed`, `llm.call.failed`, and `llm.call.timeout` events. | No duration field or trace/correlation payload yet. |
+| Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; worker emits started/completed/failed events. | Event coverage is still limited to worker and LLM provider surfaces. |
 | Health | Reports Postgres, provider resilience store, Qdrant, LLM/embedding config, and blob store. | No metrics export. |
 | REST/MCP | Public result payloads intentionally omit raw `AgentRun` internals and preserve neutral failure classes/metadata where needed. | Correlation IDs are not consistently surfaced for every async/sync operation. |
 | Live smoke tests | Print stable `LIVE_*` markers for run/session/job/resource IDs and cleanup. | Marker taxonomy is test-specific, not a general event contract. |
@@ -44,7 +44,7 @@ Public REST/MCP responses must not include:
 - provider API keys, object-store credentials, database URLs, or signed URLs
 - Python tracebacks
 - raw provider response bodies when they may contain request details
-- internal graph stage wording or circuit-breaker implementation wording
+- internal workflow implementation wording or circuit-breaker implementation wording
 
 Operational logs and persisted diagnostics may include technical details when
 they are needed for debugging, but they must still avoid secrets and raw
@@ -68,27 +68,37 @@ metrics, and runbook output.
 | `failure_class` | Provider-neutral failure class. | Yes for failures/jobs | Yes | Jobs and structured errors |
 | `retryable` | Whether the current job will actually retry. | Yes for jobs | Yes | Workflow job error JSON |
 | `retry_after_seconds` | Provider/shared-breaker delay hint. | Yes for jobs | Yes | Workflow job error JSON |
-| `duration_ms` | Runtime duration for an operation. | No by default | Yes | Future |
+| `operation` | Provider or dependency operation name. | No by default | Yes | Diagnostics where relevant |
+| `kind` | Async workflow job kind. | No by default | Yes | Workflow jobs |
+| `worker_id` | Worker process identifier for async job execution. | No | Yes | Workflow job diagnostics |
+| `attempts` | Current async job attempt count. | Yes for jobs | Yes | Workflow job error JSON and diagnostics |
+| `max_attempts` | Async job retry budget. | No by default | Yes | Workflow job diagnostics |
+| `timeout_seconds` | Configured provider-call timeout. | No by default | Yes | Provider-call diagnostics |
+| `status` | Stable lifecycle status. | Yes when relevant | Yes | Sessions, jobs, agent runs |
+| `result_size` | Size of a generated or returned result, usually character count. | No by default | Yes | Provider-call diagnostics |
+| `duration_ms` | Runtime duration for an operation when measured. | No by default | Yes | Future |
 | `trace_id` | External trace/correlation id. | No by default | Yes | Future optional AgentRun details |
 
 ## Event Taxonomy
 
-Future structured logs and trace spans should use these event names instead of
-ad hoc prose. OBS.0 only defines the vocabulary.
+Structured logs and trace spans should use these event names instead of ad hoc
+prose. The current logging helper allowlists event fields and drops prompt,
+document, traceback, and secret-like fields.
 
 | Event | Required fields |
 | --- | --- |
 | `session.created` | `session_id` |
 | `turn.appended` | `session_id`, `turn_id` |
-| `workflow.job.started` | `job_id`, `session_id`, job kind |
-| `workflow.job.completed` | `job_id`, `session_id`, duration |
-| `workflow.job.failed` | `job_id`, `session_id`, `failure_class`, `retryable`, attempts |
+| `workflow.job.started` | `job_id`, `session_id`, `kind`, `worker_id`, `attempts`, `max_attempts` |
+| `workflow.job.completed` | `job_id`, `session_id`, `kind`, `worker_id`, `attempts`, `max_attempts` |
+| `workflow.job.failed` | `job_id`, `session_id`, `kind`, `worker_id`, `failure_class`, `retryable`, `attempts`, `max_attempts` |
 | `agent.started` | `agent_run_id`, `agent_name`, `session_id`, optional `job_id` |
 | `agent.completed` | `agent_run_id`, `agent_name`, `duration_ms`, `termination_reason` |
 | `agent.failed` | `agent_run_id`, `agent_name`, `failure_class` or error category |
 | `llm.call.started` | `provider`, `model`, `agent_name` or `context_label` |
-| `llm.call.completed` | `provider`, `model`, `duration_ms`, output size |
-| `llm.call.failed` | `provider`, `model`, `failure_class` or error category |
+| `llm.call.completed` | `provider`, `model`, `result_size`, optional `timeout_seconds` |
+| `llm.call.failed` | `provider`, `model`, `failure_class` or error category, optional `timeout_seconds` |
+| `llm.call.timeout` | `provider`, `model`, `timeout_seconds` |
 | `retrieval.search.completed` | `session_id`, optional `paper_id`, result count, duration |
 | `provider.failure` | `provider`, operation, `failure_class`, retryable decision |
 | `cache.reused_analysis` | `session_id`, `paper_id`, reuse source category |
@@ -139,24 +149,20 @@ It must not include prompts, full user content, provider secrets, or raw provide
 exception text. Where an `AgentRun` records a timeout as the final outcome, use
 `termination_reason="timeout"` rather than a generic error or fallback reason.
 
-## Backlog
+## Future Hardening
 
-OBS.1: implemented for `call_text_llm()` timeout enforcement, timeout wiring from
-production-shaped agent policies, and normalized final timeout outcomes in those
-agents.
+Timeout behavior should be standardized in older agents that do not yet use the
+production `AgentRun` policy contract.
 
-OBS.2: standardize timeout behavior in older pipeline-style agents that do not
-yet use the production `AgentRun` policy contract.
+Structured event coverage should expand beyond worker and LLM provider
+surfaces, starting with retrieval search and provider failure events.
 
-OBS.3: introduce a lightweight structured logging helper for the event taxonomy
-above, starting with worker job and LLM call events.
+Optional trace/correlation fields may be added to `AgentRun.details` without
+exposing them in default REST/MCP payloads.
 
-OBS.4: standardize optional trace/correlation fields in `AgentRun.details`
-without exposing them in default REST/MCP payloads.
+Live smoke runbooks should list expected observability markers and how to
+disable external tracing locally.
 
-OBS.5: extend live smoke runbooks to list expected observability markers and
-how to disable external tracing locally.
-
-OBS.6: evaluate metrics export only after structured events are stable. Do not
-commit to Prometheus, Grafana, or a hosted tracing system before that contract is
-implemented.
+Metrics export should be evaluated only after structured events are stable. Do
+not commit to Prometheus, Grafana, or a hosted tracing system before that
+contract is implemented.
