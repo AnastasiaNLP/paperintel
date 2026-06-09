@@ -1,3 +1,5 @@
+import sys
+from types import SimpleNamespace
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
@@ -61,24 +63,24 @@ def test_chunk_payload_contains_retrieval_and_citation_context():
     assert payload["embedding_dimensions"] == DEFAULT_EMBEDDING_DIMENSIONS
 
 
-def test_embedded_chunk_validates_vector_dimensions():
-    vector = [0.0] * DEFAULT_EMBEDDING_DIMENSIONS
+def test_embedded_chunk_accepts_non_default_vector_dimensions():
+    vector = [0.0, 1.0]
 
     embedded = EmbeddedChunk(chunk=_chunk(), vector=vector)
 
     assert embedded.vector == vector
     with pytest.raises(ValidationError):
-        EmbeddedChunk(chunk=_chunk(), vector=[0.0, 1.0])
+        EmbeddedChunk(chunk=_chunk(), vector=[])
 
 
-def test_vector_search_query_validates_vector_dimensions_and_limit():
-    vector = [0.0] * DEFAULT_EMBEDDING_DIMENSIONS
+def test_vector_search_query_accepts_non_default_dimensions_and_validates_limit():
+    vector = [0.0, 1.0]
 
     query = ChunkVectorSearchQuery(query_vector=vector, limit=3)
 
     assert query.limit == 3
     with pytest.raises(ValidationError):
-        ChunkVectorSearchQuery(query_vector=[0.0], limit=3)
+        ChunkVectorSearchQuery(query_vector=[], limit=3)
     with pytest.raises(ValidationError):
         ChunkVectorSearchQuery(query_vector=vector, limit=0)
 
@@ -89,13 +91,41 @@ def test_qdrant_store_rejects_wrong_vector_size_before_client_call():
             raise AssertionError("client should not be called")
 
     store = QdrantChunkStore(client=ClientThatShouldNotBeCalled(), vector_size=2)
-    embedded = EmbeddedChunk(
-        chunk=_chunk(),
-        vector=[0.0] * DEFAULT_EMBEDDING_DIMENSIONS,
-    )
+    embedded = EmbeddedChunk(chunk=_chunk(), vector=[0.0, 1.0, 2.0])
 
     with pytest.raises(ValueError):
         store.upsert_chunks([embedded])
+
+
+def test_qdrant_store_rejects_invalid_vector_size():
+    with pytest.raises(ValueError, match="vector_size"):
+        QdrantChunkStore(client=object(), vector_size=0)
+
+
+def test_qdrant_store_from_url_preserves_configured_vector_size(monkeypatch):
+    created = {}
+
+    class FakeQdrantClient:
+        def __init__(self, *, url, timeout):
+            created["url"] = url
+            created["timeout"] = timeout
+
+    monkeypatch.setitem(
+        sys.modules,
+        "qdrant_client",
+        SimpleNamespace(QdrantClient=FakeQdrantClient),
+    )
+
+    store = QdrantChunkStore.from_url(
+        url="http://qdrant.test",
+        collection_name="paper_chunks_custom",
+        vector_size=8,
+        timeout=2.5,
+    )
+
+    assert created == {"url": "http://qdrant.test", "timeout": 2.5}
+    assert store.collection_name == "paper_chunks_custom"
+    assert store.vector_size == 8
 
 
 def test_ensure_collection_is_idempotent_for_existing_collection():

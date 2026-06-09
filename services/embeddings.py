@@ -30,6 +30,12 @@ class OpenAIEmbeddingProvider:
     ) -> None:
         if not api_key.strip():
             raise ValueError("api_key must not be blank")
+        if not model.strip():
+            raise ValueError("model must not be blank")
+        if dimensions < 1:
+            raise ValueError("dimensions must be positive")
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
         if max_batch_size < 1:
             raise ValueError("max_batch_size must be positive")
         if max_retries < 0:

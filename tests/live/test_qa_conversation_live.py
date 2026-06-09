@@ -49,6 +49,7 @@ def test_qa_conversation_live_end_to_end():
     from sqlalchemy import select
 
     from api.chat_handler import ChatHandler
+    from config.settings import settings
     from graph import build_graph
     from graph_conversation import build_conversation_graph
     from services.embeddings import OpenAIEmbeddingProvider
@@ -81,6 +82,7 @@ def test_qa_conversation_live_end_to_end():
     vector_store = QdrantChunkStore.from_url(
         url=qdrant_url,
         collection_name=collection,
+        vector_size=settings.openai_embedding_dimensions,
         timeout=30.0,
     )
 
@@ -93,7 +95,9 @@ def test_qa_conversation_live_end_to_end():
             vector_store=vector_store,
             embedding_provider=OpenAIEmbeddingProvider(
                 api_key=os.environ["OPENAI_API_KEY"],
-                timeout=60.0,
+                model=settings.openai_embedding_model,
+                dimensions=settings.openai_embedding_dimensions,
+                timeout=settings.openai_embedding_timeout,
             ),
         )
         agent_run_persistence = PostgresAgentRunPersistence(session_factory)

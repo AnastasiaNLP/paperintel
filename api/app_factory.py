@@ -145,12 +145,18 @@ def create_paperintel_service(
         vector_store = QdrantChunkStore.from_url(
             url=qdrant_url or settings.qdrant_url,
             collection_name=qdrant_collection or settings.qdrant_collection,
+            vector_size=settings.openai_embedding_dimensions,
             timeout=settings.qdrant_timeout,
         )
         retrieval_layer = PostgresQdrantRetrievalLayer(
             chunk_repository=paper_chunk_repository,
             vector_store=vector_store,
-            embedding_provider=OpenAIEmbeddingProvider(api_key=settings.openai_api_key),
+            embedding_provider=OpenAIEmbeddingProvider(
+                api_key=settings.openai_api_key,
+                model=settings.openai_embedding_model,
+                dimensions=settings.openai_embedding_dimensions,
+                timeout=settings.openai_embedding_timeout,
+            ),
         )
     else:
         if paper_chunk_repository is None and hasattr(retrieval_layer, "chunk_repository"):

@@ -62,8 +62,20 @@ class _TextSegment:
 
 
 class ChunkingService:
-    def __init__(self, config: ChunkingConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ChunkingConfig | None = None,
+        *,
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+        embedding_dimensions: int = DEFAULT_EMBEDDING_DIMENSIONS,
+    ) -> None:
         self.config = config or ChunkingConfig()
+        if not embedding_model.strip():
+            raise ValueError("embedding_model must not be blank")
+        if embedding_dimensions < 1:
+            raise ValueError("embedding_dimensions must be positive")
+        self.embedding_model = embedding_model
+        self.embedding_dimensions = embedding_dimensions
 
     def chunk_paper(self, input: ChunkingInput) -> ChunkingResult:
         paper_id = resolve_paper_id(input)
@@ -190,8 +202,8 @@ class ChunkingService:
             chunk_type=chunk_type,
             source=source,
             location=location,
-            embedding_model=DEFAULT_EMBEDDING_MODEL,
-            embedding_dimensions=DEFAULT_EMBEDDING_DIMENSIONS,
+            embedding_model=self.embedding_model,
+            embedding_dimensions=self.embedding_dimensions,
         )
 
 

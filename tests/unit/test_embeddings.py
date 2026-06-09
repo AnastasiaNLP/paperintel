@@ -10,7 +10,7 @@ def test_openai_embedding_provider_posts_to_embeddings_endpoint():
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         payload = request.read().decode("utf-8")
-        assert '"model":"text-embedding-3-small"' in payload
+        assert '"model":"custom-embedding-model"' in payload
         assert '"encoding_format":"float"' in payload
         assert '"dimensions":3' in payload
         return httpx.Response(
@@ -26,17 +26,41 @@ def test_openai_embedding_provider_posts_to_embeddings_endpoint():
     client = httpx.Client(transport=httpx.MockTransport(handler))
     provider = OpenAIEmbeddingProvider(
         api_key="test-key",
+        model="custom-embedding-model",
         dimensions=3,
         base_url="https://api.openai.test/v1",
+        timeout=12.0,
         retry_sleep_seconds=0,
         client=client,
     )
 
     vectors = provider.embed_documents(["first", "second"])
 
+    assert provider.model == "custom-embedding-model"
+    assert provider.dimensions == 3
+    assert provider.timeout == 12.0
     assert vectors == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
     assert requests[0].url == "https://api.openai.test/v1/embeddings"
     assert requests[0].headers["Authorization"] == "Bearer test-key"
+
+
+def test_openai_embedding_provider_rejects_wrong_configured_dimensions():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = OpenAIEmbeddingProvider(
+        api_key="test-key",
+        dimensions=3,
+        retry_sleep_seconds=0,
+        client=client,
+    )
+
+    with pytest.raises(ValueError, match="expected 3"):
+        provider.embed_query("hello")
 
 
 def test_openai_embedding_provider_rejects_blank_inputs():
@@ -44,6 +68,17 @@ def test_openai_embedding_provider_rejects_blank_inputs():
 
     with pytest.raises(ValueError):
         provider.embed_documents(["valid", " "])
+
+
+def test_openai_embedding_provider_rejects_invalid_runtime_config():
+    with pytest.raises(ValueError, match="model"):
+        OpenAIEmbeddingProvider(api_key="test-key", model=" ")
+
+    with pytest.raises(ValueError, match="dimensions"):
+        OpenAIEmbeddingProvider(api_key="test-key", dimensions=0)
+
+    with pytest.raises(ValueError, match="timeout"):
+        OpenAIEmbeddingProvider(api_key="test-key", timeout=0)
 
 
 def test_openai_embedding_provider_batches_large_document_sets():

@@ -6,6 +6,7 @@ from alembic import command
 from alembic.config import Config
 
 from agents.agent_run_recorder import InMemoryAgentRunPersistence
+import api.app_factory as app_factory
 from api.app_factory import _resolve_blob_store, create_paperintel_service
 from api.chat_handler import ChatHandler
 from api.in_memory_session_store import InMemorySessionStore
@@ -117,6 +118,27 @@ class FakeRetrievalLayer:
 
 class FakeChunkRepository:
     pass
+
+
+class FakeVectorStore:
+    def __init__(self, *, collection_name: str, vector_size: int) -> None:
+        self.collection_name = collection_name
+        self.vector_size = vector_size
+
+
+class FakeEmbeddingProvider:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        dimensions: int,
+        timeout: float,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.dimensions = dimensions
+        self.timeout = timeout
 
 
 class FakeBlobStore:
@@ -337,6 +359,66 @@ def test_app_factory_reuses_chunk_repository_from_retrieval_layer():
 
     assert service.handler.retrieval_layer is retrieval_layer
     assert service.paper_chunk_repository is chunk_repository
+
+
+def test_app_factory_wires_configured_embedding_model_and_dimensions(monkeypatch):
+    from config.settings import settings as loaded_settings
+
+    qdrant_calls = []
+
+    def fake_from_url(*, url, collection_name, vector_size, timeout):
+        qdrant_calls.append(
+            {
+                "url": url,
+                "collection_name": collection_name,
+                "vector_size": vector_size,
+                "timeout": timeout,
+            }
+        )
+        return FakeVectorStore(
+            collection_name=collection_name,
+            vector_size=vector_size,
+        )
+
+    monkeypatch.setattr(loaded_settings, "qdrant_url", "http://qdrant.test")
+    monkeypatch.setattr(loaded_settings, "qdrant_collection", "paper_chunks_custom")
+    monkeypatch.setattr(loaded_settings, "qdrant_timeout", 7.5)
+    monkeypatch.setattr(loaded_settings, "openai_api_key", "openai-key")
+    monkeypatch.setattr(
+        loaded_settings,
+        "openai_embedding_model",
+        "custom-embedding-model",
+    )
+    monkeypatch.setattr(loaded_settings, "openai_embedding_dimensions", 8)
+    monkeypatch.setattr(loaded_settings, "openai_embedding_timeout", 12.0)
+    monkeypatch.setattr(app_factory.QdrantChunkStore, "from_url", fake_from_url)
+    monkeypatch.setattr(app_factory, "OpenAIEmbeddingProvider", FakeEmbeddingProvider)
+
+    service = create_paperintel_service(
+        database_url="postgresql+psycopg://paperintel:dev_password@localhost:5432/paperintel",
+        conversation_runner=FakeRunner({"response_text": "conversation"}),
+        analysis_runner=FakeRunner({"response_text": "analysis"}),
+        discovery_runner=FakeRunner({"response_text": "discovery"}),
+        paper_chunk_repository=FakeChunkRepository(),
+        enable_health_checks=False,
+        enable_blob_storage=False,
+    )
+
+    assert qdrant_calls == [
+        {
+            "url": "http://qdrant.test",
+            "collection_name": "paper_chunks_custom",
+            "vector_size": 8,
+            "timeout": 7.5,
+        }
+    ]
+    assert service.handler.retrieval_layer.vector_store.vector_size == 8
+    assert (
+        service.handler.retrieval_layer.embedding_provider.model
+        == "custom-embedding-model"
+    )
+    assert service.handler.retrieval_layer.embedding_provider.dimensions == 8
+    assert service.handler.retrieval_layer.embedding_provider.timeout == 12.0
 
 
 def test_app_factory_health_includes_provider_resilience_store(postgres_session_factory):

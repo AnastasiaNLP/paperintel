@@ -36,6 +36,8 @@ class QdrantChunkStore:
         vector_size: int = DEFAULT_EMBEDDING_DIMENSIONS,
         distance: str = DEFAULT_QDRANT_DISTANCE,
     ) -> None:
+        if vector_size < 1:
+            raise ValueError("vector_size must be positive")
         self.client = client
         self.collection_name = collection_name
         self.vector_size = vector_size
@@ -47,6 +49,7 @@ class QdrantChunkStore:
         *,
         url: str,
         collection_name: str = DEFAULT_QDRANT_COLLECTION,
+        vector_size: int = DEFAULT_EMBEDDING_DIMENSIONS,
         timeout: float = 10.0,
     ) -> "QdrantChunkStore":
         try:
@@ -59,6 +62,7 @@ class QdrantChunkStore:
         return cls(
             client=QdrantClient(url=url, timeout=timeout),
             collection_name=collection_name,
+            vector_size=vector_size,
         )
 
     def ensure_collection(self) -> None:

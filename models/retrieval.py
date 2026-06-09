@@ -172,11 +172,9 @@ class EmbeddedChunk(BaseModel):
 
     @field_validator("vector")
     @classmethod
-    def vector_must_match_embedding_dimensions(cls, value: list[float]) -> list[float]:
-        if len(value) != DEFAULT_EMBEDDING_DIMENSIONS:
-            raise ValueError(
-                f"vector must have {DEFAULT_EMBEDDING_DIMENSIONS} dimensions"
-            )
+    def vector_must_not_be_empty(cls, value: list[float]) -> list[float]:
+        if not value:
+            raise ValueError("vector must not be empty")
         return value
 
 
@@ -190,14 +188,12 @@ class ChunkVectorSearchQuery(BaseModel):
 
     @field_validator("query_vector")
     @classmethod
-    def query_vector_must_match_embedding_dimensions(
+    def query_vector_must_not_be_empty(
         cls,
         value: list[float],
     ) -> list[float]:
-        if len(value) != DEFAULT_EMBEDDING_DIMENSIONS:
-            raise ValueError(
-                f"query_vector must have {DEFAULT_EMBEDDING_DIMENSIONS} dimensions"
-            )
+        if not value:
+            raise ValueError("query_vector must not be empty")
         return value
 
     @field_validator("limit")

@@ -27,7 +27,12 @@ def _chunking_service(config: RunnableConfig | None) -> ChunkingService:
     service = _configurable(config).get("chunking_service")
     if service is not None:
         return service
-    return ChunkingService()
+    from config.settings import settings
+
+    return ChunkingService(
+        embedding_model=settings.openai_embedding_model,
+        embedding_dimensions=settings.openai_embedding_dimensions,
+    )
 
 
 def _retrieval_layer(config: RunnableConfig | None) -> RetrievalLayer:
@@ -50,9 +55,15 @@ def _retrieval_layer(config: RunnableConfig | None) -> RetrievalLayer:
         vector_store=QdrantChunkStore.from_url(
             url=settings.qdrant_url,
             collection_name=settings.qdrant_collection,
+            vector_size=settings.openai_embedding_dimensions,
             timeout=settings.qdrant_timeout,
         ),
-        embedding_provider=OpenAIEmbeddingProvider(api_key=settings.openai_api_key),
+        embedding_provider=OpenAIEmbeddingProvider(
+            api_key=settings.openai_api_key,
+            model=settings.openai_embedding_model,
+            dimensions=settings.openai_embedding_dimensions,
+            timeout=settings.openai_embedding_timeout,
+        ),
     )
 
 

@@ -19,8 +19,9 @@ PaperIntel currently uses OpenAI embeddings for retrieval.
 | Field | Current default | Runtime owner | Persisted where | Change impact |
 | --- | --- | --- | --- | --- |
 | embedding provider | OpenAI | `OpenAIEmbeddingProvider` | not persisted directly | Changing provider requires proving vector compatibility and retry/error behavior. |
-| embedding model | `text-embedding-3-small` | `models.retrieval.DEFAULT_EMBEDDING_MODEL` | Postgres `paper_chunks.embedding_model`, Qdrant payload `embedding_model` | Changing model is an indexing contract change. |
-| embedding dimensions | `1536` | `models.retrieval.DEFAULT_EMBEDDING_DIMENSIONS` | Postgres `paper_chunks.embedding_dimensions`, Qdrant payload `embedding_dimensions`, Qdrant collection vector size | Changing dimensions requires a new Qdrant collection or a full reindex. |
+| embedding model | `text-embedding-3-small` | `OPENAI_EMBEDDING_MODEL` / `settings.openai_embedding_model` | Postgres `paper_chunks.embedding_model`, Qdrant payload `embedding_model` | Changing model is an indexing contract change. |
+| embedding dimensions | `1536` | `OPENAI_EMBEDDING_DIMENSIONS` / `settings.openai_embedding_dimensions` | Postgres `paper_chunks.embedding_dimensions`, Qdrant payload `embedding_dimensions`, Qdrant collection vector size | Changing dimensions requires a new Qdrant collection or a full reindex. |
+| embedding timeout | `30.0` seconds | `OPENAI_EMBEDDING_TIMEOUT` / `settings.openai_embedding_timeout` | not persisted | Runtime client timeout only. |
 | vector distance | `Cosine` | `QdrantChunkStore` | Qdrant collection config | Changing distance requires a new Qdrant collection or a full reindex. |
 
 The Postgres chunk row and Qdrant payload both store `embedding_model` and
@@ -33,9 +34,6 @@ Qdrant collection or running a full reindex is an operator error. The system doe
 not promise automatic migration or automatic reindexing for embedding changes.
 Collection mismatch checks should fail explicitly instead of silently writing
 incompatible vectors.
-
-DBE.1 will move the model and dimensions from code constants into application
-settings. Until then, the defaults above are the runtime contract.
 
 ## Paper Identity
 

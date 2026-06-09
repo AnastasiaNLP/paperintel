@@ -199,7 +199,7 @@ def _build_live_stack(monkeypatch) -> LiveStack:
 
     import config.settings as settings_module
     from api.app_factory import create_paperintel_service
-    from config.settings import Settings
+    from config.settings_model import Settings
     from services.qdrant_store import QdrantChunkStore
     from storage.db import make_engine, make_session_factory
     from storage.repositories import clear_foundation_tables
@@ -227,6 +227,7 @@ def _build_live_stack(monkeypatch) -> LiveStack:
         vector_store = QdrantChunkStore.from_url(
             url=qdrant_url,
             collection_name=collection,
+            vector_size=settings_module.settings.openai_embedding_dimensions,
             timeout=30.0,
         )
         return LiveStack(

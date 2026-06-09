@@ -120,6 +120,7 @@ def _build_live_stack() -> LiveStack:
     from alembic.config import Config
 
     from api.chat_handler import ChatHandler
+    from config.settings import settings
     from graph import build_graph
     from graph_conversation import build_conversation_graph
     from graph_discovery import build_discovery_graph
@@ -155,6 +156,7 @@ def _build_live_stack() -> LiveStack:
     vector_store = QdrantChunkStore.from_url(
         url=qdrant_url,
         collection_name=collection,
+        vector_size=settings.openai_embedding_dimensions,
         timeout=30.0,
     )
     with session_factory() as db:
@@ -167,7 +169,9 @@ def _build_live_stack() -> LiveStack:
         vector_store=vector_store,
         embedding_provider=OpenAIEmbeddingProvider(
             api_key=os.environ["OPENAI_API_KEY"],
-            timeout=60.0,
+            model=settings.openai_embedding_model,
+            dimensions=settings.openai_embedding_dimensions,
+            timeout=settings.openai_embedding_timeout,
         ),
     )
     session_store = PostgresSessionStore(session_factory)

@@ -43,6 +43,27 @@ def test_chunk_paper_emits_abstract_and_text_chunks_with_deterministic_ids():
     assert result.chunks[1].source.input_url == "https://arxiv.org/abs/2310.06825"
 
 
+def test_chunk_paper_uses_configured_embedding_contract_metadata():
+    service = ChunkingService(
+        ChunkingConfig(target_chars=80, overlap_chars=10, min_chunk_chars=20),
+        embedding_model="custom-embedding-model",
+        embedding_dimensions=8,
+    )
+
+    result = service.chunk_paper(
+        ChunkingInput(
+            metadata=_metadata(),
+            raw_text="Retrieval evidence is useful. " * 4,
+        )
+    )
+
+    assert result.chunks
+    assert {chunk.embedding_model for chunk in result.chunks} == {
+        "custom-embedding-model"
+    }
+    assert {chunk.embedding_dimensions for chunk in result.chunks} == {8}
+
+
 def test_chunk_paper_uses_text_by_page_for_page_locations():
     service = ChunkingService(
         ChunkingConfig(
