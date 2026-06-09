@@ -14,6 +14,7 @@ from models.retrieval import (
     PaperChunk,
 )
 from services.qdrant_store import (
+    QdrantCollectionMismatchError,
     QdrantChunkStore,
     chunk_payload,
     qdrant_point_id,
@@ -169,6 +170,62 @@ def test_ensure_collection_is_idempotent_for_existing_collection():
     store.ensure_collection()
 
     assert client.create_calls == 0
+
+
+def test_check_collection_config_allows_missing_collection_without_creating():
+    class Collections:
+        collections = []
+
+    class MissingCollectionClient:
+        def __init__(self):
+            self.create_calls = 0
+
+        def get_collections(self):
+            return Collections()
+
+        def create_collection(self, **kwargs):
+            self.create_calls += 1
+
+    client = MissingCollectionClient()
+    store = QdrantChunkStore(client=client, vector_size=8)
+
+    store.check_collection_config()
+
+    assert client.create_calls == 0
+
+
+def test_check_collection_config_rejects_non_default_vector_size_mismatch():
+    class Collection:
+        name = "paper_chunks"
+
+    class Collections:
+        collections = [Collection()]
+
+    class VectorConfig:
+        size = DEFAULT_EMBEDDING_DIMENSIONS
+        distance = "Cosine"
+
+    class Params:
+        vectors = VectorConfig()
+
+    class Config:
+        params = Params()
+
+    class CollectionInfo:
+        config = Config()
+
+    class ExistingCollectionClient:
+        def get_collections(self):
+            return Collections()
+
+        def get_collection(self, collection_name):
+            assert collection_name == "paper_chunks"
+            return CollectionInfo()
+
+    store = QdrantChunkStore(client=ExistingCollectionClient(), vector_size=8)
+
+    with pytest.raises(QdrantCollectionMismatchError, match="expected 8"):
+        store.check_collection_config()
 
 
 def test_qdrant_store_check_connection_uses_public_health_contract():

@@ -35,6 +35,11 @@ not promise automatic migration or automatic reindexing for embedding changes.
 Collection mismatch checks should fail explicitly instead of silently writing
 incompatible vectors.
 
+The health check verifies the configured Qdrant collection when it already
+exists. A vector size or distance mismatch makes `/health` unhealthy so operators
+can switch `QDRANT_COLLECTION` or run an explicit reindex before new analysis
+continues writing vectors.
+
 ## Paper Identity
 
 `paper_id` is the canonical paper identifier, normally the arXiv id without a

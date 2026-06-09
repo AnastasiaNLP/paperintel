@@ -55,11 +55,23 @@ class FakeBlobStore:
 
 
 class FakeQdrantStore:
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        collection_config_error: Exception | None = None,
+    ) -> None:
         self.client = FakeQdrantClient(error=error)
+        self.collection_config_error = collection_config_error
+        self.collection_config_calls = 0
 
     def check_connection(self) -> None:
         self.client.get_collections()
+
+    def check_collection_config(self) -> None:
+        self.collection_config_calls += 1
+        if self.collection_config_error is not None:
+            raise self.collection_config_error
 
 
 def _settings(*, anthropic="anthropic-key", openai="openai-key"):
@@ -133,6 +145,21 @@ def test_health_checker_reports_qdrant_error():
 
     assert status.healthy is False
     assert status.checks["qdrant"] == "error:RuntimeError"
+
+
+def test_health_checker_reports_qdrant_collection_config_error():
+    qdrant = FakeQdrantStore(collection_config_error=ValueError("wrong dimensions"))
+    checker = HealthChecker(
+        session_factory=lambda: FakeDbSession(),
+        qdrant_store=qdrant,
+        settings=_settings(),
+    )
+
+    status = checker.check()
+
+    assert status.healthy is False
+    assert status.checks["qdrant"] == "error:ValueError"
+    assert qdrant.collection_config_calls == 1
 
 
 def test_health_checker_reports_missing_llm_key():

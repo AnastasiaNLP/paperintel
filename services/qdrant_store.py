@@ -93,6 +93,27 @@ class QdrantChunkStore:
         """Verify that the Qdrant service is reachable."""
         self.client.get_collections()
 
+    def check_collection_config(self) -> None:
+        """
+        Verify that an existing collection matches this store's vector contract.
+
+        This check is intentionally non-mutating: a missing collection is not
+        created here because health checks must not perform indexing setup.
+        """
+        if not self._collection_exists():
+            return
+        size, distance = self._collection_vector_config()
+        if size != self.vector_size:
+            raise QdrantCollectionMismatchError(
+                f"Qdrant collection {self.collection_name!r} has vector size "
+                f"{size}, expected {self.vector_size}"
+            )
+        if _normalize_distance(distance) != _normalize_distance(self.distance):
+            raise QdrantCollectionMismatchError(
+                f"Qdrant collection {self.collection_name!r} has distance "
+                f"{distance!r}, expected {self.distance!r}"
+            )
+
     def upsert_chunks(self, chunks: Sequence[EmbeddedChunk]) -> UpsertChunksResult:
         for embedded in chunks:
             _validate_vector(embedded.vector, self.vector_size)

@@ -72,6 +72,8 @@ class HealthChecker:
             return "not_configured"
         try:
             self.qdrant_store.check_connection()
+            if hasattr(self.qdrant_store, "check_collection_config"):
+                self.qdrant_store.check_collection_config()
             return "ok"
         except Exception as exc:
             return f"error:{type(exc).__name__}"

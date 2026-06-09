@@ -131,6 +131,28 @@ curl http://127.0.0.1:8000/sessions/<SESSION_ID>
 `active_paper_ids` should include the paper ID. If it is empty, indexing did not
 complete successfully and the paper is not available for retrieval-backed QA.
 
+## Health reports `qdrant=error:QdrantCollectionMismatchError`
+
+This means the configured embedding dimensions or vector distance do not match
+the existing Qdrant collection named by `QDRANT_COLLECTION`.
+
+Qdrant collections have one vector size. PaperIntel does not auto-migrate or
+auto-reindex vectors when the embedding contract changes. Use one of these
+operator paths:
+
+- Set a new `QDRANT_COLLECTION` name and re-analyze or reindex the papers that
+  should be searchable under the new embedding contract.
+- Run an explicit full reindex into a collection whose vector size and distance
+  match the configured embedding settings.
+
+Do not write vectors with different dimensions into the same collection.
+
+Changing only `OPENAI_EMBEDDING_MODEL` can be just as significant even when the
+new model uses the same dimensions. That model-only change may not make
+`/health` unhealthy, because Qdrant exposes vector size and distance rather than
+the embedding model identity. Treat model changes as embedding-contract changes:
+use a new `QDRANT_COLLECTION` or run an explicit full reindex.
+
 ## Synthesis returns `no_active_papers`
 
 `/synthesize` and the MCP `synthesize_papers` tool require at least two
