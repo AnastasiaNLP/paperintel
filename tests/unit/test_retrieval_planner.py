@@ -266,6 +266,22 @@ def test_retrieval_planner_returns_best_effort_empty_evidence_on_replan_error(
 
 
 @patch("agents.retrieval_planner._call_llm")
+def test_retrieval_planner_timeout_best_effort_uses_timeout_reason(mock_call_llm):
+    layer = RecordingRetrievalLayer(result_sets=[[]])
+    mock_call_llm.return_value = (None, "Retrieval Planner call timed out")
+
+    result = retrieval_planner_agent(_state(), config=_config(layer))
+
+    run = _run(result)
+    plan = result["evidence_plan"]
+    assert plan.fallback_used is True
+    assert plan.replanning_reason == "Retrieval Planner call timed out"
+    assert run.status == "fallback_used"
+    assert run.termination_reason == "timeout"
+    assert run.details["fallback_used"] is True
+
+
+@patch("agents.retrieval_planner._call_llm")
 def test_retrieval_planner_marks_fallback_when_replan_parse_fails(mock_call_llm):
     layer = RecordingRetrievalLayer(result_sets=[[]])
     mock_call_llm.return_value = ("not json", None)

@@ -44,6 +44,10 @@ def _extract_openai_text(payload: dict) -> tuple[Optional[str], Optional[str]]:
     return raw.strip(), None
 
 
+def is_llm_timeout_error(error: str | None) -> bool:
+    return bool(error and error.endswith(" call timed out"))
+
+
 def call_text_llm(
     *,
     requested_model: Optional[str],
@@ -51,8 +55,10 @@ def call_text_llm(
     user_content: str,
     max_tokens: int,
     context_label: str,
+    timeout_seconds: float | None = None,
 ) -> tuple[Optional[str], Optional[str]]:
     provider = _provider()
+    timeout = timeout_seconds if timeout_seconds is not None else 120.0
 
     if provider == "openai":
         model = getattr(settings, "openai_model", "gpt-4o-mini")
@@ -71,7 +77,7 @@ def call_text_llm(
                     ],
                     "max_completion_tokens": max_tokens,
                 },
-                timeout=120.0,
+                timeout=timeout,
             )
             response.raise_for_status()
             raw, error = _extract_openai_text(response.json())
@@ -111,13 +117,24 @@ def call_text_llm(
                 f"{response.status_code if response is not None else 'unknown'} "
                 f"body={body}"
             )
+        except (httpx.TimeoutException, TimeoutError):
+            logger.warning(
+                "%s call timed out via OpenAI [provider=openai model=%s timeout_seconds=%s]",
+                context_label,
+                model,
+                timeout,
+            )
+            return None, f"{context_label} call timed out"
         except Exception as exc:
             logger.exception("%s call failed via OpenAI", context_label)
             return None, f"{context_label} call failed: {exc}"
 
     model = requested_model or settings.haiku_model
     try:
-        response = _anthropic().messages.create(
+        client = _anthropic()
+        if timeout_seconds is not None and hasattr(client, "with_options"):
+            client = client.with_options(timeout=timeout_seconds)
+        response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
             system=system_prompt,
@@ -133,6 +150,14 @@ def call_text_llm(
             model,
         )
         return raw, None
+    except (anthropic.APITimeoutError, httpx.TimeoutException, TimeoutError):
+        logger.warning(
+            "%s call timed out via Anthropic [provider=anthropic model=%s timeout_seconds=%s]",
+            context_label,
+            model,
+            timeout_seconds,
+        )
+        return None, f"{context_label} call timed out"
     except Exception as exc:
         logger.exception("%s call failed via Anthropic", context_label)
         return None, f"{context_label} call failed: {exc}"

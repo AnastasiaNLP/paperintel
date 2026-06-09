@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
 from agents.comparison_analyst import _model_or_none
-from agents.llm_provider import call_text_llm
+from agents.llm_provider import call_text_llm, is_llm_timeout_error
 from config.settings import settings
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
 from models.agent_runs import AgentRun
@@ -120,6 +120,7 @@ def _call_llm(
         user_content=user_content,
         max_tokens=policy.max_tokens or 4_000,
         context_label="Synthesis Agent LLM",
+        timeout_seconds=policy.timeout_seconds,
     )
 
 
@@ -422,6 +423,9 @@ def synthesize_workspaces(
     if fallback_reason:
         run.fallback(
             output_ref="synthesis_report",
+            termination_reason="timeout"
+            if is_llm_timeout_error(fallback_reason)
+            else "fallback",
             details={**details, "fallback_reason": fallback_reason},
         )
     else:

@@ -265,6 +265,26 @@ def test_ca1_comparison_analyst_falls_back_when_llm_unavailable(mock_call_llm):
 
 
 @patch("agents.comparison_analyst._call_llm")
+def test_ca1_comparison_analyst_timeout_fallback_uses_timeout_reason(mock_call_llm):
+    mock_call_llm.return_value = (None, "Comparison Analyst LLM call timed out")
+
+    result = compare_workspaces(
+        session_id="session-1",
+        workspaces=[
+            _workspace("paper-0", title="Paper Zero", method_name="Method Zero", benchmark_value=75.0),
+            _workspace("paper-1", title="Paper One", method_name="Method One", benchmark_value=70.0),
+        ],
+    )
+
+    assert result.agent_run.status == "fallback_used"
+    assert result.agent_run.termination_reason == "timeout"
+    assert (
+        result.agent_run.details["fallback_reason"]
+        == "Comparison Analyst LLM call timed out"
+    )
+
+
+@patch("agents.comparison_analyst._call_llm")
 def test_ca1_service_compare_papers_loads_saves_and_preserves_order(mock_call_llm):
     mock_call_llm.return_value = (_claims(winner=1), None)
     workspaces = [

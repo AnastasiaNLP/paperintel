@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import TypeAdapter, ValidationError
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
-from agents.llm_provider import call_text_llm
+from agents.llm_provider import call_text_llm, is_llm_timeout_error
 from config.settings import settings
 from models.agent_runs import AgentRun
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
@@ -236,6 +236,7 @@ def _call_llm(
     user_content: str,
     *,
     max_tokens: int,
+    timeout_seconds: int | None = None,
 ) -> tuple[str | None, str | None]:
     return call_text_llm(
         requested_model=settings.sonnet_model,
@@ -243,6 +244,7 @@ def _call_llm(
         user_content=user_content,
         max_tokens=max_tokens,
         context_label="Answer Agent",
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -359,10 +361,12 @@ def answer_agent(
         system_prompt,
         user_content,
         max_tokens=policy.max_tokens or 1600,
+        timeout_seconds=policy.timeout_seconds,
     )
     if llm_error:
         run.fail(
             output_ref="state:errors",
+            termination_reason="timeout" if is_llm_timeout_error(llm_error) else "error",
             details={"error": llm_error, "stage": "llm_call", "persona": persona},
         )
         _apply_policy_warning(run, policy)

@@ -187,6 +187,20 @@ def test_answer_agent_records_failure_on_llm_error(mock_call_llm):
 
 
 @patch("agents.answer_agent._call_llm")
+def test_answer_agent_records_timeout_as_controlled_failure(mock_call_llm):
+    mock_call_llm.return_value = (None, "Answer Agent call timed out")
+
+    result = answer_agent(_state(), config=_config())
+
+    run = _run(result)
+    assert run.status == "failed"
+    assert run.termination_reason == "timeout"
+    assert run.details["stage"] == "llm_call"
+    assert run.details["error"] == "Answer Agent call timed out"
+    assert "What does the method improve?" not in run.details["error"]
+
+
+@patch("agents.answer_agent._call_llm")
 def test_answer_agent_rejects_unknown_citation_chunk_ids(mock_call_llm):
     mock_call_llm.return_value = (
         _answer_payload(citation_chunk_ids=["unknown-chunk"]),
@@ -263,6 +277,7 @@ def test_answer_agent_policy_override_reaches_agent(mock_call_llm):
         "custom_answer_fallback"
     )
     assert mock_call_llm.call_args.kwargs["max_tokens"] == 500
+    assert mock_call_llm.call_args.kwargs["timeout_seconds"] == 15
 
 
 @patch("agents.answer_agent._call_llm")

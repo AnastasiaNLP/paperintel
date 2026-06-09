@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
 from agents.error_utils import paper_error
-from agents.llm_provider import call_text_llm
+from agents.llm_provider import call_text_llm, is_llm_timeout_error
 from config.settings import settings
 from models.agent_runs import AgentRun
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
@@ -198,17 +198,26 @@ def _build_evidence_json(
     return json.dumps(evidence, ensure_ascii=False, indent=2)
 
 
-def _call_llm(evidence_json: str) -> tuple[Optional[str], Optional[str]]:
+def _call_llm(
+    evidence_json: str,
+    *,
+    timeout_seconds: int | None = None,
+) -> tuple[Optional[str], Optional[str]]:
     return call_text_llm(
         requested_model=settings.haiku_model,
         system_prompt=_SYSTEM_PROMPT,
         user_content=evidence_json,
         max_tokens=1200,
         context_label="Report LLM",
+        timeout_seconds=timeout_seconds,
     )
 
 
-def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
+def _call_llm_repair(
+    bad_json: str,
+    *,
+    timeout_seconds: int | None = None,
+) -> tuple[Optional[str], Optional[str]]:
     return call_text_llm(
         requested_model=settings.haiku_model,
         system_prompt=(
@@ -222,6 +231,7 @@ def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
         ),
         max_tokens=1200,
         context_label="Report repair",
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -547,10 +557,11 @@ def report_agent(
     evidence_json = _build_evidence_json(metadata, extraction, benchmarks, readiness)
 
     run.llm_call_count += 1
-    raw, llm_error = _call_llm(evidence_json)
+    raw, llm_error = _call_llm(evidence_json, timeout_seconds=policy.timeout_seconds)
     if llm_error:
         run.fail(
             output_ref="state:errors",
+            termination_reason="timeout" if is_llm_timeout_error(llm_error) else "error",
             details={"error": llm_error, "stage": "llm_call"},
         )
         _apply_report_policy_warning(run, policy)
@@ -565,11 +576,17 @@ def report_agent(
     if parse_error:
         repair_attempted = True
         run.llm_call_count += 1
-        repaired, repair_error = _call_llm_repair(raw or "")
+        repaired, repair_error = _call_llm_repair(
+            raw or "",
+            timeout_seconds=policy.timeout_seconds,
+        )
         if repair_error:
             error = f"Report parse failed: {parse_error}; repair: {repair_error}"
             run.fail(
                 output_ref="state:errors",
+                termination_reason="timeout"
+                if is_llm_timeout_error(error)
+                else "error",
                 details={
                     "error": error,
                     "stage": "repair",

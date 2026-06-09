@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
-from agents.llm_provider import call_text_llm
+from agents.llm_provider import call_text_llm, is_llm_timeout_error
 from config.settings import settings
 from models.agent_runs import AgentRun
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
@@ -264,6 +264,7 @@ def _call_llm(
     user_content: str,
     *,
     max_tokens: int,
+    timeout_seconds: int | None = None,
 ) -> tuple[str | None, str | None]:
     return call_text_llm(
         requested_model=settings.sonnet_model,
@@ -271,6 +272,7 @@ def _call_llm(
         user_content=user_content,
         max_tokens=max_tokens,
         context_label="Retrieval Planner",
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -371,6 +373,7 @@ def retrieval_planner_agent(
     )
     evidence = _retrieve(layer=layer, plan=plan, session_id=session_id)
     iterations_used = 1
+    timeout_fallback = False
 
     if not evidence.results and policy.max_iterations > 1:
         run.llm_call_count += 1
@@ -382,8 +385,10 @@ def retrieval_planner_agent(
                 evidence=evidence,
             ),
             max_tokens=policy.max_tokens or 1600,
+            timeout_seconds=policy.timeout_seconds,
         )
         if llm_error:
+            timeout_fallback = is_llm_timeout_error(llm_error)
             plan = plan.model_copy(
                 update={
                     "requires_replanning": True,
@@ -423,18 +428,23 @@ def retrieval_planner_agent(
     if not evidence.results and not plan.fallback_used:
         plan = plan.model_copy(update={"fallback_used": True})
 
-    run.complete(
-        output_ref="state:evidence_bundle",
-        details={
-            "intent": resolution.intent,
-            "persona": persona,
-            "paper_count": len(paper_ids),
-            "evidence_count": len(evidence.results),
-            "iterations_used": iterations_used,
-            "fallback_used": plan.fallback_used,
-            "requires_replanning": plan.requires_replanning,
-        },
-    )
+    run_details = {
+        "intent": resolution.intent,
+        "persona": persona,
+        "paper_count": len(paper_ids),
+        "evidence_count": len(evidence.results),
+        "iterations_used": iterations_used,
+        "fallback_used": plan.fallback_used,
+        "requires_replanning": plan.requires_replanning,
+    }
+    if timeout_fallback:
+        run.fallback(
+            output_ref="state:evidence_bundle",
+            termination_reason="timeout",
+            details=run_details,
+        )
+    else:
+        run.complete(output_ref="state:evidence_bundle", details=run_details)
     _apply_policy_warning(run, policy)
     return _with_agent_run(
         {

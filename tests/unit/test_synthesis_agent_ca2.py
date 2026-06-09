@@ -272,6 +272,27 @@ def test_ca2_synthesis_agent_works_without_comparison_and_falls_back(mock_call_l
 
 
 @patch("agents.synthesis_agent._call_llm")
+def test_ca2_synthesis_agent_timeout_fallback_uses_timeout_reason(mock_call_llm):
+    mock_call_llm.return_value = (None, "Synthesis Agent LLM call timed out")
+
+    result = synthesize_workspaces(
+        session_id="session-1",
+        persona="techlead",
+        workspaces=[
+            _workspace("paper-0", title="Paper Zero", method_name="Method Zero"),
+            _workspace("paper-1", title="Paper One", method_name="Method One"),
+        ],
+    )
+
+    assert result.agent_run.status == "fallback_used"
+    assert result.agent_run.termination_reason == "timeout"
+    assert (
+        result.agent_run.details["fallback_reason"]
+        == "Synthesis Agent LLM call timed out"
+    )
+
+
+@patch("agents.synthesis_agent._call_llm")
 def test_ca2_service_synthesize_uses_active_ids_and_not_qa_wrapper(mock_call_llm):
     mock_call_llm.return_value = (_llm_report(), None)
     service = _service(

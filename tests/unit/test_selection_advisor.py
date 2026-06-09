@@ -205,6 +205,19 @@ def test_selection_advisor_falls_back_on_llm_error(mock_call_llm):
 
 
 @patch("agents.selection_advisor._call_llm")
+def test_selection_advisor_timeout_fallback_uses_timeout_reason(mock_call_llm):
+    mock_call_llm.return_value = (None, "Selection Advisor call timed out")
+
+    result = selection_advisor_agent(_state(), config=_config())
+
+    run = _run(result)
+    assert result["selection_advice"].recommended_candidate_ids
+    assert run.status == "fallback_used"
+    assert run.termination_reason == "timeout"
+    assert run.details["fallback_reason"] == "Selection Advisor call timed out"
+
+
+@patch("agents.selection_advisor._call_llm")
 def test_selection_advisor_falls_back_on_invalid_json(mock_call_llm):
     mock_call_llm.return_value = ("not-json", None)
 

@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
-from agents.llm_provider import call_text_llm
+from agents.llm_provider import call_text_llm, is_llm_timeout_error
 from config.settings import settings
 from models.agent_runs import AgentRun
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
@@ -178,6 +178,7 @@ def _call_llm(
     user_content: str,
     *,
     max_tokens: int,
+    timeout_seconds: int | None = None,
 ) -> tuple[str | None, str | None]:
     return call_text_llm(
         requested_model=settings.sonnet_model,
@@ -185,6 +186,7 @@ def _call_llm(
         user_content=user_content,
         max_tokens=max_tokens,
         context_label="Selection Advisor",
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -297,6 +299,7 @@ def _fallback_result(
     advice = _fallback_advice(topic, candidates)
     run.fallback(
         output_ref="state:selection_advice",
+        termination_reason="timeout" if is_llm_timeout_error(reason) else "fallback",
         details={
             "fallback_used": True,
             "fallback_reason": reason,
@@ -366,6 +369,7 @@ def selection_advisor_agent(
     raw, llm_error = _call_llm(
         _build_advisor_json(topic=topic, persona=persona, candidates=candidates),
         max_tokens=policy.max_tokens or 2500,
+        timeout_seconds=policy.timeout_seconds,
     )
     if llm_error:
         return _fallback_result(

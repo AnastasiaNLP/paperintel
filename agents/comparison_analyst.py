@@ -19,7 +19,7 @@ from agents.comparator import (
     _parse_claims,
     _render_comparison_markdown,
 )
-from agents.llm_provider import call_text_llm
+from agents.llm_provider import call_text_llm, is_llm_timeout_error
 from config.settings import settings
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
 from models.agent_runs import AgentRun
@@ -130,6 +130,7 @@ def _call_llm(
         user_content=user_content,
         max_tokens=policy.max_tokens or 4_000,
         context_label="Comparison Analyst LLM",
+        timeout_seconds=policy.timeout_seconds,
     )
 
 
@@ -282,6 +283,9 @@ def compare_workspaces(
     if fallback_reason:
         run.fallback(
             output_ref="comparison_report",
+            termination_reason="timeout"
+            if is_llm_timeout_error(fallback_reason)
+            else "fallback",
             details={**details, "fallback_reason": fallback_reason},
         )
     else:

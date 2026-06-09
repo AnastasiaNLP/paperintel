@@ -278,6 +278,19 @@ def test_citation_critic_records_failure_on_llm_error(mock_call_llm):
 
 
 @patch("agents.citation_critic._call_llm")
+def test_citation_critic_timeout_failure_uses_timeout_reason(mock_call_llm):
+    mock_call_llm.return_value = (None, "Citation Critic call timed out")
+
+    result = citation_critic_agent(_state(), config=_config())
+
+    run = _run(result)
+    assert run.status == "failed"
+    assert run.termination_reason == "timeout"
+    assert run.details["stage"] == "llm_call"
+    assert run.details["error"] == "Citation Critic call timed out"
+
+
+@patch("agents.citation_critic._call_llm")
 def test_citation_critic_rejects_invalid_review_shape(mock_call_llm):
     mock_call_llm.return_value = (
         _review_payload(confidence_adjustments=[]),

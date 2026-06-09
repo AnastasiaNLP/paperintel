@@ -17,8 +17,8 @@ backend, dashboard, or tracing vendor requirement.
 | Surface | Current behavior | Gap |
 | --- | --- | --- |
 | `AgentRun` | Durable per-agent execution record with `session_id`, `job_id`, `agent_name`, `model`, lifecycle status, `termination_reason`, counts, refs, and `details`. | Trace correlation is not standardized. Raw prompt/output policy is documented but not centrally enforced. |
-| Agent policies | Agents record `details.policy_applied` for production-shaped agent runs. | `AgentRuntimePolicy.timeout_seconds` is policy metadata, but LLM call timeout enforcement is not yet centralized. |
-| LLM provider | `call_text_llm()` logs provider/model and response length or exception. | No canonical event names, timeout policy wiring, duration field, or trace/correlation payload. |
+| Agent policies | Agents record `details.policy_applied`, pass `AgentRuntimePolicy.timeout_seconds` to LLM calls, and normalize final timeout outcomes for production-shaped agent runs. | Older pipeline-style agents that do not use the production `AgentRun` policy contract may still need cleanup. |
+| LLM provider | `call_text_llm()` logs provider/model and response length or exception, and accepts `timeout_seconds` for bounded provider calls. | No canonical event names, duration field, or trace/correlation payload. |
 | Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; logs include attempts and retry metadata. | Event names are log text rather than a shared structured event contract. |
 | Health | Reports Postgres, provider resilience store, Qdrant, LLM/embedding config, and blob store. | No metrics export. |
 | REST/MCP | Public result payloads intentionally omit raw `AgentRun` internals and preserve neutral failure classes/metadata where needed. | Correlation IDs are not consistently surfaced for every async/sync operation. |
@@ -131,28 +131,32 @@ object URLs in `AgentRun.details`.
 ## Timeout And Bounded Execution
 
 `AgentRuntimePolicy.timeout_seconds` is part of the agent policy contract.
-Current code records policy snapshots, but centralized timeout enforcement for
-LLM calls remains a hardening gap.
+Production-shaped agents pass the resolved timeout to `call_text_llm()`, which
+uses it as the provider call timeout when supplied.
 
-OBS.1 should enforce policy timeouts at the `call_text_llm()` boundary or at a
-shared wrapper directly above it. Timeout must become a controlled failure or
-fallback path with `termination_reason="timeout"` where an `AgentRun` exists. It
-must not leave the session stuck in a running state.
+Timeout output must stay neutral, for example `Answer Agent call timed out`.
+It must not include prompts, full user content, provider secrets, or raw provider
+exception text. Where an `AgentRun` records a timeout as the final outcome, use
+`termination_reason="timeout"` rather than a generic error or fallback reason.
 
 ## Backlog
 
-OBS.1: enforce `AgentRuntimePolicy.timeout_seconds` for LLM calls and test
-controlled timeout/fallback behavior.
+OBS.1: implemented for `call_text_llm()` timeout enforcement, timeout wiring from
+production-shaped agent policies, and normalized final timeout outcomes in those
+agents.
 
-OBS.2: introduce a lightweight structured logging helper for the event taxonomy
+OBS.2: standardize timeout behavior in older pipeline-style agents that do not
+yet use the production `AgentRun` policy contract.
+
+OBS.3: introduce a lightweight structured logging helper for the event taxonomy
 above, starting with worker job and LLM call events.
 
-OBS.3: standardize optional trace/correlation fields in `AgentRun.details`
+OBS.4: standardize optional trace/correlation fields in `AgentRun.details`
 without exposing them in default REST/MCP payloads.
 
-OBS.4: extend live smoke runbooks to list expected observability markers and
+OBS.5: extend live smoke runbooks to list expected observability markers and
 how to disable external tracing locally.
 
-OBS.5: evaluate metrics export only after structured events are stable. Do not
+OBS.6: evaluate metrics export only after structured events are stable. Do not
 commit to Prometheus, Grafana, or a hosted tracing system before that contract is
 implemented.

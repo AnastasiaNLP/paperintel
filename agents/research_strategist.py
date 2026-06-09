@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
-from agents.llm_provider import call_text_llm
+from agents.llm_provider import call_text_llm, is_llm_timeout_error
 from config.settings import settings
 from models.agent_runs import AgentRun
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
@@ -221,6 +221,7 @@ def _call_llm(
     user_content: str,
     *,
     max_tokens: int,
+    timeout_seconds: int | None = None,
 ) -> tuple[str | None, str | None]:
     return call_text_llm(
         requested_model=settings.haiku_model,
@@ -228,6 +229,7 @@ def _call_llm(
         user_content=user_content,
         max_tokens=max_tokens,
         context_label="Research Strategist",
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -242,6 +244,7 @@ def _fallback_result(
     plan = _fallback_plan(topic)
     run.fallback(
         output_ref="state:discovery_plan",
+        termination_reason="timeout" if is_llm_timeout_error(reason) else "fallback",
         details={
             "fallback_used": True,
             "fallback_reason": reason,
@@ -295,6 +298,7 @@ def research_strategist_agent(
     raw, llm_error = _call_llm(
         _build_strategy_json(message=message, persona=persona),
         max_tokens=policy.max_tokens or 1500,
+        timeout_seconds=policy.timeout_seconds,
     )
     if llm_error:
         return _fallback_result(

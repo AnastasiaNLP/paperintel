@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
-from agents.llm_provider import call_text_llm
+from agents.llm_provider import call_text_llm, is_llm_timeout_error
 from api.session_store import SessionStore
 from config.settings import settings
 from models.agent_runs import AgentRun
@@ -236,6 +236,7 @@ def _call_llm(
     user_content: str,
     *,
     max_tokens: int,
+    timeout_seconds: int | None = None,
 ) -> tuple[str | None, str | None]:
     return call_text_llm(
         requested_model=settings.haiku_model,
@@ -243,6 +244,7 @@ def _call_llm(
         user_content=user_content,
         max_tokens=max_tokens,
         context_label="Intent Router",
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -362,6 +364,7 @@ def intent_router_agent(
             recent_turns=recent_turns,
         ),
         max_tokens=policy.max_tokens or 1500,
+        timeout_seconds=policy.timeout_seconds,
     )
     if llm_error:
         resolution = _clarification_resolution(
@@ -371,6 +374,9 @@ def intent_router_agent(
         )
         run.fallback(
             output_ref="state:intent_resolution",
+            termination_reason="timeout"
+            if is_llm_timeout_error(llm_error)
+            else "fallback",
             details={
                 "fallback_used": True,
                 "fallback_reason": "llm_error",

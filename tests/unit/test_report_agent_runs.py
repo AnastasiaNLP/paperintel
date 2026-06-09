@@ -213,6 +213,20 @@ def test_report_llm_error_creates_failed_agent_run(mock_call_llm):
     assert persistence.list_runs() == [run]
 
 
+@patch("agents.report._call_llm")
+def test_report_llm_timeout_creates_timeout_agent_run(mock_call_llm):
+    mock_call_llm.return_value = (None, "Report LLM call timed out")
+
+    result = report_agent(_state(), config=_config())
+
+    run = _run(result)
+    assert result["processing_stage"] == "failed"
+    assert run.status == "failed"
+    assert run.termination_reason == "timeout"
+    assert run.details["stage"] == "llm_call"
+    assert run.details["error"] == "Report LLM call timed out"
+
+
 @patch("agents.report._call_llm_repair")
 @patch("agents.report._call_llm")
 def test_report_repair_failure_creates_failed_agent_run(mock_call_llm, mock_repair):

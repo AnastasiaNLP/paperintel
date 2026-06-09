@@ -274,6 +274,20 @@ def test_intent_router_fallbacks_to_clarification_on_llm_error(mock_call_llm):
     assert run.details["fallback_reason"] == "llm_error"
 
 
+@patch("agents.intent_router._call_llm")
+def test_intent_router_timeout_fallback_uses_timeout_reason(mock_call_llm):
+    store, session_id = _store()
+    mock_call_llm.return_value = (None, "Intent Router call timed out")
+
+    result = intent_router_agent(_state(session_id), config=_config(session_id, store))
+
+    run = _run(result)
+    assert result["intent"] == "clarification_needed"
+    assert run.status == "fallback_used"
+    assert run.termination_reason == "timeout"
+    assert run.details["error"] == "Intent Router call timed out"
+
+
 def test_intent_router_fails_without_session_store():
     result = intent_router_agent(
         {"session_id": "session-1", "user_message": "What is the loss?"},

@@ -230,6 +230,19 @@ def test_research_strategist_falls_back_on_llm_error(mock_call_llm):
     assert run.details["fallback_reason"] == "provider timeout"
 
 
+@patch("agents.research_strategist._call_llm")
+def test_research_strategist_timeout_fallback_uses_timeout_reason(mock_call_llm):
+    mock_call_llm.return_value = (None, "Research Strategist call timed out")
+
+    result = research_strategist_agent(_state(), config=_config())
+
+    run = _run(result)
+    assert run.status == "fallback_used"
+    assert run.termination_reason == "timeout"
+    assert run.details["fallback_used"] is True
+    assert run.details["fallback_reason"] == "Research Strategist call timed out"
+
+
 def test_research_strategist_requires_user_message():
     result = research_strategist_agent(_state("   "), config=_config())
 
