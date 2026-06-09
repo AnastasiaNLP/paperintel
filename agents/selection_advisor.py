@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
-from agents.llm_provider import call_text_llm, is_llm_timeout_error
+from agents.llm_provider import call_text_llm, llm_error_termination_reason
 from config.settings import settings
 from models.agent_runs import AgentRun
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
@@ -299,7 +299,7 @@ def _fallback_result(
     advice = _fallback_advice(topic, candidates)
     run.fallback(
         output_ref="state:selection_advice",
-        termination_reason="timeout" if is_llm_timeout_error(reason) else "fallback",
+        termination_reason=llm_error_termination_reason(reason, default="fallback"),
         details={
             "fallback_used": True,
             "fallback_reason": reason,

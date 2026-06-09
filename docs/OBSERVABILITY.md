@@ -17,7 +17,7 @@ a metrics backend, dashboard, or tracing vendor requirement.
 | Surface | Current behavior | Gap |
 | --- | --- | --- |
 | `AgentRun` | Durable per-agent execution record with `session_id`, `job_id`, `agent_name`, `model`, lifecycle status, `termination_reason`, counts, refs, and `details`. | Trace correlation is not standardized. Raw prompt/output policy is documented but not centrally enforced. |
-| Agent policies | Agents record `details.policy_applied`, pass `AgentRuntimePolicy.timeout_seconds` to LLM calls, and normalize final timeout outcomes for production-shaped agent runs. | Older agents that do not use the production `AgentRun` policy contract may still need cleanup. |
+| Agent policies | Agents record `details.policy_applied`, production LLM paths pass `AgentRuntimePolicy.timeout_seconds` or registered pipeline policy timeouts to `call_text_llm()`, and `AgentRun` paths use the shared LLM timeout classifier for final outcomes. | Trace correlation is not standardized for every agent path. |
 | LLM provider | `call_text_llm()` logs provider/model and emits `llm.call.completed`, `llm.call.failed`, and `llm.call.timeout` events. | No duration field or trace/correlation payload yet. |
 | Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; worker emits started/completed/failed events. | Event coverage is still limited to worker and LLM provider surfaces. |
 | Health | Reports Postgres, provider resilience store, Qdrant, LLM/embedding config, and blob store. | No metrics export. |
@@ -142,7 +142,9 @@ object URLs in `AgentRun.details`.
 
 `AgentRuntimePolicy.timeout_seconds` is part of the agent policy contract.
 Production-shaped agents pass the resolved timeout to `call_text_llm()`, which
-uses it as the provider call timeout when supplied.
+uses it as the provider call timeout when supplied. Pipeline LLM nodes that do
+not create `AgentRun` records use registered default policies so provider calls
+are still bounded.
 
 Timeout output must stay neutral, for example `Answer Agent call timed out`.
 It must not include prompts, full user content, provider secrets, or raw provider
@@ -150,9 +152,6 @@ exception text. Where an `AgentRun` records a timeout as the final outcome, use
 `termination_reason="timeout"` rather than a generic error or fallback reason.
 
 ## Future Hardening
-
-Timeout behavior should be standardized in older agents that do not yet use the
-production `AgentRun` policy contract.
 
 Structured event coverage should expand beyond worker and LLM provider
 surfaces, starting with retrieval search and provider failure events.

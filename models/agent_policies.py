@@ -87,6 +87,34 @@ DEFAULT_AGENT_POLICIES: dict[str, AgentRuntimePolicy] = {
         timeout_seconds=60,
         fallback_strategy="durable_artifact_summary_fallback",
     ),
+    "extraction": AgentRuntimePolicy(
+        max_iterations=1,
+        max_tool_calls=1,
+        max_tokens=2_000,
+        timeout_seconds=90,
+        fallback_strategy="fail_structured_extraction",
+    ),
+    "benchmark": AgentRuntimePolicy(
+        max_iterations=2,
+        max_tool_calls=1,
+        max_tokens=2_500,
+        timeout_seconds=90,
+        fallback_strategy="empty_benchmark_result_with_diagnostics",
+    ),
+    "readiness": AgentRuntimePolicy(
+        max_iterations=1,
+        max_tool_calls=1,
+        max_tokens=800,
+        timeout_seconds=60,
+        fallback_strategy="unknown_readiness_with_diagnostics",
+    ),
+    "comparator": AgentRuntimePolicy(
+        max_iterations=1,
+        max_tool_calls=1,
+        max_tokens=1_400,
+        timeout_seconds=60,
+        fallback_strategy="deterministic_comparison_fallback",
+    ),
 }
 
 CONSERVATIVE_AGENT_POLICY = AgentRuntimePolicy(

@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
 from agents.error_utils import paper_error
-from agents.llm_provider import call_text_llm, is_llm_timeout_error
+from agents.llm_provider import call_text_llm, llm_error_termination_reason
 from config.settings import settings
 from models.agent_runs import AgentRun
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
@@ -561,7 +561,7 @@ def report_agent(
     if llm_error:
         run.fail(
             output_ref="state:errors",
-            termination_reason="timeout" if is_llm_timeout_error(llm_error) else "error",
+            termination_reason=llm_error_termination_reason(llm_error),
             details={"error": llm_error, "stage": "llm_call"},
         )
         _apply_report_policy_warning(run, policy)
@@ -584,9 +584,7 @@ def report_agent(
             error = f"Report parse failed: {parse_error}; repair: {repair_error}"
             run.fail(
                 output_ref="state:errors",
-                termination_reason="timeout"
-                if is_llm_timeout_error(error)
-                else "error",
+                termination_reason=llm_error_termination_reason(error),
                 details={
                     "error": error,
                     "stage": "repair",

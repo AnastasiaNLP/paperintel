@@ -49,6 +49,14 @@ def is_llm_timeout_error(error: str | None) -> bool:
     return bool(error and error.endswith(" call timed out"))
 
 
+def llm_error_termination_reason(
+    error: str | None,
+    *,
+    default: str = "error",
+) -> str:
+    return "timeout" if is_llm_timeout_error(error) else default
+
+
 def call_text_llm(
     *,
     requested_model: Optional[str],

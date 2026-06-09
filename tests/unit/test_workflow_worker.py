@@ -583,11 +583,23 @@ def test_worker_failure_log_includes_retry_metadata(caplog):
             worker_id="worker-1",
         ).run_once()
 
-    message = caplog.records[-1].getMessage()
+    messages = [record.getMessage() for record in caplog.records]
+    message = next(
+        message for message in messages if message.startswith("Workflow job failed:")
+    )
     assert "failure_class=provider_unavailable" in message
     assert "retryable=True" in message
     assert "retry_after_seconds=30.0" in message
     assert "attempts=1/3" in message
+    event = next(
+        message for message in messages if "event=workflow.job.failed" in message
+    )
+    assert 'job_id="' in event
+    assert 'failure_class="provider_unavailable"' in event
+    assert "retryable=true" in event
+    assert "retry_after_seconds=30.0" in event
+    assert "attempts=1" in event
+    assert "max_attempts=3" in event
 
 
 def test_worker_error_payload_retryable_false_on_last_attempt():

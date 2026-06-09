@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
 from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
-from agents.llm_provider import call_text_llm, is_llm_timeout_error
+from agents.llm_provider import call_text_llm, llm_error_termination_reason
 from config.settings import settings
 from models.agent_runs import AgentRun
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
@@ -362,7 +362,7 @@ def citation_critic_agent(
     if llm_error:
         run.fail(
             output_ref="state:errors",
-            termination_reason="timeout" if is_llm_timeout_error(llm_error) else "error",
+            termination_reason=llm_error_termination_reason(llm_error),
             details={"error": llm_error, "stage": "llm_call"},
         )
         _apply_policy_warning(run, policy)

@@ -68,6 +68,10 @@ def test_current_pipeline_agent_policies_are_registered():
         "citation_critic",
         "intent_router",
         "retrieval_planner",
+        "extraction",
+        "benchmark",
+        "readiness",
+        "comparator",
         "comparison_analyst",
         "synthesis_agent",
     }

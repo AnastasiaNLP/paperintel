@@ -10,6 +10,7 @@ import httpx
 from agents.error_utils import paper_error
 from agents.llm_provider import call_text_llm
 from config.settings import settings
+from models.agent_policies import resolve_agent_policy
 from models.schemas import ProductionReadiness
 from models.state import PaperIntelState
 from tools.github_checker import check_repo, check_requirements
@@ -18,6 +19,7 @@ from tools.paper_resources_client import get_resources
 logger = logging.getLogger(__name__)
 _PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "readiness_prompt.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
+_POLICY = resolve_agent_policy("readiness", strict=False)
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
@@ -456,8 +458,9 @@ def _call_llm(evidence_json: str) -> tuple[Optional[str], Optional[str]]:
         requested_model=settings.haiku_model,
         system_prompt=_SYSTEM_PROMPT,
         user_content=evidence_json,
-        max_tokens=800,
+        max_tokens=_POLICY.max_tokens or 800,
         context_label="Readiness LLM",
+        timeout_seconds=_POLICY.timeout_seconds,
     )
 
 
@@ -473,8 +476,9 @@ def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
             "Fix invalid JSON and return only the JSON object:\n\n"
             f"{bad_json[:3000]}"
         ),
-        max_tokens=800,
+        max_tokens=_POLICY.max_tokens or 800,
         context_label="Readiness repair",
+        timeout_seconds=_POLICY.timeout_seconds,
     )
 
 

@@ -1,4 +1,5 @@
 import importlib
+import logging
 from types import SimpleNamespace
 
 import httpx
@@ -9,6 +10,22 @@ def _module(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("LANGCHAIN_API_KEY", "langchain-key")
     return importlib.import_module("agents.llm_provider")
+
+
+def test_llm_error_termination_reason_normalizes_timeout(monkeypatch):
+    llm_provider = _module(monkeypatch)
+
+    assert (
+        llm_provider.llm_error_termination_reason("Answer Agent call timed out")
+        == "timeout"
+    )
+    assert (
+        llm_provider.llm_error_termination_reason(
+            "Answer Agent failed",
+            default="fallback",
+        )
+        == "fallback"
+    )
 
 
 def test_call_text_llm_openai_uses_timeout_seconds(monkeypatch):
@@ -49,7 +66,7 @@ def test_call_text_llm_openai_uses_timeout_seconds(monkeypatch):
     assert calls[0]["timeout"] == 7.5
 
 
-def test_call_text_llm_openai_timeout_returns_neutral_error(monkeypatch):
+def test_call_text_llm_openai_timeout_returns_neutral_error(monkeypatch, caplog):
     llm_provider = _module(monkeypatch)
 
     def fake_post(url, **kwargs):
@@ -66,19 +83,25 @@ def test_call_text_llm_openai_timeout_returns_neutral_error(monkeypatch):
     )
     monkeypatch.setattr(llm_provider.httpx, "post", fake_post)
 
-    raw, error = llm_provider.call_text_llm(
-        requested_model=None,
-        system_prompt="do not leak this system prompt",
-        user_content="do not leak this user prompt",
-        max_tokens=10,
-        context_label="Test LLM",
-        timeout_seconds=7.5,
-    )
+    with caplog.at_level(logging.WARNING, logger="agents.llm_provider"):
+        raw, error = llm_provider.call_text_llm(
+            requested_model=None,
+            system_prompt="do not leak this system prompt",
+            user_content="do not leak this user prompt",
+            max_tokens=10,
+            context_label="Test LLM",
+            timeout_seconds=7.5,
+        )
 
     assert raw is None
     assert error == "Test LLM call timed out"
     assert "provider timeout details" not in error
     assert "do not leak" not in error
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("event=llm.call.timeout" in message for message in messages)
+    assert any('provider="openai"' in message for message in messages)
+    assert all("do not leak" not in message for message in messages)
+    assert all("provider timeout details" not in message for message in messages)
 
 
 def test_call_text_llm_anthropic_uses_timeout_seconds(monkeypatch):

@@ -7,6 +7,7 @@ from typing import Optional
 from agents.error_utils import paper_error
 from agents.llm_provider import call_text_llm
 from config.settings import settings
+from models.agent_policies import resolve_agent_policy
 from models.errors import ErrorCodes, make_error
 from models.schemas import BenchmarkResult
 from models.state import PaperIntelState
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "benchmark_prompt.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
+_POLICY = resolve_agent_policy("benchmark", strict=False)
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
@@ -296,8 +298,9 @@ def _call_llm(
         requested_model=model,
         system_prompt=_SYSTEM_PROMPT,
         user_content=user_content,
-        max_tokens=2500,
+        max_tokens=_POLICY.max_tokens or 2500,
         context_label=context_label,
+        timeout_seconds=_POLICY.timeout_seconds,
     )
 
 
@@ -315,8 +318,9 @@ def _call_llm_repair(
             "If the input is prose or does not contain a JSON array, return [].\n\n"
             f"{bad_json[:4000]}"
         ),
-        max_tokens=2500,
+        max_tokens=_POLICY.max_tokens or 2500,
         context_label=context_label,
+        timeout_seconds=_POLICY.timeout_seconds,
     )
 
 

@@ -7,6 +7,7 @@ from typing import Literal, Optional
 
 from agents.llm_provider import call_text_llm
 from config.settings import settings
+from models.agent_policies import resolve_agent_policy
 from models.errors import ErrorCodes, make_error
 from models.schemas import (
     BenchmarkResult,
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "comparator_prompt.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
+_POLICY = resolve_agent_policy("comparator", strict=False)
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 MAX_RECOMMENDATIONS = 5
@@ -529,8 +531,9 @@ def _call_llm(evidence_json: str) -> tuple[Optional[str], Optional[str]]:
         requested_model=_comparator_model(),
         system_prompt=_SYSTEM_PROMPT,
         user_content=evidence_json,
-        max_tokens=1400,
+        max_tokens=_POLICY.max_tokens or 1400,
         context_label="Comparator LLM",
+        timeout_seconds=_POLICY.timeout_seconds,
     )
 
 
@@ -548,6 +551,7 @@ def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
         ),
         max_tokens=1000,
         context_label="Comparator repair",
+        timeout_seconds=_POLICY.timeout_seconds,
     )
 
 

@@ -7,6 +7,7 @@ from typing import Optional
 from agents.error_utils import paper_error
 from agents.llm_provider import call_text_llm
 from config.settings import settings
+from models.agent_policies import resolve_agent_policy
 from models.schemas import MethodExtraction
 from models.state import PaperIntelState
 
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "extraction_prompt.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
+_POLICY = resolve_agent_policy("extraction", strict=False)
 
 HEAD_CHARS = 60_000
 TAIL_CHARS = 20_000
@@ -140,8 +142,9 @@ def _call_llm(
         requested_model=settings.haiku_model,
         system_prompt=_SYSTEM_PROMPT,
         user_content=_build_user_message(text, metadata_header),
-        max_tokens=2000,
+        max_tokens=_POLICY.max_tokens or 2000,
         context_label="LLM extraction",
+        timeout_seconds=_POLICY.timeout_seconds,
     )
 
 
@@ -156,8 +159,9 @@ def _call_llm_repair(bad_json: str) -> tuple[Optional[str], Optional[str]]:
             "The following JSON is invalid. Fix it and return ONLY the corrected JSON:\n\n"
             f"{bad_json[:4000]}"
         ),
-        max_tokens=2000,
+        max_tokens=_POLICY.max_tokens or 2000,
         context_label="Repair LLM",
+        timeout_seconds=_POLICY.timeout_seconds,
     )
 
 
