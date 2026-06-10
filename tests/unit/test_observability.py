@@ -16,6 +16,7 @@ def test_emit_event_logs_name_and_safe_fields(caplog):
             retryable=True,
             retry_after_seconds=30.0,
             result_count=3,
+            duration_ms=12,
         )
 
     message = caplog.records[-1].getMessage()
@@ -26,6 +27,7 @@ def test_emit_event_logs_name_and_safe_fields(caplog):
     assert "retryable=true" in message
     assert "retry_after_seconds=30.0" in message
     assert "result_count=3" in message
+    assert "duration_ms=12" in message
 
 
 def test_emit_event_drops_forbidden_and_unknown_fields(caplog):

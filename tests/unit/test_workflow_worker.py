@@ -409,7 +409,7 @@ def test_worker_rejects_invalid_reliability_configuration(kwargs, message):
         )
 
 
-def test_worker_run_once_claims_executes_and_marks_success():
+def test_worker_run_once_claims_executes_and_marks_success(caplog):
     repository = FakeRepository(jobs=[_job()])
     service = FakeService()
     worker = WorkflowWorker(
@@ -419,7 +419,8 @@ def test_worker_run_once_claims_executes_and_marks_success():
         kinds=["analyze_paper"],
     )
 
-    result = worker.run_once()
+    with caplog.at_level(logging.INFO, logger="workers.workflow_worker"):
+        result = worker.run_once()
 
     assert result is not None
     assert result.status == "succeeded"
@@ -429,6 +430,11 @@ def test_worker_run_once_claims_executes_and_marks_success():
     assert repository.succeeded[0][1]["response_text"] == "analysis complete"
     assert repository.failed == []
     assert repository.mark_running_calls == []
+    messages = [record.getMessage() for record in caplog.records]
+    event = next(
+        message for message in messages if "event=workflow.job.completed" in message
+    )
+    assert "duration_ms=" in event
 
 
 def test_worker_run_once_marks_failure_on_executor_error():
@@ -520,20 +526,29 @@ def test_worker_run_once_records_structured_pdf_blob_failure():
     assert repository.failed[0][1]["error"] == "registered_blob_not_authorized"
 
 
-def test_worker_run_once_completes_requested_cancel_before_execution():
+def test_worker_run_once_completes_requested_cancel_before_execution(caplog):
     repository = FakeRepository(jobs=[_job()], cancel_requested=True)
     service = FakeService()
 
-    result = WorkflowWorker(
-        repository=repository,
-        executor=WorkflowJobExecutor(service),
-        worker_id="worker-1",
-    ).run_once()
+    with caplog.at_level(logging.INFO, logger="workers.workflow_worker"):
+        result = WorkflowWorker(
+            repository=repository,
+            executor=WorkflowJobExecutor(service),
+            worker_id="worker-1",
+        ).run_once()
 
     assert result.status == "canceled"
     assert service.analyze_calls == []
     assert repository.succeeded == []
     assert repository.failed == []
+    event = next(
+        record.getMessage()
+        for record in caplog.records
+        if "event=workflow.job.failed" in record.getMessage()
+    )
+    assert 'failure_class="canceled"' in event
+    assert "retryable=false" in event
+    assert "duration_ms=" in event
 
 
 def test_worker_run_once_records_retryable_blob_store_failure():
@@ -600,6 +615,7 @@ def test_worker_failure_log_includes_retry_metadata(caplog):
     assert "retry_after_seconds=30.0" in event
     assert "attempts=1" in event
     assert "max_attempts=3" in event
+    assert "duration_ms=" in event
 
 
 def test_worker_error_payload_retryable_false_on_last_attempt():

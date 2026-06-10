@@ -25,7 +25,7 @@ from services.blob_store import (
     BlobSizeLimitError,
     BlobStoreUnavailableError,
 )
-from services.observability import emit_event
+from services.observability import elapsed_ms, emit_event
 from services.paperintel_service import PaperIntelService
 from services.provider_policy import classify_provider_exception
 from services.qdrant_store import QdrantDependencyError
@@ -201,6 +201,7 @@ class WorkflowWorker:
             return None
         if job.status != "running":
             return job
+        started_at = time.perf_counter()
 
         LOGGER.info(
             "Workflow job claimed: id=%s kind=%s worker_id=%s",
@@ -255,9 +256,11 @@ class WorkflowWorker:
                 kind=job.kind,
                 worker_id=self.worker_id,
                 status="canceled",
+                failure_class="canceled",
                 retryable=False,
                 attempts=job.attempts,
                 max_attempts=job.max_attempts,
+                duration_ms=elapsed_ms(started_at),
             )
             return canceled
         except WorkflowJobLeaseLostError as exc:
@@ -308,6 +311,7 @@ class WorkflowWorker:
                 retry_after_seconds=retry_decision.retry_after_seconds,
                 attempts=job.attempts,
                 max_attempts=job.max_attempts,
+                duration_ms=elapsed_ms(started_at),
             )
             return failed
 
@@ -332,9 +336,11 @@ class WorkflowWorker:
                 kind=job.kind,
                 worker_id=self.worker_id,
                 status="canceled",
+                failure_class="canceled",
                 retryable=False,
                 attempts=job.attempts,
                 max_attempts=job.max_attempts,
+                duration_ms=elapsed_ms(started_at),
             )
             return succeeded
         LOGGER.info(
@@ -352,6 +358,7 @@ class WorkflowWorker:
             worker_id=self.worker_id,
             attempts=job.attempts,
             max_attempts=job.max_attempts,
+            duration_ms=elapsed_ms(started_at),
         )
         return succeeded
 

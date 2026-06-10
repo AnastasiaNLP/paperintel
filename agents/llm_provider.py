@@ -1,11 +1,12 @@
 import logging
+import time
 from typing import Optional
 
 import anthropic
 import httpx
 
 from config.settings import settings
-from services.observability import emit_event
+from services.observability import elapsed_ms, emit_event
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ def call_text_llm(
 
     if provider == "openai":
         model = getattr(settings, "openai_model", "gpt-4o-mini")
+        started_at = time.perf_counter()
         try:
             response = httpx.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -91,6 +93,15 @@ def call_text_llm(
             response.raise_for_status()
             raw, error = _extract_openai_text(response.json())
             if error:
+                emit_event(
+                    logger,
+                    "llm.call.failed",
+                    level=logging.ERROR,
+                    provider="openai",
+                    model=model,
+                    timeout_seconds=timeout_seconds,
+                    duration_ms=elapsed_ms(started_at),
+                )
                 return None, f"{context_label} failed: {error}"
             logger.info(
                 "%s response: %d chars [provider=openai model=%s]",
@@ -105,6 +116,7 @@ def call_text_llm(
                 model=model,
                 result_size=len(raw or ""),
                 timeout_seconds=timeout_seconds,
+                duration_ms=elapsed_ms(started_at),
             )
             return raw, None
         except httpx.HTTPStatusError as exc:
@@ -136,6 +148,7 @@ def call_text_llm(
                 provider="openai",
                 model=model,
                 timeout_seconds=timeout_seconds,
+                duration_ms=elapsed_ms(started_at),
             )
             return None, (
                 f"{context_label} call failed: status="
@@ -156,6 +169,7 @@ def call_text_llm(
                 provider="openai",
                 model=model,
                 timeout_seconds=timeout,
+                duration_ms=elapsed_ms(started_at),
             )
             return None, f"{context_label} call timed out"
         except Exception as exc:
@@ -167,10 +181,12 @@ def call_text_llm(
                 provider="openai",
                 model=model,
                 timeout_seconds=timeout_seconds,
+                duration_ms=elapsed_ms(started_at),
             )
             return None, f"{context_label} call failed: {exc}"
 
     model = requested_model or settings.haiku_model
+    started_at = time.perf_counter()
     try:
         client = _anthropic()
         if timeout_seconds is not None and hasattr(client, "with_options"):
@@ -183,6 +199,15 @@ def call_text_llm(
         )
         raw, error = _extract_anthropic_text(response)
         if error:
+            emit_event(
+                logger,
+                "llm.call.failed",
+                level=logging.ERROR,
+                provider="anthropic",
+                model=model,
+                timeout_seconds=timeout_seconds,
+                duration_ms=elapsed_ms(started_at),
+            )
             return None, f"{context_label} failed: {error}"
         logger.info(
             "%s response: %d chars [provider=anthropic model=%s]",
@@ -197,6 +222,7 @@ def call_text_llm(
             model=model,
             result_size=len(raw or ""),
             timeout_seconds=timeout_seconds,
+            duration_ms=elapsed_ms(started_at),
         )
         return raw, None
     except (anthropic.APITimeoutError, httpx.TimeoutException, TimeoutError):
@@ -213,6 +239,7 @@ def call_text_llm(
             provider="anthropic",
             model=model,
             timeout_seconds=timeout_seconds,
+            duration_ms=elapsed_ms(started_at),
         )
         return None, f"{context_label} call timed out"
     except Exception as exc:
@@ -224,5 +251,6 @@ def call_text_llm(
             provider="anthropic",
             model=model,
             timeout_seconds=timeout_seconds,
+            duration_ms=elapsed_ms(started_at),
         )
         return None, f"{context_label} call failed: {exc}"

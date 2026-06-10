@@ -18,9 +18,9 @@ a metrics backend, dashboard, or tracing vendor requirement.
 | --- | --- | --- |
 | `AgentRun` | Durable per-agent execution record with `session_id`, `job_id`, `agent_name`, `model`, lifecycle status, `termination_reason`, counts, refs, and `details`. | Trace correlation is not standardized. Raw prompt/output policy is documented but not centrally enforced. |
 | Agent policies | Agents record `details.policy_applied`, production LLM paths pass `AgentRuntimePolicy.timeout_seconds` or registered pipeline policy timeouts to `call_text_llm()`, and `AgentRun` paths use the shared LLM timeout classifier for final outcomes. | Trace correlation is not standardized for every agent path. |
-| LLM provider | `call_text_llm()` logs provider/model and emits `llm.call.completed`, `llm.call.failed`, and `llm.call.timeout` events. | No duration field or trace/correlation payload yet. |
-| Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; worker emits started/completed/failed events. | Event coverage is still incomplete for some operational surfaces. |
-| Retrieval | Retrieval search emits `retrieval.search.completed` with correlation ids and result count, without query text or chunk text. | No duration field or trace/correlation payload yet. |
+| LLM provider | `call_text_llm()` logs provider/model and emits `llm.call.completed`, `llm.call.failed`, and `llm.call.timeout` events with `duration_ms`. | No trace/correlation payload yet. |
+| Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; worker emits started events and terminal completed/failed events with `duration_ms`. | Event coverage is still incomplete for some operational surfaces. |
+| Retrieval | Retrieval search emits `retrieval.search.completed` with correlation ids, result count, and `duration_ms`, without query text or chunk text. | No trace/correlation payload yet. |
 | Provider failures | arXiv and Semantic Scholar failure paths emit `provider.failure` with neutral failure class and retry decision. | Coverage is not yet complete for every infrastructure dependency. |
 | Health | Reports Postgres, provider resilience store, Qdrant, LLM/embedding config, and blob store. | No metrics export. |
 | REST/MCP | Public result payloads intentionally omit raw `AgentRun` internals and preserve neutral failure classes/metadata where needed. | Correlation IDs are not consistently surfaced for every async/sync operation. |
@@ -79,7 +79,7 @@ metrics, and runbook output.
 | `status` | Stable lifecycle status. | Yes when relevant | Yes | Sessions, jobs, agent runs |
 | `result_size` | Size of a generated or returned result, usually character count. | No by default | Yes | Provider-call diagnostics |
 | `result_count` | Count of returned results. | No by default | Yes | Retrieval diagnostics |
-| `duration_ms` | Runtime duration for an operation when measured. | No by default | Yes | Future |
+| `duration_ms` | Runtime duration for a provider call, retrieval search, job execution, or agent run when measured. | No by default | Yes | Provider-call, retrieval, workflow-job, and future AgentRun diagnostics |
 | `trace_id` | External trace/correlation id. | No by default | Yes | Future optional AgentRun details |
 
 ## Event Taxonomy
@@ -93,16 +93,16 @@ document, traceback, and secret-like fields.
 | `session.created` | `session_id` |
 | `turn.appended` | `session_id`, `turn_id` |
 | `workflow.job.started` | `job_id`, `session_id`, `kind`, `worker_id`, `attempts`, `max_attempts` |
-| `workflow.job.completed` | `job_id`, `session_id`, `kind`, `worker_id`, `attempts`, `max_attempts` |
-| `workflow.job.failed` | `job_id`, `session_id`, `kind`, `worker_id`, `failure_class`, `retryable`, `attempts`, `max_attempts` |
+| `workflow.job.completed` | `job_id`, `session_id`, `kind`, `worker_id`, `attempts`, `max_attempts`, `duration_ms` |
+| `workflow.job.failed` | `job_id`, `session_id`, `kind`, `worker_id`, `failure_class`, `retryable`, `attempts`, `max_attempts`, `duration_ms` |
 | `agent.started` | `agent_run_id`, `agent_name`, `session_id`, optional `job_id` |
 | `agent.completed` | `agent_run_id`, `agent_name`, `duration_ms`, `termination_reason` |
 | `agent.failed` | `agent_run_id`, `agent_name`, `failure_class` or error category |
 | `llm.call.started` | `provider`, `model`, `agent_name` or `context_label` |
-| `llm.call.completed` | `provider`, `model`, `result_size`, optional `timeout_seconds` |
-| `llm.call.failed` | `provider`, `model`, `failure_class` or error category, optional `timeout_seconds` |
-| `llm.call.timeout` | `provider`, `model`, `timeout_seconds` |
-| `retrieval.search.completed` | `session_id`, optional `paper_id`, `result_count` |
+| `llm.call.completed` | `provider`, `model`, `result_size`, `duration_ms`, optional `timeout_seconds` |
+| `llm.call.failed` | `provider`, `model`, `duration_ms`, `failure_class` or error category, optional `timeout_seconds` |
+| `llm.call.timeout` | `provider`, `model`, `timeout_seconds`, `duration_ms` |
+| `retrieval.search.completed` | `session_id`, optional `paper_id`, `result_count`, `duration_ms` |
 | `provider.failure` | `provider`, `operation`, `failure_class`, `retryable`, optional `retry_after_seconds` |
 | `cache.reused_analysis` | `session_id`, `paper_id`, reuse source category |
 

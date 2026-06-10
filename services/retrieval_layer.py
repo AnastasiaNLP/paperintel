@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from copy import deepcopy
 from typing import Protocol, Sequence
 
@@ -15,7 +16,7 @@ from models.retrieval import (
     VectorSearchHit,
 )
 from services.embeddings import EmbeddingProvider
-from services.observability import emit_event
+from services.observability import elapsed_ms, emit_event
 from services.qdrant_store import QdrantChunkStore, chunk_from_payload
 from storage.repositories import PostgresPaperChunkRepository
 
@@ -69,6 +70,7 @@ class InMemoryRetrievalLayer:
         return UpsertChunksResult(inserted=inserted, updated=updated, skipped=skipped)
 
     def search_chunks(self, query: ChunkSearchQuery) -> list[ChunkSearchResult]:
+        started_at = time.perf_counter()
         query_tokens = _tokens(query.query)
         results: list[ChunkSearchResult] = []
 
@@ -105,7 +107,7 @@ class InMemoryRetrievalLayer:
         limited = results[: query.limit]
         for index, result in enumerate(limited, start=1):
             result.rank = index
-        _emit_retrieval_search_completed(query, len(limited))
+        _emit_retrieval_search_completed(query, len(limited), started_at=started_at)
         return limited
 
     def assemble_evidence(
@@ -169,6 +171,7 @@ class PostgresQdrantRetrievalLayer:
         return repository_result
 
     def search_chunks(self, query: ChunkSearchQuery) -> list[ChunkSearchResult]:
+        started_at = time.perf_counter()
         query_vector = self.embedding_provider.embed_query(query.query)
         hits = self.vector_store.search(
             ChunkVectorSearchQuery(
@@ -181,7 +184,7 @@ class PostgresQdrantRetrievalLayer:
             )
         )
         results = _search_results_from_hits(hits, self.chunk_repository)
-        _emit_retrieval_search_completed(query, len(results))
+        _emit_retrieval_search_completed(query, len(results), started_at=started_at)
         return results
 
     def assemble_evidence(
@@ -201,6 +204,8 @@ def _tokens(text: str) -> set[str]:
 def _emit_retrieval_search_completed(
     query: ChunkSearchQuery,
     result_count: int,
+    *,
+    started_at: float,
 ) -> None:
     emit_event(
         logger,
@@ -208,6 +213,7 @@ def _emit_retrieval_search_completed(
         session_id=query.session_id,
         paper_id=query.paper_ids[0] if len(query.paper_ids) == 1 else None,
         result_count=result_count,
+        duration_ms=elapsed_ms(started_at),
     )
 
 

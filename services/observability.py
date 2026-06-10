@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 
@@ -55,6 +56,10 @@ def emit_event(
         + [f"{key}={_format_value(value)}" for key, value in safe_fields.items()]
     )
     logger.log(level, message)
+
+
+def elapsed_ms(start: float) -> int:
+    return max(0, round((time.perf_counter() - start) * 1000))
 
 
 def _safe_event_fields(fields: dict[str, Any]) -> dict[str, Any]:

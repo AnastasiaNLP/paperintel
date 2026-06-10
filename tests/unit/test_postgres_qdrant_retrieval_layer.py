@@ -182,6 +182,7 @@ def test_postgres_qdrant_retrieval_layer_emits_safe_search_event(caplog):
     assert 'session_id="session-1"' in message
     assert 'paper_id="2310.06825"' in message
     assert "result_count=1" in message
+    assert "duration_ms=" in message
     assert "sensitive retrieval query" not in message
     assert chunk.text not in message
 

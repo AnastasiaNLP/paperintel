@@ -124,6 +124,7 @@ def test_search_chunks_emits_safe_retrieval_event(caplog):
     assert 'session_id="session-1"' in message
     assert 'paper_id="2310.06825"' in message
     assert "result_count=1" in message
+    assert "duration_ms=" in message
     assert "sensitive user query" not in message
     assert "Sensitive chunk text" not in message
 
@@ -162,6 +163,7 @@ def test_search_chunks_event_omits_paper_id_for_multi_paper_query(caplog):
     assert "event=retrieval.search.completed" in message
     assert 'session_id="session-1"' in message
     assert "result_count=2" in message
+    assert "duration_ms=" in message
     assert "paper_id=" not in message
 
 
