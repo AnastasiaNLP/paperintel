@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy.orm import sessionmaker
 
-from agents.agent_run_recorder import AgentRunPersistence
+from agents.agent_run_recorder import AgentRunPersistence, emit_agent_run_lifecycle_events
 from api.in_memory_session_store import SessionNotFoundError
 from api.session_store import SessionStore
 from models.agent_runs import AgentRun
@@ -1713,11 +1713,18 @@ class PostgresSessionStore(SessionStore):
 class PostgresAgentRunPersistence(AgentRunPersistence):
     def __init__(self, session_factory: sessionmaker[DbSession]) -> None:
         self.session_factory = session_factory
+        self._observed_started: set[str] = set()
+        self._observed_terminal: set[str] = set()
 
     def save(self, run: AgentRun) -> None:
         with self.session_factory() as db:
             db.merge(agent_run_to_orm(run))
             db.commit()
+        emit_agent_run_lifecycle_events(
+            run,
+            observed_started=self._observed_started,
+            observed_terminal=self._observed_terminal,
+        )
 
     def get(self, run_id: str) -> AgentRun | None:
         with self.session_factory() as db:

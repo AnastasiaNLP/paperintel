@@ -1,3 +1,4 @@
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -208,7 +209,7 @@ def test_postgres_session_store_raises_for_missing_session(session_factory):
         store.require_session("missing")
 
 
-def test_postgres_agent_run_persistence_upserts_run(session_factory):
+def test_postgres_agent_run_persistence_upserts_run(session_factory, caplog):
     store = PostgresSessionStore(session_factory)
     session = store.create_session()
     persistence = PostgresAgentRunPersistence(session_factory)
@@ -219,17 +220,35 @@ def test_postgres_agent_run_persistence_upserts_run(session_factory):
         model="claude-haiku",
         iteration_count=1,
     )
-    run.complete(output_ref="state:report", details={"first": True})
 
-    persistence.save(run)
-    run.details["first"] = False
-    run.details["second"] = True
-    persistence.save(run)
+    with caplog.at_level(logging.INFO, logger="agents.agent_run_recorder"):
+        persistence.save(run)
+        run.complete(output_ref="state:report", details={"first": True})
+        persistence.save(run)
+        run.details["first"] = False
+        run.details["second"] = True
+        persistence.save(run)
 
     loaded = persistence.get(run.id)
     assert loaded is not None
     assert loaded.id == run.id
     assert loaded.details == {"first": False, "second": True}
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("event=agent.started" in message for message in messages) == 1
+    assert sum("event=agent.completed" in message for message in messages) == 1
+    started = next(message for message in messages if "event=agent.started" in message)
+    completed = next(
+        message for message in messages if "event=agent.completed" in message
+    )
+    assert f'agent_run_id="{run.id}"' in started
+    assert 'agent_name="report"' in started
+    assert "state:report" not in started
+    assert f'agent_run_id="{run.id}"' in completed
+    assert 'agent_name="report"' in completed
+    assert 'status="completed"' in completed
+    assert 'termination_reason="success"' in completed
+    assert "duration_ms=" in completed
+    assert "state:report" not in completed
 
 
 def test_postgres_structured_error_repository_round_trip(session_factory):

@@ -3,7 +3,11 @@ from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
-from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
+from agents.agent_run_recorder import (
+    AgentRunPersistence,
+    NoopAgentRunPersistence,
+    emit_agent_run_started,
+)
 from models.agent_runs import AgentRun
 from models.agent_policies import AgentRuntimePolicy, resolve_agent_policy
 from models.errors import ErrorCodes, make_error
@@ -48,13 +52,15 @@ def _start_critic_run(
     if report_run_id:
         input_refs.append(report_run_id)
 
-    return AgentRun(
+    run = AgentRun(
         agent_name="evidence_critic",
         session_id=configurable.get("session_id"),
         job_id=configurable.get("job_id"),
         input_refs=input_refs,
         iteration_count=1,
     )
+    emit_agent_run_started(run)
+    return run
 
 
 def _policy_snapshot(policy: AgentRuntimePolicy) -> dict[str, Any]:

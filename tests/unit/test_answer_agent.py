@@ -1,4 +1,5 @@
 import json
+import logging
 from unittest.mock import patch
 
 from agents.agent_run_recorder import InMemoryAgentRunPersistence
@@ -89,11 +90,12 @@ def _run(result: dict):
 
 
 @patch("agents.answer_agent._call_llm")
-def test_answer_agent_records_agent_run_on_success(mock_call_llm):
+def test_answer_agent_records_agent_run_on_success(mock_call_llm, caplog):
     persistence = InMemoryAgentRunPersistence()
     mock_call_llm.return_value = (_answer_payload(), None)
 
-    result = answer_agent(_state(), config=_config(persistence))
+    with caplog.at_level(logging.INFO, logger="agents.agent_run_recorder"):
+        result = answer_agent(_state(), config=_config(persistence))
 
     run = _run(result)
     draft = result["answer_draft"]
@@ -110,6 +112,21 @@ def test_answer_agent_records_agent_run_on_success(mock_call_llm):
         "insufficient_evidence_response"
     )
     assert persistence.list_runs() == [run]
+    messages = [record.getMessage() for record in caplog.records]
+    started = next(message for message in messages if "event=agent.started" in message)
+    completed = next(
+        message for message in messages if "event=agent.completed" in message
+    )
+    assert f'agent_run_id="{run.id}"' in started
+    assert 'agent_name="answer_agent"' in started
+    assert 'session_id="session-1"' in started
+    assert 'job_id="job-1"' in started
+    assert f'agent_run_id="{run.id}"' in completed
+    assert 'status="completed"' in completed
+    assert 'termination_reason="success"' in completed
+    assert "duration_ms=" in completed
+    assert all("What does the method improve?" not in message for message in messages)
+    assert all("The method improves retrieval quality." not in message for message in messages)
 
 
 @patch("agents.answer_agent._call_llm")
@@ -142,10 +159,11 @@ def test_answer_agent_uses_techlead_prompt_when_persona_is_techlead(mock_call_ll
     assert "Persona: techlead." in system_prompt
 
 
-def test_answer_agent_empty_evidence_returns_insufficient_evidence_fallback():
+def test_answer_agent_empty_evidence_returns_insufficient_evidence_fallback(caplog):
     evidence = EvidenceBundle(query="missing", results=[])
 
-    result = answer_agent(_state(evidence_bundle=evidence), config=_config())
+    with caplog.at_level(logging.INFO, logger="agents.agent_run_recorder"):
+        result = answer_agent(_state(evidence_bundle=evidence), config=_config())
 
     run = _run(result)
     draft = result["answer_draft"]
@@ -157,6 +175,17 @@ def test_answer_agent_empty_evidence_returns_insufficient_evidence_fallback():
     assert run.termination_reason == "fallback"
     assert run.llm_call_count == 0
     assert run.details["fallback_reason"] == "no_evidence_available"
+    messages = [record.getMessage() for record in caplog.records]
+    started = next(message for message in messages if "event=agent.started" in message)
+    failed = next(message for message in messages if "event=agent.failed" in message)
+    assert f'agent_run_id="{run.id}"' in started
+    assert f'agent_run_id="{run.id}"' in failed
+    assert 'agent_name="answer_agent"' in failed
+    assert 'status="fallback_used"' in failed
+    assert 'termination_reason="fallback"' in failed
+    assert 'failure_class="fallback"' in failed
+    assert "duration_ms=" in failed
+    assert all("missing" not in message for message in messages)
 
 
 def test_answer_agent_fails_without_valid_persona():

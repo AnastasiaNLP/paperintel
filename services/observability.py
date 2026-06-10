@@ -19,6 +19,7 @@ SAFE_EVENT_FIELDS = {
     "failure_class",
     "retryable",
     "retry_after_seconds",
+    "termination_reason",
     "attempts",
     "max_attempts",
     "duration_ms",

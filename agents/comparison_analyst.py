@@ -7,7 +7,11 @@ from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
-from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
+from agents.agent_run_recorder import (
+    AgentRunPersistence,
+    NoopAgentRunPersistence,
+    emit_agent_run_started,
+)
 from agents.comparator import (
     _build_comparison_matrix,
     _build_evidence_json,
@@ -97,7 +101,7 @@ def _start_run(
     config: RunnableConfig | None,
 ) -> AgentRun:
     configurable = _configurable(config)
-    return AgentRun(
+    run = AgentRun(
         agent_name="comparison_analyst",
         session_id=session_id,
         job_id=configurable.get("job_id"),
@@ -105,6 +109,8 @@ def _start_run(
         model=settings.sonnet_model,
         iteration_count=1,
     )
+    emit_agent_run_started(run)
+    return run
 
 
 def _call_llm(

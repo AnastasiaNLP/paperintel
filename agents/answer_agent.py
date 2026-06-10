@@ -7,7 +7,11 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from pydantic import TypeAdapter, ValidationError
 
-from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
+from agents.agent_run_recorder import (
+    AgentRunPersistence,
+    NoopAgentRunPersistence,
+    emit_agent_run_started,
+)
 from agents.llm_provider import call_text_llm, llm_error_termination_reason
 from config.settings import settings
 from models.agent_runs import AgentRun
@@ -78,7 +82,7 @@ def _start_answer_run(
     if isinstance(repair_context, RepairContext):
         input_refs.append(f"repair_context:{repair_context.id}")
 
-    return AgentRun(
+    run = AgentRun(
         agent_name="answer_agent",
         session_id=configurable.get("session_id") or state.get("session_id"),
         job_id=configurable.get("job_id"),
@@ -86,6 +90,8 @@ def _start_answer_run(
         model=settings.sonnet_model,
         iteration_count=1,
     )
+    emit_agent_run_started(run)
+    return run
 
 
 def _with_agent_run(

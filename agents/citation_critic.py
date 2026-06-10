@@ -7,7 +7,11 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
-from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
+from agents.agent_run_recorder import (
+    AgentRunPersistence,
+    NoopAgentRunPersistence,
+    emit_agent_run_started,
+)
 from agents.llm_provider import call_text_llm, llm_error_termination_reason
 from config.settings import settings
 from models.agent_runs import AgentRun
@@ -79,7 +83,7 @@ def _start_critic_run(
     if answer_run_id:
         input_refs.append(answer_run_id)
 
-    return AgentRun(
+    run = AgentRun(
         agent_name="citation_critic",
         session_id=configurable.get("session_id") or state.get("session_id"),
         job_id=configurable.get("job_id"),
@@ -87,6 +91,8 @@ def _start_critic_run(
         model=settings.sonnet_model,
         iteration_count=1,
     )
+    emit_agent_run_started(run)
+    return run
 
 
 def _with_agent_run(

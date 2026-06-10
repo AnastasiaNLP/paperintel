@@ -7,7 +7,11 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
-from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
+from agents.agent_run_recorder import (
+    AgentRunPersistence,
+    NoopAgentRunPersistence,
+    emit_agent_run_started,
+)
 from agents.llm_provider import call_text_llm, llm_error_termination_reason
 from config.settings import settings
 from models.agent_runs import AgentRun
@@ -63,7 +67,7 @@ def _start_strategist_run(
 ) -> AgentRun:
     configurable = _configurable(config)
     session_id = configurable.get("session_id") or state.get("session_id")
-    return AgentRun(
+    run = AgentRun(
         agent_name="research_strategist",
         session_id=session_id,
         job_id=configurable.get("job_id"),
@@ -74,6 +78,8 @@ def _start_strategist_run(
         model=settings.haiku_model,
         iteration_count=1,
     )
+    emit_agent_run_started(run)
+    return run
 
 
 def _with_agent_run(

@@ -7,7 +7,11 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
-from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
+from agents.agent_run_recorder import (
+    AgentRunPersistence,
+    NoopAgentRunPersistence,
+    emit_agent_run_started,
+)
 from agents.comparison_analyst import _model_or_none
 from agents.llm_provider import call_text_llm, llm_error_termination_reason
 from config.settings import settings
@@ -88,7 +92,7 @@ def _start_run(
     input_refs = [f"paper_workspace:{workspace.paper_id}" for workspace in workspaces]
     if comparison is not None:
         input_refs.append(f"comparison_artifact:{comparison.id}")
-    return AgentRun(
+    run = AgentRun(
         agent_name="synthesis_agent",
         session_id=session_id,
         job_id=configurable.get("job_id"),
@@ -96,6 +100,8 @@ def _start_run(
         model=settings.sonnet_model,
         iteration_count=1,
     )
+    emit_agent_run_started(run)
+    return run
 
 
 def _call_llm(

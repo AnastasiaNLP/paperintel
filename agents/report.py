@@ -6,7 +6,11 @@ from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
+from agents.agent_run_recorder import (
+    AgentRunPersistence,
+    NoopAgentRunPersistence,
+    emit_agent_run_started,
+)
 from agents.error_utils import paper_error
 from agents.llm_provider import call_text_llm, llm_error_termination_reason
 from config.settings import settings
@@ -58,13 +62,15 @@ def _agent_run_persistence(config: RunnableConfig | None) -> AgentRunPersistence
 
 def _start_report_run(config: RunnableConfig | None) -> AgentRun:
     configurable = _configurable(config)
-    return AgentRun(
+    run = AgentRun(
         agent_name="report",
         session_id=configurable.get("session_id"),
         job_id=configurable.get("job_id"),
         model=settings.haiku_model,
         iteration_count=1,
     )
+    emit_agent_run_started(run)
+    return run
 
 
 def _policy_snapshot(policy: AgentRuntimePolicy) -> dict[str, Any]:

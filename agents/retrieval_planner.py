@@ -7,7 +7,11 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
-from agents.agent_run_recorder import AgentRunPersistence, NoopAgentRunPersistence
+from agents.agent_run_recorder import (
+    AgentRunPersistence,
+    NoopAgentRunPersistence,
+    emit_agent_run_started,
+)
 from agents.llm_provider import call_text_llm, llm_error_termination_reason
 from config.settings import settings
 from models.agent_runs import AgentRun
@@ -74,7 +78,7 @@ def _start_planner_run(
     input_refs = ["state:user_message", "state:intent_resolution"]
     if state.get("referenced_paper_ids"):
         input_refs.append("state:referenced_paper_ids")
-    return AgentRun(
+    run = AgentRun(
         agent_name="retrieval_planner",
         session_id=configurable.get("session_id") or state.get("session_id"),
         job_id=configurable.get("job_id"),
@@ -82,6 +86,8 @@ def _start_planner_run(
         model=settings.sonnet_model,
         iteration_count=1,
     )
+    emit_agent_run_started(run)
+    return run
 
 
 def _with_agent_run(

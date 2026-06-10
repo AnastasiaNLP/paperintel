@@ -16,8 +16,8 @@ a metrics backend, dashboard, or tracing vendor requirement.
 
 | Surface | Current behavior | Gap |
 | --- | --- | --- |
-| `AgentRun` | Durable per-agent execution record with `session_id`, `job_id`, `agent_name`, `model`, lifecycle status, `termination_reason`, counts, refs, and `details`. | Trace correlation is not standardized. Raw prompt/output policy is documented but not centrally enforced. |
-| Agent policies | Agents record `details.policy_applied`, production LLM paths pass `AgentRuntimePolicy.timeout_seconds` or registered pipeline policy timeouts to `call_text_llm()`, and `AgentRun` paths use the shared LLM timeout classifier for final outcomes. | Trace correlation is not standardized for every agent path. |
+| `AgentRun` | Durable per-agent execution record with `session_id`, `job_id`, `agent_name`, `model`, lifecycle status, `termination_reason`, counts, refs, and `details`; agent boundaries emit safe `agent.started` events and persistence emits terminal lifecycle events. | Trace correlation is not standardized. Raw prompt/output policy is documented but not centrally enforced. |
+| Agent policies | Agents record `details.policy_applied`, production LLM paths pass `AgentRuntimePolicy.timeout_seconds` or registered pipeline policy timeouts to `call_text_llm()`, and `AgentRun` paths use the shared LLM timeout classifier for final outcomes. | External trace correlation is not standardized for every agent path. |
 | LLM provider | `call_text_llm()` logs provider/model and emits `llm.call.completed`, `llm.call.failed`, and `llm.call.timeout` events with `duration_ms`. | No trace/correlation payload yet. |
 | Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; worker emits started events and terminal completed/failed events with `duration_ms`. | Event coverage is still incomplete for some operational surfaces. |
 | Retrieval | Retrieval search emits `retrieval.search.completed` with correlation ids, result count, and `duration_ms`, without query text or chunk text. | No trace/correlation payload yet. |
@@ -79,7 +79,7 @@ metrics, and runbook output.
 | `status` | Stable lifecycle status. | Yes when relevant | Yes | Sessions, jobs, agent runs |
 | `result_size` | Size of a generated or returned result, usually character count. | No by default | Yes | Provider-call diagnostics |
 | `result_count` | Count of returned results. | No by default | Yes | Retrieval diagnostics |
-| `duration_ms` | Runtime duration for a provider call, retrieval search, job execution, or agent run when measured. | No by default | Yes | Provider-call, retrieval, workflow-job, and future AgentRun diagnostics |
+| `duration_ms` | Runtime duration for a provider call, retrieval search, workflow job, or agent run when measured. | No by default | Yes | Provider-call, retrieval, workflow-job, and AgentRun diagnostics |
 | `trace_id` | External trace/correlation id. | No by default | Yes | Future optional AgentRun details |
 
 ## Event Taxonomy
@@ -95,9 +95,9 @@ document, traceback, and secret-like fields.
 | `workflow.job.started` | `job_id`, `session_id`, `kind`, `worker_id`, `attempts`, `max_attempts` |
 | `workflow.job.completed` | `job_id`, `session_id`, `kind`, `worker_id`, `attempts`, `max_attempts`, `duration_ms` |
 | `workflow.job.failed` | `job_id`, `session_id`, `kind`, `worker_id`, `failure_class`, `retryable`, `attempts`, `max_attempts`, `duration_ms` |
-| `agent.started` | `agent_run_id`, `agent_name`, `session_id`, optional `job_id` |
-| `agent.completed` | `agent_run_id`, `agent_name`, `duration_ms`, `termination_reason` |
-| `agent.failed` | `agent_run_id`, `agent_name`, `failure_class` or error category |
+| `agent.started` | `agent_run_id`, `agent_name`, optional `session_id`, optional `job_id`, optional `model` |
+| `agent.completed` | `agent_run_id`, `agent_name`, `status`, `termination_reason`, `duration_ms`, optional `session_id`, optional `job_id`, optional `model` |
+| `agent.failed` | `agent_run_id`, `agent_name`, `status`, `termination_reason`, `failure_class`, `duration_ms`, optional `session_id`, optional `job_id`, optional `model` |
 | `llm.call.started` | `provider`, `model`, `agent_name` or `context_label` |
 | `llm.call.completed` | `provider`, `model`, `result_size`, `duration_ms`, optional `timeout_seconds` |
 | `llm.call.failed` | `provider`, `model`, `duration_ms`, `failure_class` or error category, optional `timeout_seconds` |
@@ -140,6 +140,12 @@ AgentRun details may add a future neutral observability block, for example:
 
 Do not store raw prompts, full model outputs, full PDF text, secrets, or signed
 object URLs in `AgentRun.details`.
+
+Agent started events are emitted when production-shaped agents create their
+`AgentRun`. Terminal lifecycle events are emitted from the persistence boundary
+and deduplicated per persistence instance. These events include correlation
+identifiers and lifecycle metadata, but they do not include `input_refs`,
+`output_ref`, prompts, evidence text, model output, or document content.
 
 ## Timeout And Bounded Execution
 

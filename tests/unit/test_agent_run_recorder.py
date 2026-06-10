@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from agents.agent_run_recorder import (
@@ -106,3 +108,91 @@ def test_in_memory_persistence_records_saved_runs():
     persistence.save(second)
 
     assert persistence.list_runs() == [first, second]
+
+
+def test_in_memory_persistence_emits_started_for_running_run(caplog):
+    recorder = InMemoryAgentRunRecorder()
+    persistence = InMemoryAgentRunPersistence()
+    run = recorder.start(
+        agent_name="answer_agent",
+        session_id="session-1",
+        input_refs=["raw prompt text should not be logged"],
+        model="claude-test",
+    )
+
+    with caplog.at_level(logging.INFO, logger="agents.agent_run_recorder"):
+        persistence.save(run)
+
+    message = caplog.records[-1].getMessage()
+    assert "event=agent.started" in message
+    assert f'agent_run_id="{run.id}"' in message
+    assert 'agent_name="answer_agent"' in message
+    assert 'session_id="session-1"' in message
+    assert 'model="claude-test"' in message
+    assert "raw prompt text" not in message
+
+
+def test_in_memory_persistence_emits_safe_agent_completed_events(caplog):
+    recorder = InMemoryAgentRunRecorder()
+    persistence = InMemoryAgentRunPersistence()
+    run = recorder.start(
+        agent_name="answer_agent",
+        session_id="session-1",
+        job_id="job-1",
+        input_refs=["raw prompt text should not be logged"],
+        model="claude-test",
+    )
+    recorder.complete(
+        run.id,
+        output_ref="raw output text should not be logged",
+        termination_reason="success",
+    )
+
+    with caplog.at_level(logging.INFO, logger="agents.agent_run_recorder"):
+        persistence.save(run)
+
+    messages = [record.getMessage() for record in caplog.records]
+    completed = next(
+        message for message in messages if "event=agent.completed" in message
+    )
+    assert all("event=agent.started" not in message for message in messages)
+    assert f'agent_run_id="{run.id}"' in completed
+    assert 'status="completed"' in completed
+    assert 'termination_reason="success"' in completed
+    assert "duration_ms=" in completed
+    assert all("raw prompt text" not in message for message in messages)
+    assert all("raw output text" not in message for message in messages)
+
+
+def test_in_memory_persistence_deduplicates_terminal_events(caplog):
+    recorder = InMemoryAgentRunRecorder()
+    persistence = InMemoryAgentRunPersistence()
+    run = recorder.start(agent_name="answer_agent", session_id="session-1")
+    recorder.complete(run.id)
+
+    with caplog.at_level(logging.INFO, logger="agents.agent_run_recorder"):
+        persistence.save(run)
+        run.details["second_save"] = True
+        persistence.save(run)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("event=agent.completed" in message for message in messages) == 1
+
+
+def test_in_memory_persistence_emits_safe_agent_failed_event(caplog):
+    recorder = InMemoryAgentRunRecorder()
+    persistence = InMemoryAgentRunPersistence()
+    run = recorder.start(agent_name="citation_critic", session_id="session-1")
+    recorder.fail(run.id, termination_reason="timeout")
+
+    with caplog.at_level(logging.INFO, logger="agents.agent_run_recorder"):
+        persistence.save(run)
+
+    messages = [record.getMessage() for record in caplog.records]
+    failed = next(message for message in messages if "event=agent.failed" in message)
+    assert f'agent_run_id="{run.id}"' in failed
+    assert 'agent_name="citation_critic"' in failed
+    assert 'status="failed"' in failed
+    assert 'termination_reason="timeout"' in failed
+    assert 'failure_class="timeout"' in failed
+    assert "duration_ms=" in failed
