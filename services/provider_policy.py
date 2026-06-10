@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Iterable
 
 import httpx
+
+from services.observability import emit_event
+
+logger = logging.getLogger(__name__)
 
 
 class FailureClass(StrEnum):
@@ -215,4 +220,20 @@ def _classified(
         breaker_failure=breaker_failure,
         degradation_allowed=degradation_allowed,
         http_status=http_status,
+    )
+
+
+def emit_provider_failure(
+    failure: ClassifiedFailure,
+    *,
+    retry_after_seconds: float | None = None,
+) -> None:
+    emit_event(
+        logger,
+        "provider.failure",
+        provider=failure.provider,
+        operation=failure.operation,
+        failure_class=failure.failure_class.value,
+        retryable=failure.retryable,
+        retry_after_seconds=retry_after_seconds,
     )

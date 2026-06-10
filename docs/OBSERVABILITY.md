@@ -19,7 +19,9 @@ a metrics backend, dashboard, or tracing vendor requirement.
 | `AgentRun` | Durable per-agent execution record with `session_id`, `job_id`, `agent_name`, `model`, lifecycle status, `termination_reason`, counts, refs, and `details`. | Trace correlation is not standardized. Raw prompt/output policy is documented but not centrally enforced. |
 | Agent policies | Agents record `details.policy_applied`, production LLM paths pass `AgentRuntimePolicy.timeout_seconds` or registered pipeline policy timeouts to `call_text_llm()`, and `AgentRun` paths use the shared LLM timeout classifier for final outcomes. | Trace correlation is not standardized for every agent path. |
 | LLM provider | `call_text_llm()` logs provider/model and emits `llm.call.completed`, `llm.call.failed`, and `llm.call.timeout` events. | No duration field or trace/correlation payload yet. |
-| Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; worker emits started/completed/failed events. | Event coverage is still limited to worker and LLM provider surfaces. |
+| Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; worker emits started/completed/failed events. | Event coverage is still incomplete for some operational surfaces. |
+| Retrieval | Retrieval search emits `retrieval.search.completed` with correlation ids and result count, without query text or chunk text. | No duration field or trace/correlation payload yet. |
+| Provider failures | arXiv and Semantic Scholar failure paths emit `provider.failure` with neutral failure class and retry decision. | Coverage is not yet complete for every infrastructure dependency. |
 | Health | Reports Postgres, provider resilience store, Qdrant, LLM/embedding config, and blob store. | No metrics export. |
 | REST/MCP | Public result payloads intentionally omit raw `AgentRun` internals and preserve neutral failure classes/metadata where needed. | Correlation IDs are not consistently surfaced for every async/sync operation. |
 | Live smoke tests | Print stable `LIVE_*` markers for run/session/job/resource IDs and cleanup. | Marker taxonomy is test-specific, not a general event contract. |
@@ -76,6 +78,7 @@ metrics, and runbook output.
 | `timeout_seconds` | Configured provider-call timeout. | No by default | Yes | Provider-call diagnostics |
 | `status` | Stable lifecycle status. | Yes when relevant | Yes | Sessions, jobs, agent runs |
 | `result_size` | Size of a generated or returned result, usually character count. | No by default | Yes | Provider-call diagnostics |
+| `result_count` | Count of returned results. | No by default | Yes | Retrieval diagnostics |
 | `duration_ms` | Runtime duration for an operation when measured. | No by default | Yes | Future |
 | `trace_id` | External trace/correlation id. | No by default | Yes | Future optional AgentRun details |
 
@@ -99,8 +102,8 @@ document, traceback, and secret-like fields.
 | `llm.call.completed` | `provider`, `model`, `result_size`, optional `timeout_seconds` |
 | `llm.call.failed` | `provider`, `model`, `failure_class` or error category, optional `timeout_seconds` |
 | `llm.call.timeout` | `provider`, `model`, `timeout_seconds` |
-| `retrieval.search.completed` | `session_id`, optional `paper_id`, result count, duration |
-| `provider.failure` | `provider`, operation, `failure_class`, retryable decision |
+| `retrieval.search.completed` | `session_id`, optional `paper_id`, `result_count` |
+| `provider.failure` | `provider`, `operation`, `failure_class`, `retryable`, optional `retry_after_seconds` |
 | `cache.reused_analysis` | `session_id`, `paper_id`, reuse source category |
 
 ## AgentRun Contract
@@ -153,8 +156,7 @@ exception text. Where an `AgentRun` records a timeout as the final outcome, use
 
 ## Future Hardening
 
-Structured event coverage should expand beyond worker and LLM provider
-surfaces, starting with retrieval search and provider failure events.
+Structured event coverage should expand to the remaining operational surfaces.
 
 Optional trace/correlation fields may be added to `AgentRun.details` without
 exposing them in default REST/MCP payloads.

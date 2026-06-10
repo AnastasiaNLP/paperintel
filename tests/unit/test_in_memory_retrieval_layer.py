@@ -1,3 +1,5 @@
+import logging
+
 from models.retrieval import ChunkLocation, ChunkSearchQuery, ChunkSource, PaperChunk
 from services.retrieval_layer import InMemoryRetrievalLayer
 
@@ -91,6 +93,76 @@ def test_search_chunks_scores_filters_limits_and_ranks_deterministically():
     assert results[0].rank == 1
     assert results[0].chunk.id == "chunk-1"
     assert results[0].match_reason == "lexical_token_overlap"
+
+
+def test_search_chunks_emits_safe_retrieval_event(caplog):
+    layer = InMemoryRetrievalLayer()
+    layer.upsert_chunks(
+        [
+            _chunk(
+                chunk_id="chunk-1",
+                paper_id="2310.06825",
+                chunk_index=0,
+                text="Sensitive chunk text should not be logged.",
+            )
+        ]
+    )
+
+    with caplog.at_level(logging.INFO, logger="services.retrieval_layer"):
+        results = layer.search_chunks(
+            ChunkSearchQuery(
+                query="sensitive user query",
+                session_id="session-1",
+                paper_ids=["2310.06825"],
+                limit=5,
+            )
+        )
+
+    assert len(results) == 1
+    message = caplog.records[-1].getMessage()
+    assert "event=retrieval.search.completed" in message
+    assert 'session_id="session-1"' in message
+    assert 'paper_id="2310.06825"' in message
+    assert "result_count=1" in message
+    assert "sensitive user query" not in message
+    assert "Sensitive chunk text" not in message
+
+
+def test_search_chunks_event_omits_paper_id_for_multi_paper_query(caplog):
+    layer = InMemoryRetrievalLayer()
+    layer.upsert_chunks(
+        [
+            _chunk(
+                chunk_id="chunk-1",
+                paper_id="2310.06825",
+                chunk_index=0,
+                text="Retrieval evidence.",
+            ),
+            _chunk(
+                chunk_id="chunk-2",
+                paper_id="2401.00001",
+                chunk_index=0,
+                text="Retrieval comparison.",
+            ),
+        ]
+    )
+
+    with caplog.at_level(logging.INFO, logger="services.retrieval_layer"):
+        results = layer.search_chunks(
+            ChunkSearchQuery(
+                query="retrieval",
+                session_id="session-1",
+                paper_ids=["2310.06825", "2401.00001"],
+                limit=5,
+            )
+        )
+
+    assert len(results) == 2
+    message = caplog.records[-1].getMessage()
+    assert "event=retrieval.search.completed" in message
+    assert 'session_id="session-1"' in message
+    assert "result_count=2" in message
+    assert "paper_id=" not in message
 
 
 def test_search_chunks_returns_empty_list_for_no_matches():

@@ -7,7 +7,11 @@ from typing import List
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from services.provider_circuit_breaker import ProviderCircuitBreaker
 from services.provider_rate_limiter import ProviderRateLimiter
-from services.provider_policy import FailureClass, classify_provider_exception
+from services.provider_policy import (
+    FailureClass,
+    classify_provider_exception,
+    emit_provider_failure,
+)
 from tools.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 
 logger = logging.getLogger(__name__)
@@ -58,6 +62,7 @@ def _record_s2_success() -> None:
 
 def _record_s2_failure(exc: Exception) -> None:
     classified = _classify_s2_exception(exc)
+    emit_provider_failure(classified)
     if not classified.breaker_failure:
         return
     if _provider_circuit_breaker is not None:

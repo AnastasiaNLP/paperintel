@@ -244,6 +244,26 @@ def test_s2_rate_limit_status_is_retryable():
     assert s2._s2_breaker.failure_count == 0
 
 
+def test_s2_emits_provider_failure_event(caplog):
+    request = httpx.Request("GET", "https://example.com")
+    response = httpx.Response(500, request=request)
+    exc = httpx.HTTPStatusError("raw provider failure", request=request, response=response)
+
+    with caplog.at_level("INFO", logger="services.provider_policy"):
+        s2._record_s2_failure(exc)
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "event=provider.failure" in record.getMessage()
+    )
+    assert 'provider="semantic_scholar"' in message
+    assert 'operation="paper_enrichment"' in message
+    assert 'failure_class="provider_unavailable"' in message
+    assert "retryable=true" in message
+    assert "raw provider failure" not in message
+
+
 def test_s2_non_fatal_status_closes_half_open_breaker(monkeypatch):
     response = httpx.Response(429, request=httpx.Request("GET", "https://example.com"))
     client = FakeClient(response)

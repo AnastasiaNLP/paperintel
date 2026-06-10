@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 import httpx
@@ -179,6 +180,41 @@ def test_get_metadata_records_error_on_fetch_failure(monkeypatch):
     assert arxiv_id == "1706.03762"
     assert error_json["code"] == "HTTPStatusError"
     assert error_json["http_status"] == 429
+
+
+def test_get_metadata_emits_provider_failure_event_without_raw_body(
+    monkeypatch,
+    caplog,
+):
+    cache = FakeMetadataCache()
+    arxiv_client.configure_metadata_cache(cache)
+
+    request = httpx.Request("GET", arxiv_client.ARXIV_API_URL)
+    response = httpx.Response(
+        500,
+        text="raw arxiv metadata body should not be logged",
+        request=request,
+    )
+
+    def fake_get(url, *, params=None):
+        return response
+
+    monkeypatch.setattr(arxiv_client, "_get", fake_get)
+
+    with caplog.at_level(logging.INFO, logger="services.provider_policy"):
+        with pytest.raises(httpx.HTTPStatusError):
+            arxiv_client.get_metadata.__wrapped__("1706.03762")
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "event=provider.failure" in record.getMessage()
+    )
+    assert 'provider="arxiv"' in message
+    assert 'operation="metadata_or_search"' in message
+    assert 'failure_class="provider_unavailable"' in message
+    assert "retryable=true" in message
+    assert "raw arxiv metadata body" not in message
 
 
 def test_cache_failures_do_not_block_direct_fetch(monkeypatch):

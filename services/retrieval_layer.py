@@ -1,3 +1,4 @@
+import logging
 import re
 from copy import deepcopy
 from typing import Protocol, Sequence
@@ -14,8 +15,11 @@ from models.retrieval import (
     VectorSearchHit,
 )
 from services.embeddings import EmbeddingProvider
+from services.observability import emit_event
 from services.qdrant_store import QdrantChunkStore, chunk_from_payload
 from storage.repositories import PostgresPaperChunkRepository
+
+logger = logging.getLogger(__name__)
 
 
 class RetrievalLayer(Protocol):
@@ -101,6 +105,7 @@ class InMemoryRetrievalLayer:
         limited = results[: query.limit]
         for index, result in enumerate(limited, start=1):
             result.rank = index
+        _emit_retrieval_search_completed(query, len(limited))
         return limited
 
     def assemble_evidence(
@@ -175,7 +180,9 @@ class PostgresQdrantRetrievalLayer:
                 filters=query.filters,
             )
         )
-        return _search_results_from_hits(hits, self.chunk_repository)
+        results = _search_results_from_hits(hits, self.chunk_repository)
+        _emit_retrieval_search_completed(query, len(results))
+        return results
 
     def assemble_evidence(
         self,
@@ -189,6 +196,19 @@ class PostgresQdrantRetrievalLayer:
 
 def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _emit_retrieval_search_completed(
+    query: ChunkSearchQuery,
+    result_count: int,
+) -> None:
+    emit_event(
+        logger,
+        "retrieval.search.completed",
+        session_id=query.session_id,
+        paper_id=query.paper_ids[0] if len(query.paper_ids) == 1 else None,
+        result_count=result_count,
+    )
 
 
 def _lexical_score(query_tokens: set[str], chunk_tokens: set[str]) -> float:

@@ -1,3 +1,5 @@
+import logging
+
 from models.retrieval import (
     DEFAULT_EMBEDDING_DIMENSIONS,
     ChunkLocation,
@@ -143,6 +145,45 @@ def test_postgres_qdrant_retrieval_layer_searches_and_maps_persisted_chunks():
     assert results[0].rank == 1
     assert results[0].score == 0.91
     assert results[0].match_reason == "qdrant_vector_search"
+
+
+def test_postgres_qdrant_retrieval_layer_emits_safe_search_event(caplog):
+    chunk = _chunk("2310.06825:chunk:0")
+    repository = RecordingChunkRepository({chunk.id: chunk})
+    vector_store = RecordingVectorStore(
+        [
+            VectorSearchHit(
+                chunk_id=chunk.id,
+                paper_id=chunk.paper_id,
+                score=0.91,
+                payload=chunk_payload(chunk),
+            )
+        ]
+    )
+    layer = PostgresQdrantRetrievalLayer(
+        chunk_repository=repository,
+        vector_store=vector_store,
+        embedding_provider=RecordingEmbeddingProvider(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="services.retrieval_layer"):
+        results = layer.search_chunks(
+            ChunkSearchQuery(
+                query="sensitive retrieval query",
+                session_id="session-1",
+                paper_ids=["2310.06825"],
+                limit=3,
+            )
+        )
+
+    assert len(results) == 1
+    message = caplog.records[-1].getMessage()
+    assert "event=retrieval.search.completed" in message
+    assert 'session_id="session-1"' in message
+    assert 'paper_id="2310.06825"' in message
+    assert "result_count=1" in message
+    assert "sensitive retrieval query" not in message
+    assert chunk.text not in message
 
 
 def test_postgres_qdrant_retrieval_layer_falls_back_to_qdrant_payload():

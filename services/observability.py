@@ -26,6 +26,7 @@ SAFE_EVENT_FIELDS = {
     "kind",
     "worker_id",
     "result_size",
+    "result_count",
 }
 
 FORBIDDEN_FIELD_MARKERS = {

@@ -1,3 +1,5 @@
+import logging
+
 import httpx
 import pytest
 
@@ -325,6 +327,27 @@ def test_search_raises_on_permanent_error_without_retry():
         provider.search(ResearchQuery(query="bad"))
 
     assert len(client.calls) == 1
+
+
+def test_search_emits_provider_failure_event_without_raw_body(caplog):
+    response = _response("raw provider body should not be logged", status_code=400)
+    client = FakeClient([response])
+    provider = ArxivSearchProvider(client=client, rate_limit_delay=0)
+
+    with caplog.at_level(logging.INFO, logger="services.provider_policy"):
+        with pytest.raises(httpx.HTTPStatusError):
+            provider.search(ResearchQuery(query="bad"))
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "event=provider.failure" in record.getMessage()
+    )
+    assert 'provider="arxiv"' in message
+    assert 'operation="search"' in message
+    assert 'failure_class="invalid_input"' in message
+    assert "retryable=false" in message
+    assert "raw provider body" not in message
 
 
 def test_provider_close_delegates_to_client():

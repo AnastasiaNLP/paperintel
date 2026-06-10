@@ -15,7 +15,7 @@ from tenacity import (
 from models.discovery import RawSearchResult, ResearchQuery
 from services.provider_circuit_breaker import ProviderCircuitBreaker
 from services.provider_rate_limiter import ProviderRateLimiter
-from services.provider_policy import classify_provider_exception
+from services.provider_policy import classify_provider_exception, emit_provider_failure
 
 
 logger = logging.getLogger(__name__)
@@ -119,6 +119,7 @@ class ArxivSearchProvider:
 
     def _record_failure(self, exc: Exception) -> None:
         classified = classify_provider_exception("arxiv", "search", exc)
+        emit_provider_failure(classified)
         if self.circuit_breaker is not None and classified.breaker_failure:
             self.circuit_breaker.record_failure(
                 "arxiv",
