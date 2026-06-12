@@ -80,6 +80,7 @@ class ConfiguredLLMJudgeProvider:
                 task=task,
                 status="error",
                 rationale=error,
+                error_code="judge_provider_failed",
             )
 
         return _parse_judge_response(task, raw or "")
@@ -152,4 +153,3 @@ def _extract_json_object(raw: str) -> str:
     if start == -1 or end == -1 or end <= start:
         raise json.JSONDecodeError("No JSON object found", raw, 0)
     return stripped[start : end + 1]
-

@@ -340,7 +340,7 @@ Rubrics for the future G-Eval/DeepEval layer live in
 just documentation. Changing a rubric changes judge behavior and must be treated
 like changing a prompt or schema.
 
-The planned judge layer should:
+The automated judge layer should:
 
 - read rubric files from the repository;
 - report scores as observations/trends;
@@ -362,6 +362,27 @@ The dry-run output is JSON. It includes rubric IDs, rubric hashes, paper IDs,
 input refs, and `not_scored` results. This verifies judge data plumbing while
 keeping the evaluation deterministic.
 
+Write machine-readable result and summary artifacts:
+
+```bash
+.venv/bin/python -m evaluation.run_judge_eval \
+  --golden golden_dataset/seed_5.jsonl \
+  --workspaces tests/fixtures/evaluation/workspaces_seed_sample.jsonl \
+  --dry-run \
+  --dataset-version seed_5 \
+  --pipeline-version local-dev \
+  --output /tmp/paperintel-judge-results.jsonl \
+  --summary-output /tmp/paperintel-judge-summary.json
+```
+
+`--output` writes one `JudgeResult` JSON object per line. `--summary-output`
+writes the full `JudgeRunReport`, including status counts and average scores
+when live scored results exist. The summary also carries run-level
+`judge_model`, `dataset_version`, `pipeline_version`, and `rubric_versions`.
+Each task carries the same version labels plus `rubric_hash` and a
+human-readable `rubric_version` alias such as `sha256:<prefix>`. These artifacts
+are intended for manual or scheduled trend tracking, not normal CI gating.
+
 Run live judge scoring explicitly:
 
 ```bash
@@ -375,6 +396,26 @@ Live judge mode calls the configured LLM provider and returns JSON results with
 `scored` or `error` statuses. It still exits `0` when scoring completes, even if
 scores are low, because judge evaluation is a gauge rather than a CI gate. Input
 loading failures and provider setup failures still return exit code `1`.
+
+Compare a current judge result JSONL against a previous baseline:
+
+```bash
+.venv/bin/python -m evaluation.run_judge_eval \
+  --golden golden_dataset/seed_5.jsonl \
+  --workspaces /tmp/paperintel-workspaces.jsonl \
+  --live \
+  --baseline /tmp/previous-judge-results.jsonl \
+  --output /tmp/current-judge-results.jsonl \
+  --summary-output /tmp/current-judge-summary.json \
+  --compare-output /tmp/current-vs-previous.json \
+  --min-delta 0.05
+```
+
+The comparison groups scored results by `task_family`, `sample_id`, and
+`rubric_id`, then reports improved, regressed, unchanged, and missing scored
+tasks. Duplicate scored results for the same comparison key are treated as input
+errors instead of being overwritten. Baseline comparison does not fail the
+process when regressions are present; use the output as a review signal.
 
 ## Known Limitations
 
@@ -393,8 +434,11 @@ loading failures and provider setup failures still return exit code `1`.
 - Method and report keyword checks are coverage proxies, not semantic
   correctness checks.
 - Judge scores are non-deterministic and should not be used as normal CI gates.
-- Live judge scoring currently covers report rubrics:
+- Automated live judge scoring currently covers report rubrics:
   `recommended_action`, `implementation_difficulty`, and `action_reasoning`.
+- Comparison and synthesis G-Eval rubrics are versioned and payload builders
+  exist, but the automated CLI does not yet load comparison/synthesis artifact
+  JSONL inputs.
 - The `qa_faithfulness` rubric exists, but QA judge task generation is not wired
   yet.
 - The deterministic runner evaluates exported `PaperWorkspace` JSONL files. It

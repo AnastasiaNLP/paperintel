@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from evaluation.judge_automation import finalize_judge_report
 from evaluation.golden_dataset import GoldenDatasetRecord
 from evaluation.judge_models import JudgeResult, JudgeRunReport, JudgeTask
 from evaluation.judge_provider import (
@@ -39,6 +40,9 @@ def build_judge_report(
     rubrics: dict[str, JudgeRubric],
     provider: JudgeProvider,
     mode: str,
+    judge_model: str | None = None,
+    dataset_version: str | None = None,
+    pipeline_version: str | None = None,
 ) -> JudgeRunReport:
     workspace_by_paper_id = {workspace.paper_id: workspace for workspace in workspaces}
     results: list[JudgeResult] = []
@@ -52,9 +56,15 @@ def build_judge_report(
             task = JudgeTask(
                 rubric_id=rubric.rubric_id,
                 paper_id=record.paper_id,
+                sample_id=f"report:{record.paper_id}",
+                task_family="report",
                 input_refs=_report_input_refs(record.paper_id),
                 rubric_hash=rubric.sha256,
+                rubric_version=_rubric_version(rubric),
                 mode=mode,
+                judge_model=judge_model,
+                dataset_version=dataset_version,
+                pipeline_version=pipeline_version,
             )
             if workspace.finalized_report_json is None:
                 results.append(
@@ -73,13 +83,32 @@ def build_judge_report(
                 workspace=workspace,
                 rubric=rubric,
             )
-            results.append(provider.score(task=task, rubric=rubric, payload=payload))
+            try:
+                results.append(provider.score(task=task, rubric=rubric, payload=payload))
+            except Exception as exc:
+                results.append(
+                    JudgeResult(
+                        task=task,
+                        status="error",
+                        rationale=f"Judge provider failed: {type(exc).__name__}",
+                        error_code="judge_provider_failed",
+                    )
+                )
 
-    return JudgeRunReport(
-        mode=mode,
-        total_tasks=len(results),
-        scored_tasks=sum(1 for result in results if result.status == "scored"),
-        results=results,
+    return finalize_judge_report(
+        JudgeRunReport(
+            mode=mode,
+            judge_model=judge_model,
+            dataset_version=dataset_version,
+            pipeline_version=pipeline_version,
+            rubric_versions={
+                rubric_id: _rubric_version(rubric)
+                for rubric_id, rubric in sorted(rubrics.items())
+            },
+            total_tasks=len(results),
+            scored_tasks=sum(1 for result in results if result.status == "scored"),
+            results=results,
+        )
     )
 
 
@@ -90,3 +119,7 @@ def _report_input_refs(paper_id: str) -> list[str]:
         f"paper_workspace:{paper_id}:benchmarks_json",
         f"paper_workspace:{paper_id}:readiness_json",
     ]
+
+
+def _rubric_version(rubric: JudgeRubric) -> str:
+    return f"sha256:{rubric.sha256[:12]}"

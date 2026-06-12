@@ -4,13 +4,20 @@ import sys
 
 import pytest
 
+from evaluation.judge_automation import (
+    JudgeAutomationError,
+    compare_judge_results,
+    load_judge_results_jsonl,
+    write_judge_results_jsonl,
+)
 from evaluation.ca_judge_payloads import (
     build_comparison_judge_payload,
     build_synthesis_judge_payload,
 )
 from evaluation.golden_dataset import load_golden_records
 from evaluation.judge_rubrics import EXPECTED_RUBRIC_IDS, load_judge_rubrics
-from evaluation.judge_models import JudgeResult
+from evaluation.judge_models import JudgeResult, JudgeTask
+from evaluation.judge_provider import ConfiguredLLMJudgeProvider, JudgePayload
 from evaluation.judge_runner import build_dry_run_judge_report, build_judge_report
 from evaluation.runner import load_workspace_records
 from models.agent_runs import AgentRun
@@ -36,6 +43,11 @@ class FakeScoredJudgeProvider:
         )
 
 
+class FailingJudgeProvider:
+    def score(self, *, task, rubric, payload):
+        raise RuntimeError("provider down")
+
+
 def test_load_judge_rubrics_finds_expected_versioned_files():
     rubrics = load_judge_rubrics()
 
@@ -56,6 +68,9 @@ def test_dry_run_judge_report_builds_report_tasks_for_matched_workspaces():
     assert report.mode == "dry_run"
     assert report.total_tasks == 6
     assert report.scored_tasks == 0
+    assert report.status_counts == {"not_scored": 6}
+    assert report.average_score is None
+    assert report.judge_model is None
     assert {result.status for result in report.results} == {"not_scored"}
     assert {result.task.paper_id for result in report.results} == {
         "1706.03762",
@@ -67,6 +82,7 @@ def test_dry_run_judge_report_builds_report_tasks_for_matched_workspaces():
         "action_reasoning",
     }
     assert all(result.task.rubric_hash for result in report.results)
+    assert all(result.task.rubric_version for result in report.results)
 
 
 def test_live_mode_runner_uses_provider_without_gate_semantics():
@@ -80,13 +96,72 @@ def test_live_mode_runner_uses_provider_without_gate_semantics():
         rubrics=rubrics,
         provider=FakeScoredJudgeProvider(),
         mode="live",
+        judge_model="judge-test",
+        dataset_version="seed_5",
+        pipeline_version="pipeline-test",
     )
 
     assert report.mode == "live"
+    assert report.judge_model == "judge-test"
+    assert report.dataset_version == "seed_5"
+    assert report.pipeline_version == "pipeline-test"
+    assert report.rubric_versions["recommended_action"].startswith("sha256:")
     assert report.total_tasks == 6
     assert report.scored_tasks == 6
+    assert report.status_counts == {"scored": 6}
+    assert report.average_score == 0.75
+    assert set(report.average_scores_by_rubric) == {
+        "recommended_action",
+        "implementation_difficulty",
+        "action_reasoning",
+    }
     assert {result.status for result in report.results} == {"scored"}
     assert {result.score for result in report.results} == {0.75}
+    assert all(result.task.sample_id.startswith("report:") for result in report.results)
+    assert {result.task.judge_model for result in report.results} == {"judge-test"}
+    assert {result.task.dataset_version for result in report.results} == {"seed_5"}
+    assert {result.task.pipeline_version for result in report.results} == {
+        "pipeline-test"
+    }
+
+
+def test_judge_report_continues_when_provider_raises():
+    records = load_golden_records("golden_dataset/seed_5.jsonl")[:1]
+    workspaces = load_workspace_records(WORKSPACES_PATH)[:1]
+    rubrics = load_judge_rubrics()
+
+    report = build_judge_report(
+        records=records,
+        workspaces=workspaces,
+        rubrics=rubrics,
+        provider=FailingJudgeProvider(),
+        mode="live",
+    )
+
+    assert report.total_tasks == 3
+    assert report.scored_tasks == 0
+    assert report.status_counts == {"error": 3}
+    assert {result.error_code for result in report.results} == {"judge_provider_failed"}
+
+
+def test_configured_llm_judge_provider_classifies_returned_provider_error(monkeypatch):
+    def fake_call_text_llm(**kwargs):
+        return None, "judge call failed"
+
+    monkeypatch.setattr("agents.llm_provider.call_text_llm", fake_call_text_llm)
+    rubrics = load_judge_rubrics()
+    rubric = rubrics["recommended_action"]
+    task = _judge_task(rubric)
+
+    result = ConfiguredLLMJudgeProvider().score(
+        task=task,
+        rubric=rubric,
+        payload=_judge_payload(task, rubric),
+    )
+
+    assert result.status == "error"
+    assert result.error_code == "judge_provider_failed"
+    assert result.rationale == "judge call failed"
 
 
 def test_report_rubrics_skip_when_finalized_report_is_missing():
@@ -140,6 +215,7 @@ def test_run_judge_eval_dry_run_cli_contract():
     assert payload["scored_tasks"] == 0
     assert {item["status"] for item in payload["results"]} == {"not_scored"}
     assert all(item["task"]["rubric_hash"] for item in payload["results"])
+    assert all(item["task"]["sample_id"].startswith("report:") for item in payload["results"])
 
 
 def test_run_judge_eval_requires_exactly_one_mode_flag():
@@ -160,6 +236,159 @@ def test_run_judge_eval_requires_exactly_one_mode_flag():
 
     assert result.returncode == 1
     assert "choose exactly one" in result.stdout
+
+
+def test_run_judge_eval_writes_jsonl_and_summary_outputs(tmp_path):
+    output = tmp_path / "judge_results.jsonl"
+    summary = tmp_path / "judge_summary.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "evaluation.run_judge_eval",
+            "--golden",
+            "golden_dataset/seed_5.jsonl",
+            "--workspaces",
+            WORKSPACES_PATH,
+            "--dry-run",
+            "--output",
+            str(output),
+            "--summary-output",
+            str(summary),
+            "--dataset-version",
+            "seed_5",
+            "--pipeline-version",
+            "test-pipeline",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    results = load_judge_results_jsonl(output)
+    assert len(results) == 6
+    assert {item.task.dataset_version for item in results} == {"seed_5"}
+    assert {item.task.pipeline_version for item in results} == {"test-pipeline"}
+    summary_payload = json.loads(summary.read_text(encoding="utf-8"))
+    assert summary_payload["total_tasks"] == 6
+    assert summary_payload["status_counts"] == {"not_scored": 6}
+
+
+def test_judge_result_jsonl_roundtrip_and_baseline_comparison(tmp_path):
+    records = load_golden_records("golden_dataset/seed_5.jsonl")[:1]
+    workspaces = load_workspace_records(WORKSPACES_PATH)[:1]
+    rubrics = load_judge_rubrics()
+    current = build_judge_report(
+        records=records,
+        workspaces=workspaces,
+        rubrics=rubrics,
+        provider=FakeScoredJudgeProvider(),
+        mode="live",
+    ).results
+    baseline = []
+    for result in current:
+        clone = result.model_copy(deep=True)
+        clone.score = 0.5
+        baseline.append(clone)
+    output = tmp_path / "current.jsonl"
+    baseline_output = tmp_path / "baseline.jsonl"
+
+    write_judge_results_jsonl(current, output)
+    write_judge_results_jsonl(baseline, baseline_output)
+    comparison = compare_judge_results(
+        current=load_judge_results_jsonl(output),
+        baseline=load_judge_results_jsonl(baseline_output),
+        min_delta=0.01,
+    )
+
+    assert comparison.current_count == 3
+    assert comparison.baseline_count == 3
+    assert comparison.matched_scored_tasks == 3
+    assert len(comparison.improved) == 3
+    assert comparison.regressed == []
+
+
+def test_baseline_comparison_keys_by_task_family_sample_and_rubric():
+    rubrics = load_judge_rubrics()
+    rubric = rubrics["recommended_action"]
+    report_task = _judge_task(rubric, sample_id="shared", task_family="report")
+    qa_task = _judge_task(rubric, sample_id="shared", task_family="qa")
+    current = [
+        JudgeResult(task=report_task, status="scored", score=0.8),
+        JudgeResult(task=qa_task, status="scored", score=0.4),
+    ]
+    baseline = [
+        JudgeResult(task=report_task, status="scored", score=0.7),
+        JudgeResult(task=qa_task, status="scored", score=0.5),
+    ]
+
+    comparison = compare_judge_results(current=current, baseline=baseline)
+
+    assert [(item.task_family, item.sample_id) for item in comparison.improved] == [
+        ("report", "shared")
+    ]
+    assert [(item.task_family, item.sample_id) for item in comparison.regressed] == [
+        ("qa", "shared")
+    ]
+
+
+def test_baseline_comparison_rejects_duplicate_scored_keys():
+    rubrics = load_judge_rubrics()
+    task = _judge_task(rubrics["recommended_action"])
+    duplicate = [
+        JudgeResult(task=task, status="scored", score=0.8),
+        JudgeResult(task=task, status="scored", score=0.7),
+    ]
+
+    with pytest.raises(JudgeAutomationError, match="Duplicate scored judge result"):
+        compare_judge_results(current=duplicate, baseline=[])
+
+
+def test_run_judge_eval_writes_baseline_comparison(tmp_path):
+    baseline = tmp_path / "baseline.jsonl"
+    comparison_output = tmp_path / "comparison.json"
+    records = load_golden_records("golden_dataset/seed_5.jsonl")[:1]
+    workspaces = load_workspace_records(WORKSPACES_PATH)[:1]
+    rubrics = load_judge_rubrics()
+    baseline_results = build_judge_report(
+        records=records,
+        workspaces=workspaces,
+        rubrics=rubrics,
+        provider=FakeScoredJudgeProvider(),
+        mode="live",
+    ).results
+    for result in baseline_results:
+        result.score = 0.5
+    write_judge_results_jsonl(baseline_results, baseline)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "evaluation.run_judge_eval",
+            "--golden",
+            "golden_dataset/seed_5.jsonl",
+            "--workspaces",
+            WORKSPACES_PATH,
+            "--dry-run",
+            "--baseline",
+            str(baseline),
+            "--compare-output",
+            str(comparison_output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(comparison_output.read_text(encoding="utf-8"))
+    assert result.returncode == 0
+    assert payload["current_count"] == 6
+    assert payload["baseline_count"] == 3
+    assert payload["matched_scored_tasks"] == 0
+    assert len(payload["missing_in_current"]) == 3
 
 
 def test_ca_comparison_judge_payload_includes_only_selected_workspaces():
@@ -335,4 +564,33 @@ def _synthesis_result() -> SynthesisAgentResult:
         ),
         response_text="Synthesis for engineer",
         agent_run=run,
+    )
+
+
+def _judge_task(
+    rubric,
+    *,
+    sample_id: str = "report:paper-0",
+    task_family: str = "report",
+) -> JudgeTask:
+    return JudgeTask(
+        rubric_id=rubric.rubric_id,
+        paper_id="paper-0",
+        sample_id=sample_id,
+        task_family=task_family,
+        input_refs=["paper_workspace:paper-0:finalized_report_json"],
+        rubric_hash=rubric.sha256,
+        rubric_version=f"sha256:{rubric.sha256[:12]}",
+        mode="live",
+        judge_model="judge-test",
+    )
+
+
+def _judge_payload(task: JudgeTask, rubric) -> JudgePayload:
+    return JudgePayload(
+        paper_id=task.paper_id,
+        title="Paper 0",
+        rubric_id=rubric.rubric_id,
+        rubric_text=rubric.text,
+        finalized_report_json={"recommended_action": "prototype"},
     )
