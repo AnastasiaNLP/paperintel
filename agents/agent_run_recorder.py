@@ -3,7 +3,7 @@ from datetime import timezone
 from typing import Protocol
 
 from models.agent_runs import AgentRun, TerminationReason
-from services.observability import emit_event
+from services.observability import attach_observability_details, emit_event
 
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ class NoopAgentRunPersistence:
         self._observed_terminal: set[str] = set()
 
     def save(self, run: AgentRun) -> None:
+        attach_agent_run_observability(run)
         emit_agent_run_lifecycle_events(
             run,
             observed_started=self._observed_started,
@@ -88,6 +89,7 @@ class InMemoryAgentRunPersistence:
         self._observed_terminal: set[str] = set()
 
     def save(self, run: AgentRun) -> None:
+        attach_agent_run_observability(run)
         emit_agent_run_lifecycle_events(
             run,
             observed_started=self._observed_started,
@@ -189,6 +191,7 @@ def emit_agent_run_lifecycle_events(
     observed_started: set[str],
     observed_terminal: set[str],
 ) -> None:
+    attach_agent_run_observability(run)
     if run.status == "running":
         if run.id not in observed_started:
             emit_agent_run_started(run)
@@ -210,6 +213,7 @@ def emit_agent_run_started(run: AgentRun) -> None:
         session_id=run.session_id,
         job_id=run.job_id,
         model=run.model,
+        trace_id=_agent_trace_id(run),
     )
 
 
@@ -231,6 +235,7 @@ def _emit_agent_run_terminal(run: AgentRun) -> None:
             else None
         ),
         duration_ms=_agent_duration_ms(run),
+        trace_id=_agent_trace_id(run),
     )
 
 
@@ -248,3 +253,15 @@ def _agent_duration_ms(run: AgentRun) -> int | None:
     if finished.tzinfo is None:
         finished = finished.replace(tzinfo=timezone.utc)
     return max(0, round((finished - started).total_seconds() * 1000))
+
+
+def attach_agent_run_observability(run: AgentRun) -> None:
+    attach_observability_details(run.details, duration_ms=_agent_duration_ms(run))
+
+
+def _agent_trace_id(run: AgentRun) -> str | None:
+    observability = run.details.get("observability")
+    if not isinstance(observability, dict):
+        return None
+    trace_id = observability.get("trace_id")
+    return trace_id if isinstance(trace_id, str) and trace_id.strip() else None

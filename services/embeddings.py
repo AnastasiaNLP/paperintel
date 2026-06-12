@@ -4,6 +4,7 @@ from typing import Protocol, Sequence
 import httpx
 
 from models.retrieval import DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL
+from services.provider_policy import classify_provider_exception, emit_provider_failure
 
 
 class EmbeddingProvider(Protocol):
@@ -104,6 +105,9 @@ class OpenAIEmbeddingProvider:
                 time.sleep(self.retry_sleep_seconds * (2 ** attempt))
 
         assert last_exc is not None
+        emit_provider_failure(
+            classify_provider_exception("openai", "embeddings", last_exc)
+        )
         raise last_exc
 
     def _post_embeddings(self, texts: list[str]) -> httpx.Response:

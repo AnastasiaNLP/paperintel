@@ -1,5 +1,8 @@
+import logging
+
 import pytest
 
+from conftest import assert_provider_failure_logged
 from services.provider_circuit_breaker import PostgresProviderCircuitBreaker
 from tools.circuit_breaker import CircuitBreakerOpenError
 
@@ -63,18 +66,26 @@ def test_postgres_provider_circuit_breaker_raises_open_error_on_deny():
     assert exc_info.value.retry_after_seconds == 12.5
 
 
-def test_postgres_provider_circuit_breaker_fail_open_on_repository_error():
+def test_postgres_provider_circuit_breaker_fail_open_on_repository_error(caplog):
     repository = FakeRepository(error=RuntimeError("db down"))
     breaker = PostgresProviderCircuitBreaker(repository)
 
-    breaker.before_request(
-        "semantic_scholar",
-        "api",
-        failure_threshold=3,
-        recovery_timeout_seconds=60,
-    )
+    with caplog.at_level(logging.INFO, logger="services.provider_circuit_breaker"):
+        breaker.before_request(
+            "semantic_scholar",
+            "api",
+            failure_threshold=3,
+            recovery_timeout_seconds=60,
+        )
 
     assert repository.calls[0][0] == "before_request"
+    message = caplog.records[-1].getMessage()
+    assert_provider_failure_logged(
+        message,
+        provider="postgres",
+        operation="provider_circuit_breaker.before_request",
+        failure_class="provider_unavailable",
+    )
 
 
 def test_postgres_provider_circuit_breaker_can_fail_closed():

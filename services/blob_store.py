@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, ContextManager, Iterator, Protocol
 
 from models.blob_storage import BlobKind, BlobObjectMetadata, StoredBlobObject
+from services.observability import emit_event
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 DEFAULT_CONTENT_TYPES: dict[BlobKind, str] = {
@@ -139,11 +144,13 @@ class S3BlobStore:
             return
         except Exception as exc:
             if not _is_missing_error(exc):
+                _emit_blob_failure("ensure_bucket.inspect", exc)
                 raise _bucket_error("inspect", self.bucket_name, exc) from exc
 
         try:
             self.client.create_bucket(**self._create_bucket_kwargs())
         except Exception as exc:
+            _emit_blob_failure("ensure_bucket.create", exc)
             raise _bucket_error("create", self.bucket_name, exc) from exc
 
     def put(
@@ -167,6 +174,7 @@ class S3BlobStore:
                 ContentType=resolved_content_type,
             )
         except Exception as exc:
+            _emit_blob_failure("put_object", exc)
             raise BlobStoreUnavailableError(
                 f"Could not upload blob object {object_key!r}: {exc}"
             ) from exc
@@ -196,6 +204,7 @@ class S3BlobStore:
                 ContentType=content_type,
             )
         except Exception as exc:
+            _emit_blob_failure("put_staging", exc)
             raise BlobStoreUnavailableError(
                 f"Could not upload staging blob object {object_key!r}: {exc}"
             ) from exc
@@ -220,6 +229,7 @@ class S3BlobStore:
                 )
             )
         except Exception as exc:
+            _emit_blob_failure("create_presigned_put", exc)
             raise BlobStoreUnavailableError(
                 f"Could not create presigned upload URL for {object_key!r}: {exc}"
             ) from exc
@@ -243,6 +253,7 @@ class S3BlobStore:
         except Exception as exc:
             if _is_missing_error(exc):
                 return None
+            _emit_blob_failure("head_object", exc)
             raise BlobStoreUnavailableError(
                 f"Could not inspect blob object {object_key!r}: {exc}"
             ) from exc
@@ -265,17 +276,34 @@ class S3BlobStore:
         except Exception as exc:
             if _is_missing_error(exc):
                 raise BlobNotFoundError(f"Blob object not found: {object_key}") from exc
+            _emit_blob_failure("get_object", exc)
             raise BlobStoreUnavailableError(
                 f"Could not download blob object {object_key!r}: {exc}"
             ) from exc
 
         if max_bytes is not None and len(content) > max_bytes:
+            emit_event(
+                LOGGER,
+                "provider.failure",
+                provider="s3",
+                operation="materialize",
+                failure_class="size_limit",
+                retryable=False,
+            )
             raise BlobSizeLimitError(
                 f"Blob object {object_key!r} exceeds materialization limit of {max_bytes} bytes."
             )
 
         actual_sha256 = hashlib.sha256(content).hexdigest()
         if expected_sha256 is not None and actual_sha256 != expected_sha256:
+            emit_event(
+                LOGGER,
+                "provider.failure",
+                provider="s3",
+                operation="materialize",
+                failure_class="integrity_error",
+                retryable=False,
+            )
             raise BlobIntegrityError(
                 f"Blob integrity check failed for {object_key!r}: "
                 f"expected {expected_sha256}, got {actual_sha256}."
@@ -301,6 +329,7 @@ class S3BlobStore:
         try:
             self.client.delete_object(Bucket=self.bucket_name, Key=object_key)
         except Exception as exc:
+            _emit_blob_failure("delete_object", exc)
             raise BlobStoreUnavailableError(
                 f"Could not delete blob object {object_key!r}: {exc}"
             ) from exc
@@ -362,3 +391,18 @@ def _is_provider_unavailable_error(exc: Exception) -> bool:
         return True
     status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
     return isinstance(status, int) and status >= 500
+
+
+def _emit_blob_failure(operation: str, exc: Exception) -> None:
+    emit_event(
+        LOGGER,
+        "provider.failure",
+        provider="s3",
+        operation=operation,
+        failure_class=(
+            "provider_unavailable"
+            if _is_provider_unavailable_error(exc)
+            else "configuration_error"
+        ),
+        retryable=_is_provider_unavailable_error(exc),
+    )

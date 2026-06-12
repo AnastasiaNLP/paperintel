@@ -1,3 +1,4 @@
+import logging
 import sys
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, uuid5
@@ -5,6 +6,7 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 from pydantic import ValidationError
 
+from conftest import assert_provider_failure_logged
 from models.retrieval import (
     DEFAULT_EMBEDDING_DIMENSIONS,
     ChunkSource,
@@ -243,3 +245,66 @@ def test_qdrant_store_check_connection_uses_public_health_contract():
     store.check_connection()
 
     assert client.calls == 1
+
+
+def test_qdrant_store_check_connection_emits_provider_failure(caplog):
+    class FailingClient:
+        def get_collections(self):
+            raise RuntimeError("qdrant down")
+
+    store = QdrantChunkStore(client=FailingClient())
+
+    with caplog.at_level(logging.INFO, logger="services.qdrant_store"):
+        with pytest.raises(RuntimeError, match="qdrant down"):
+            store.check_connection()
+
+    message = caplog.records[-1].getMessage()
+    assert_provider_failure_logged(
+        message,
+        provider="qdrant",
+        operation="check_connection",
+        failure_class="provider_unavailable",
+    )
+
+
+def test_qdrant_store_config_mismatch_emits_non_retryable_failure(caplog):
+    class Collection:
+        name = "paper_chunks"
+
+    class Collections:
+        collections = [Collection()]
+
+    class VectorConfig:
+        size = DEFAULT_EMBEDDING_DIMENSIONS
+        distance = "Cosine"
+
+    class Params:
+        vectors = VectorConfig()
+
+    class Config:
+        params = Params()
+
+    class CollectionInfo:
+        config = Config()
+
+    class ExistingCollectionClient:
+        def get_collections(self):
+            return Collections()
+
+        def get_collection(self, collection_name):
+            return CollectionInfo()
+
+    store = QdrantChunkStore(client=ExistingCollectionClient(), vector_size=8)
+
+    with caplog.at_level(logging.INFO, logger="services.qdrant_store"):
+        with pytest.raises(QdrantCollectionMismatchError):
+            store.check_collection_config()
+
+    message = caplog.records[-1].getMessage()
+    assert_provider_failure_logged(
+        message,
+        provider="qdrant",
+        operation="check_collection_config",
+        failure_class="configuration_error",
+        retryable=False,
+    )

@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
@@ -13,6 +14,10 @@ from models.retrieval import (
     UpsertChunksResult,
     VectorSearchHit,
 )
+from services.observability import emit_event
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 DEFAULT_QDRANT_COLLECTION = "paper_chunks"
@@ -67,31 +72,39 @@ class QdrantChunkStore:
 
     def ensure_collection(self) -> None:
         models = _qdrant_models()
-        if not self._collection_exists():
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=self.vector_size,
-                    distance=getattr(models.Distance, self.distance.upper()),
-                ),
-            )
-            return
+        try:
+            if not self._collection_exists():
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=models.VectorParams(
+                        size=self.vector_size,
+                        distance=getattr(models.Distance, self.distance.upper()),
+                    ),
+                )
+                return
 
-        size, distance = self._collection_vector_config()
-        if size != self.vector_size:
-            raise QdrantCollectionMismatchError(
-                f"Qdrant collection {self.collection_name!r} has vector size "
-                f"{size}, expected {self.vector_size}"
-            )
-        if _normalize_distance(distance) != _normalize_distance(self.distance):
-            raise QdrantCollectionMismatchError(
-                f"Qdrant collection {self.collection_name!r} has distance "
-                f"{distance!r}, expected {self.distance!r}"
-            )
+            size, distance = self._collection_vector_config()
+            if size != self.vector_size:
+                raise QdrantCollectionMismatchError(
+                    f"Qdrant collection {self.collection_name!r} has vector size "
+                    f"{size}, expected {self.vector_size}"
+                )
+            if _normalize_distance(distance) != _normalize_distance(self.distance):
+                raise QdrantCollectionMismatchError(
+                    f"Qdrant collection {self.collection_name!r} has distance "
+                    f"{distance!r}, expected {self.distance!r}"
+                )
+        except Exception as exc:
+            _emit_qdrant_failure("ensure_collection", exc)
+            raise
 
     def check_connection(self) -> None:
         """Verify that the Qdrant service is reachable."""
-        self.client.get_collections()
+        try:
+            self.client.get_collections()
+        except Exception as exc:
+            _emit_qdrant_failure("check_connection", exc)
+            raise
 
     def check_collection_config(self) -> None:
         """
@@ -100,19 +113,23 @@ class QdrantChunkStore:
         This check is intentionally non-mutating: a missing collection is not
         created here because health checks must not perform indexing setup.
         """
-        if not self._collection_exists():
-            return
-        size, distance = self._collection_vector_config()
-        if size != self.vector_size:
-            raise QdrantCollectionMismatchError(
-                f"Qdrant collection {self.collection_name!r} has vector size "
-                f"{size}, expected {self.vector_size}"
-            )
-        if _normalize_distance(distance) != _normalize_distance(self.distance):
-            raise QdrantCollectionMismatchError(
-                f"Qdrant collection {self.collection_name!r} has distance "
-                f"{distance!r}, expected {self.distance!r}"
-            )
+        try:
+            if not self._collection_exists():
+                return
+            size, distance = self._collection_vector_config()
+            if size != self.vector_size:
+                raise QdrantCollectionMismatchError(
+                    f"Qdrant collection {self.collection_name!r} has vector size "
+                    f"{size}, expected {self.vector_size}"
+                )
+            if _normalize_distance(distance) != _normalize_distance(self.distance):
+                raise QdrantCollectionMismatchError(
+                    f"Qdrant collection {self.collection_name!r} has distance "
+                    f"{distance!r}, expected {self.distance!r}"
+                )
+        except Exception as exc:
+            _emit_qdrant_failure("check_collection_config", exc)
+            raise
 
     def upsert_chunks(self, chunks: Sequence[EmbeddedChunk]) -> UpsertChunksResult:
         for embedded in chunks:
@@ -132,32 +149,40 @@ class QdrantChunkStore:
         if not points:
             return UpsertChunksResult()
 
-        self.client.upsert(collection_name=self.collection_name, points=points)
+        try:
+            self.client.upsert(collection_name=self.collection_name, points=points)
+        except Exception as exc:
+            _emit_qdrant_failure("upsert", exc)
+            raise
         return UpsertChunksResult(inserted=len(points), updated=0, skipped=0)
 
     def search(self, query: ChunkVectorSearchQuery) -> list[VectorSearchHit]:
         _validate_vector(query.query_vector, self.vector_size)
         query_filter = build_qdrant_filter(query)
 
-        if hasattr(self.client, "search"):
-            raw_hits = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query.query_vector,
-                query_filter=query_filter,
-                limit=query.limit,
-                score_threshold=query.min_score,
-                with_payload=True,
-            )
-        else:
-            result = self.client.query_points(
-                collection_name=self.collection_name,
-                query=query.query_vector,
-                query_filter=query_filter,
-                limit=query.limit,
-                score_threshold=query.min_score,
-                with_payload=True,
-            )
-            raw_hits = result.points
+        try:
+            if hasattr(self.client, "search"):
+                raw_hits = self.client.search(
+                    collection_name=self.collection_name,
+                    query_vector=query.query_vector,
+                    query_filter=query_filter,
+                    limit=query.limit,
+                    score_threshold=query.min_score,
+                    with_payload=True,
+                )
+            else:
+                result = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query.query_vector,
+                    query_filter=query_filter,
+                    limit=query.limit,
+                    score_threshold=query.min_score,
+                    with_payload=True,
+                )
+                raw_hits = result.points
+        except Exception as exc:
+            _emit_qdrant_failure("search", exc)
+            raise
 
         return [_hit_from_qdrant(hit) for hit in raw_hits]
 
@@ -272,3 +297,18 @@ def _qdrant_models() -> Any:
             "qdrant-client is required for QdrantChunkStore operations"
         ) from exc
     return models
+
+
+def _emit_qdrant_failure(operation: str, exc: Exception) -> None:
+    emit_event(
+        LOGGER,
+        "provider.failure",
+        provider="qdrant",
+        operation=operation,
+        failure_class=(
+            "configuration_error"
+            if isinstance(exc, QdrantCollectionMismatchError)
+            else "provider_unavailable"
+        ),
+        retryable=not isinstance(exc, QdrantCollectionMismatchError),
+    )

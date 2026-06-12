@@ -4,6 +4,8 @@ import logging
 import time
 from typing import Protocol
 
+from services.observability import emit_event
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -76,6 +78,14 @@ class PostgresProviderRateLimiter:
                 provider,
                 operation,
                 exc_info=exc,
+            )
+            emit_event(
+                LOGGER,
+                "provider.failure",
+                provider="postgres",
+                operation="provider_rate_limiter.reserve_slot",
+                failure_class="provider_unavailable",
+                retryable=False,
             )
             if self.fallback_to_local and interval_seconds > 0:
                 self.sleeper(interval_seconds)

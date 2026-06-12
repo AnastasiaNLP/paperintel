@@ -132,6 +132,39 @@ def test_in_memory_persistence_emits_started_for_running_run(caplog):
     assert "raw prompt text" not in message
 
 
+def test_in_memory_persistence_links_agent_run_to_trace_id(monkeypatch, caplog):
+    monkeypatch.setenv("PAPERINTEL_TRACE_ID", "trace-agent-1")
+    recorder = InMemoryAgentRunRecorder()
+    persistence = InMemoryAgentRunPersistence()
+    run = recorder.start(agent_name="answer_agent", session_id="session-1")
+
+    with caplog.at_level(logging.INFO, logger="agents.agent_run_recorder"):
+        persistence.save(run)
+
+    message = caplog.records[-1].getMessage()
+    assert 'trace_id="trace-agent-1"' in message
+    assert run.details["observability"]["trace_id"] == "trace-agent-1"
+
+
+def test_in_memory_persistence_drops_unsafe_existing_trace_id(monkeypatch, caplog):
+    monkeypatch.delenv("PAPERINTEL_TRACE_ID", raising=False)
+    monkeypatch.delenv("LANGSMITH_TRACE_ID", raising=False)
+    monkeypatch.delenv("LANGCHAIN_TRACE_ID", raising=False)
+    monkeypatch.delenv("LANGCHAIN_RUN_ID", raising=False)
+    recorder = InMemoryAgentRunRecorder()
+    persistence = InMemoryAgentRunPersistence()
+    run = recorder.start(agent_name="answer_agent", session_id="session-1")
+    run.details["observability"] = {"trace_id": "secret-token-value"}
+
+    with caplog.at_level(logging.INFO, logger="agents.agent_run_recorder"):
+        persistence.save(run)
+
+    message = caplog.records[-1].getMessage()
+    assert "trace_id=" not in message
+    assert "secret-token-value" not in message
+    assert "trace_id" not in run.details["observability"]
+
+
 def test_in_memory_persistence_emits_safe_agent_completed_events(caplog):
     recorder = InMemoryAgentRunRecorder()
     persistence = InMemoryAgentRunPersistence()
@@ -162,6 +195,7 @@ def test_in_memory_persistence_emits_safe_agent_completed_events(caplog):
     assert "duration_ms=" in completed
     assert all("raw prompt text" not in message for message in messages)
     assert all("raw output text" not in message for message in messages)
+    assert run.details["observability"]["duration_ms"] >= 0
 
 
 def test_in_memory_persistence_deduplicates_terminal_events(caplog):

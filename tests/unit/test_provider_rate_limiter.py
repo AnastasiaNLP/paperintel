@@ -1,5 +1,8 @@
+import logging
+
 import pytest
 
+from conftest import assert_provider_failure_logged
 from services.provider_rate_limiter import PostgresProviderRateLimiter
 
 
@@ -40,15 +43,23 @@ def test_postgres_provider_rate_limiter_reserves_and_sleeps():
     assert sleeps == [1.25]
 
 
-def test_postgres_provider_rate_limiter_fail_open_on_repository_error():
+def test_postgres_provider_rate_limiter_fail_open_on_repository_error(caplog):
     sleeps = []
     repository = FakeRepository(error=RuntimeError("db down"))
     limiter = PostgresProviderRateLimiter(repository, sleeper=sleeps.append)
 
-    limiter.acquire("semantic_scholar", "api", interval_seconds=1.2)
+    with caplog.at_level(logging.INFO, logger="services.provider_rate_limiter"):
+        limiter.acquire("semantic_scholar", "api", interval_seconds=1.2)
 
     assert repository.calls
     assert sleeps == [1.2]
+    message = caplog.records[-1].getMessage()
+    assert_provider_failure_logged(
+        message,
+        provider="postgres",
+        operation="provider_rate_limiter.reserve_slot",
+        failure_class="provider_unavailable",
+    )
 
 
 def test_postgres_provider_rate_limiter_can_fail_open_without_local_fallback():

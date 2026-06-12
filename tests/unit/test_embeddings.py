@@ -1,6 +1,9 @@
+import logging
+
 import httpx
 import pytest
 
+from conftest import assert_provider_failure_logged
 from services.embeddings import OpenAIEmbeddingProvider
 
 
@@ -157,3 +160,35 @@ def test_openai_embedding_provider_does_not_retry_non_retryable_statuses():
     with pytest.raises(httpx.HTTPStatusError):
         provider.embed_query("hello")
     assert calls == 1
+
+
+def test_openai_embedding_provider_emits_failure_after_retry_exhaustion(caplog):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, json={"error": {"message": "provider down"}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = OpenAIEmbeddingProvider(
+        api_key="test-key",
+        dimensions=1,
+        max_retries=1,
+        retry_sleep_seconds=0,
+        client=client,
+    )
+
+    with caplog.at_level(logging.INFO, logger="services.provider_policy"):
+        with pytest.raises(httpx.HTTPStatusError):
+            provider.embed_query("hello")
+
+    assert calls == 2
+    message = caplog.records[-1].getMessage()
+    assert_provider_failure_logged(
+        message,
+        provider="openai",
+        operation="embeddings",
+        failure_class="provider_unavailable",
+        forbidden="provider down",
+    )

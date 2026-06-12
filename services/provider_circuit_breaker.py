@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
+from services.observability import emit_event
 from tools.circuit_breaker import CircuitBreakerOpenError
 
 
@@ -193,4 +194,12 @@ class PostgresProviderCircuitBreaker:
             provider,
             operation,
             exc_info=exc,
+        )
+        emit_event(
+            LOGGER,
+            "provider.failure",
+            provider="postgres",
+            operation=f"provider_circuit_breaker.{action}",
+            failure_class="provider_unavailable",
+            retryable=False,
         )

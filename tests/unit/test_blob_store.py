@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from pathlib import Path
 
 import boto3
@@ -6,6 +7,7 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
+from conftest import assert_provider_failure_logged
 from services.blob_store import (
     BlobConfigurationError,
     BlobIntegrityError,
@@ -204,15 +206,25 @@ def test_object_key_requires_sha256_hex_digest():
         object_key_for("pdf", "z" * 64)
 
 
-def test_exists_wraps_provider_failure_as_unavailable():
+def test_exists_wraps_provider_failure_as_unavailable(caplog):
     class UnavailableClient:
         def head_object(self, **kwargs):
             raise RuntimeError("provider down")
 
     store = S3BlobStore(client=UnavailableClient(), bucket_name=BUCKET)
 
-    with pytest.raises(BlobStoreUnavailableError):
-        store.exists("papers/sha256/00/example.pdf")
+    with caplog.at_level(logging.INFO, logger="services.blob_store"):
+        with pytest.raises(BlobStoreUnavailableError):
+            store.exists("papers/sha256/00/example.pdf")
+
+    message = caplog.records[-1].getMessage()
+    assert_provider_failure_logged(
+        message,
+        provider="s3",
+        operation="head_object",
+        failure_class="provider_unavailable",
+        forbidden="example.pdf",
+    )
 
 
 def test_ensure_bucket_wraps_permission_failure_as_configuration_error():
@@ -318,6 +330,25 @@ def test_materialize_closes_response_body_after_limited_read():
     with pytest.raises(BlobSizeLimitError):
         with store.materialize("uploads/session-1/replaced.pdf", max_bytes=3):
             pytest.fail("oversized object must not yield a path")
+
+
+def test_materialize_integrity_failure_emits_safe_event(caplog):
+    body = TrackingBody(PDF_BYTES)
+    store = S3BlobStore(client=BodyClient(body), bucket_name=BUCKET)
+
+    with caplog.at_level(logging.INFO, logger="services.blob_store"):
+        with pytest.raises(BlobIntegrityError):
+            with store.materialize("papers/example.pdf", expected_sha256="0" * 64):
+                pytest.fail("integrity failure must not yield a path")
+
+    message = caplog.records[-1].getMessage()
+    assert_provider_failure_logged(
+        message,
+        provider="s3",
+        operation="materialize",
+        failure_class="integrity_error",
+        forbidden="papers/example.pdf",
+    )
 
     assert body.closed is True
 

@@ -3,7 +3,7 @@ from tempfile import NamedTemporaryFile
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from api.in_memory_session_store import SessionNotFoundError
 from api.rest.schemas import (
@@ -45,6 +45,7 @@ from services.blob_store import (
     BlobSizeLimitError,
     BlobStoreUnavailableError,
 )
+from services.observability import render_prometheus_metrics
 from services.paperintel_service import (
     ComparisonNotFoundError,
     InvalidPdfInputError,
@@ -197,6 +198,13 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
         return JSONResponse(
             status_code=200 if status.healthy else 503,
             content=response.model_dump(mode="json"),
+        )
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics():
+        return Response(
+            content=render_prometheus_metrics(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
         )
 
     @app.post("/sessions", response_model=SessionResponse)

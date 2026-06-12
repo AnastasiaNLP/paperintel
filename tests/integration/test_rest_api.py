@@ -1055,6 +1055,14 @@ def test_health_returns_503_when_unhealthy():
     assert response.json()["status"] == "degraded"
 
 
+def test_metrics_returns_prometheus_text():
+    response = _request(None, "GET", "/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "# TYPE paperintel_events_total counter" in response.text
+
+
 def test_analyze_requires_valid_url():
     response = _request(
         None,

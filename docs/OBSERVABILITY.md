@@ -9,20 +9,22 @@ PaperIntel observability has three goals:
 - keep public/API/MCP output neutral and free of secrets, raw prompts, raw PDF
   text, tracebacks, and internal graph details.
 
-This document defines the public observability contract. It does not introduce
-a metrics backend, dashboard, or tracing vendor requirement.
+This document defines the public observability contract. Metrics are exported
+in Prometheus text format, but the contract does not require a specific
+Prometheus/Grafana deployment or hosted tracing vendor.
 
 ## Current State
 
 | Surface | Current behavior | Gap |
 | --- | --- | --- |
-| `AgentRun` | Durable per-agent execution record with `session_id`, `job_id`, `agent_name`, `model`, lifecycle status, `termination_reason`, counts, refs, and `details`; agent boundaries emit safe `agent.started` events and persistence emits terminal lifecycle events. | Trace correlation is not standardized. Raw prompt/output policy is documented but not centrally enforced. |
-| Agent policies | Agents record `details.policy_applied`, production LLM paths pass `AgentRuntimePolicy.timeout_seconds` or registered pipeline policy timeouts to `call_text_llm()`, and `AgentRun` paths use the shared LLM timeout classifier for final outcomes. | External trace correlation is not standardized for every agent path. |
-| LLM provider | `call_text_llm()` logs provider/model and emits `llm.call.completed`, `llm.call.failed`, and `llm.call.timeout` events with `duration_ms`. | No trace/correlation payload yet. |
-| Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; worker emits started events and terminal completed/failed events with `duration_ms`. | Event coverage is still incomplete for some operational surfaces. |
-| Retrieval | Retrieval search emits `retrieval.search.completed` with correlation ids, result count, and `duration_ms`, without query text or chunk text. | No trace/correlation payload yet. |
-| Provider failures | arXiv and Semantic Scholar failure paths emit `provider.failure` with neutral failure class and retry decision. | Coverage is not yet complete for every infrastructure dependency. |
-| Health | Reports Postgres, provider resilience store, Qdrant, LLM/embedding config, and blob store. | No metrics export. |
+| `AgentRun` | Durable per-agent execution record with `session_id`, `job_id`, `agent_name`, `model`, lifecycle status, `termination_reason`, counts, refs, and `details`; persistence links optional trace metadata into `details.observability` and emits lifecycle events. | Raw prompt/output policy is documented but not centrally enforced for every ad hoc details payload. |
+| Agent policies | Agents record `details.policy_applied`, production LLM paths pass `AgentRuntimePolicy.timeout_seconds` or registered pipeline policy timeouts to `call_text_llm()`, and `AgentRun` paths use the shared LLM timeout classifier for final outcomes. | External trace correlation depends on runtime trace context being available. |
+| LLM provider | `call_text_llm()` logs provider/model and emits `llm.call.completed`, `llm.call.failed`, and `llm.call.timeout` events with `duration_ms`. Safe events automatically include `trace_id` when available. | No vendor-specific span export is implemented by PaperIntel itself. |
+| Workflow worker | Job failures persist `failure_class`, actual `retryable`, and optional `retry_after_seconds`; worker emits started events and terminal completed/failed events with `duration_ms`. | No UI-level progress percentage yet. |
+| Retrieval | Retrieval search emits `retrieval.search.completed` with correlation ids, result count, `duration_ms`, and optional trace correlation, without query text or chunk text. | Query planning details are not exported as metrics. |
+| Provider failures | arXiv, Semantic Scholar, OpenAI embeddings, S3/MinIO blob storage, Qdrant, and Postgres-backed resilience-store degradation emit `provider.failure` with neutral failure class and retry decision. | LLM provider breaker/limiter coverage remains future resilience work. |
+| Health | Reports Postgres, provider resilience store, Qdrant, LLM/embedding config, and blob store. | Health is status-oriented; metrics are exported separately. |
+| Metrics | `/metrics` returns safe in-process Prometheus text metrics derived from structured events: `paperintel_events_total` and `paperintel_event_duration_ms`. | Metrics reset on process restart and are not a durable event stream. |
 | REST/MCP | Public result payloads intentionally omit raw `AgentRun` internals and preserve neutral failure classes/metadata where needed. | Correlation IDs are not consistently surfaced for every async/sync operation. |
 | Live smoke tests | Print stable `LIVE_*` markers for run/session/job/resource IDs and cleanup. | Marker taxonomy is test-specific, not a general event contract. |
 
@@ -80,7 +82,7 @@ metrics, and runbook output.
 | `result_size` | Size of a generated or returned result, usually character count. | No by default | Yes | Provider-call diagnostics |
 | `result_count` | Count of returned results. | No by default | Yes | Retrieval diagnostics |
 | `duration_ms` | Runtime duration for a provider call, retrieval search, workflow job, or agent run when measured. | No by default | Yes | Provider-call, retrieval, workflow-job, and AgentRun diagnostics |
-| `trace_id` | External trace/correlation id. | No by default | Yes | Future optional AgentRun details |
+| `trace_id` | External trace/correlation id resolved from explicit env correlation ids or active LangSmith run context. | No by default | Yes | Optional `AgentRun.details.observability.trace_id` |
 
 ## Event Taxonomy
 
@@ -105,6 +107,30 @@ document, traceback, and secret-like fields.
 | `retrieval.search.completed` | `session_id`, optional `paper_id`, `result_count`, `duration_ms` |
 | `provider.failure` | `provider`, `operation`, `failure_class`, `retryable`, optional `retry_after_seconds` |
 | `cache.reused_analysis` | `session_id`, `paper_id`, reuse source category |
+
+`provider.failure` uses provider labels such as `arxiv`, `semantic_scholar`,
+`openai`, `s3`, `qdrant`, and `postgres`. Operations must be stable literals
+such as `embeddings`, `search`, `head_object`, `upsert`, or
+`provider_rate_limiter.reserve_slot`; they must not include object keys, URLs,
+queries, prompts, or raw exception text.
+
+## Metrics Export
+
+`GET /metrics` exposes process-local Prometheus text metrics:
+
+- `paperintel_events_total{event=..., ...}` counts safe structured events.
+- `paperintel_event_duration_ms_bucket/count/sum{event=..., ...}` records
+  event durations when a safe event includes `duration_ms`.
+
+Metric labels are intentionally low cardinality:
+
+- always: `event`
+- optional safe labels: `agent_name`, `failure_class`, `kind`, `model`,
+  `operation`, `provider`, `status`, `termination_reason`
+
+High-cardinality correlation fields such as `session_id`, `job_id`,
+`agent_run_id`, `paper_id`, and `trace_id` are allowed in logs but excluded from
+metric labels.
 
 ## AgentRun Contract
 
@@ -164,12 +190,27 @@ exception text. Where an `AgentRun` records a timeout as the final outcome, use
 
 Structured event coverage should expand to the remaining operational surfaces.
 
-Optional trace/correlation fields may be added to `AgentRun.details` without
-exposing them in default REST/MCP payloads.
+Trace/correlation fields are stored in `AgentRun.details.observability` when
+available:
+
+```json
+{
+  "observability": {
+    "trace_id": "external-trace-id",
+    "duration_ms": 1234
+  }
+}
+```
+
+Trace IDs are resolved from explicit correlation environment variables first
+(`PAPERINTEL_TRACE_ID`, `LANGSMITH_TRACE_ID`, `LANGCHAIN_TRACE_ID`,
+`LANGCHAIN_RUN_ID`) and then, when available, from the active LangSmith
+`get_current_run_tree()` context. They are not exposed in default REST/MCP
+payloads and are not used as Prometheus labels.
 
 Live smoke runbooks should list expected observability markers and how to
 disable external tracing locally.
 
-Metrics export should be evaluated only after structured events are stable. Do
-not commit to Prometheus, Grafana, or a hosted tracing system before that
-contract is implemented.
+Future metrics hardening may add deployment-level scraping configuration,
+Grafana dashboards, and process labels. Do not add user/session/job identifiers
+as metric labels.
