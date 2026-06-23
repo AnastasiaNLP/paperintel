@@ -5,9 +5,12 @@ evaluation.
 
 - `seed_5.jsonl`: small local seed used for fast development and CI-style
   contract checks.
-- `paperintel_30_v0_1.jsonl`: full 30-paper evaluation dataset intended for
+- `paperintel_30_v0_1.jsonl`: original 30-paper evaluation dataset intended for
   portfolio use and published on Hugging Face:
   [AIAnastasia/arxiv-papers](https://huggingface.co/datasets/AIAnastasia/arxiv-papers).
+- `paperintel_60_v2_2.jsonl`: v0.2 60-paper `review_ready` dataset with 333
+  benchmark rows and 180 QA cases. This is the current dataset checkpoint; see
+  [docs/DATASET_V0_2_CHECKPOINT.md](../docs/DATASET_V0_2_CHECKPOINT.md).
 - `SCHEMA.md`: schema contract and labeling rules.
 - `HF_DATASET_CARD.md`: Hugging Face dataset card template.
 - `HF_PUBLISH.md`: Hugging Face publication checklist.
@@ -70,3 +73,8 @@ question wording should make that scope explicit.
 ```
 
 The 30-paper dataset should report `OK records=30`.
+
+The v0.2 60-paper dataset intentionally carries additional evidence and review
+metadata. The current validator is still v0.1-schema strict, so
+`paperintel_60_v2_2.jsonl` requires the next schema/loader update before it can
+be used with `evaluation.validate_golden_dataset`.

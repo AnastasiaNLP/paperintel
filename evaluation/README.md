@@ -12,8 +12,8 @@ non-deterministic.
 
 ## Evaluation MVP Status
 
-The Evaluation MVP is closed for dataset, artifact-level deterministic checks,
-workspace export, and manual judge scoring:
+The v0.1 Evaluation MVP is closed for dataset, artifact-level deterministic
+checks, workspace export, and manual judge scoring:
 
 - golden seed dataset: ready, with 5 manually verified papers
 - 30-paper golden dataset: ready, schema-clean, and published on Hugging Face
@@ -25,6 +25,18 @@ workspace export, and manual judge scoring:
 - rubric files: ready and versioned
 - judge dry-run task generation: ready
 - live judge provider: ready for explicit manual use
+
+The dataset has since advanced to v0.2. Current checkpoint:
+
+- `golden_dataset/paperintel_60_v2_2.jsonl`
+- 60 papers
+- 333 benchmark rows
+- 180 QA cases
+- 0 placeholder issues
+- status: `review_ready`
+
+See [docs/DATASET_V0_2_CHECKPOINT.md](../docs/DATASET_V0_2_CHECKPOINT.md) for
+the full v0.2 checkpoint and the `paperintel_eval_v1` plan.
 
 Normal CI should use deterministic validation and deterministic runner tests.
 Live judge scoring should remain manual or scheduled until score variance is
@@ -105,7 +117,14 @@ Evaluation uses two JSONL files:
   for portfolio/Hugging Face publication and project-level evaluation. Published
   dataset:
   [AIAnastasia/arxiv-papers](https://huggingface.co/datasets/AIAnastasia/arxiv-papers).
+- `golden_dataset/paperintel_60_v2_2.jsonl`: current v0.2 `review_ready`
+  60-paper dataset for the next evaluation framework workstream.
 - `workspaces.jsonl`: exported `PaperWorkspace` rows from Postgres.
+
+The current `evaluation.validate_golden_dataset` command validates the v0.1
+schema. The v0.2 dataset adds evidence anchors, QA question types, difficulty
+tags, review flags, and enrichment metadata, so the schema/loader must be
+updated before using the v0.2 file as an automated gate.
 
 The local seed keeps CI and development independent from network access. The
 30-paper dataset is small enough to keep versioned in the repository and is also
