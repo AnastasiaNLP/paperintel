@@ -5,8 +5,8 @@ import argparse
 from evaluation.golden_dataset import (
     DEFAULT_GOLDEN_DATASET_PATH,
     GoldenDatasetError,
-    load_golden_records,
-    summarize_golden_records,
+    summarize_golden_validation,
+    validate_golden_file,
 )
 
 
@@ -21,15 +21,16 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        records = load_golden_records(args.path)
+        validation = validate_golden_file(args.path)
     except GoldenDatasetError as exc:
         print(f"ERROR {exc}")
         return 1
 
-    print(summarize_golden_records(records))
+    print(summarize_golden_validation(validation))
+    if validation.summary.duplicates:
+        return 1
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -4,6 +4,7 @@ import sys
 
 
 GOLDEN_PATH = "golden_dataset/seed_5.jsonl"
+GOLDEN_V02_PATH = "golden_dataset/paperintel_60_v2_2.jsonl"
 WORKSPACES_PATH = "tests/fixtures/evaluation/workspaces_seed_sample.jsonl"
 
 
@@ -21,10 +22,36 @@ def test_validate_golden_dataset_cli_contract():
     )
 
     assert result.returncode == 0
-    assert result.stdout.strip() == (
-        "OK records=5 paper_ids="
-        "1706.03762,2005.11401,2106.09685,2210.03629,2205.14135"
+    assert "OK records=5" in result.stdout
+    assert "duplicates=0" in result.stdout
+    assert "benchmark_rows=36" in result.stdout
+    assert "qa_cases=15" in result.stdout
+    assert "dataset_versions={'v0.1': 5}" in result.stdout
+    assert "schema_versions={'none': 5}" in result.stdout
+    assert "label_quality={'manual_verified': 5}" in result.stdout
+
+
+def test_validate_golden_dataset_v02_cli_contract():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "evaluation.validate_golden_dataset",
+            GOLDEN_V02_PATH,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
     )
+
+    assert result.returncode == 0
+    assert "OK records=60" in result.stdout
+    assert "duplicates=0" in result.stdout
+    assert "benchmark_rows=333" in result.stdout
+    assert "qa_cases=180" in result.stdout
+    assert "dataset_versions={'v0.2': 60}" in result.stdout
+    assert "schema_versions={'0.2': 60}" in result.stdout
+    assert "label_quality={'draft_machine': 30, 'manual_verified': 30}" in result.stdout
 
 
 def test_run_deterministic_eval_text_cli_contract():
@@ -86,4 +113,3 @@ def test_run_deterministic_eval_json_cli_contract():
     ]
     assert payload["paper_results"][0]["passed"] is True
     assert payload["paper_results"][1]["passed"] is False
-

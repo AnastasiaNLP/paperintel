@@ -87,7 +87,8 @@ Optional top-level review metadata:
 
 - `v02_review_flags`
 - `v02_enrichment_method`
-- `v02_pass2_applied`
+- `v02_pass2_applied`: integer count of second-pass updates applied to the
+  record.
 
 For `paperintel_60_v2_2.jsonl`, every record must have:
 
@@ -130,7 +131,8 @@ Required v0.1 fields:
 
 Additional required v0.2 fields:
 
-- `dataset`: benchmark dataset or evaluated system context.
+- `dataset`: benchmark dataset or evaluated system context; may be `null` when
+  the result is not tied to a named dataset.
 - `conditions`: plain-text row context.
 - `source_section`: paper section where the result appears.
 - `source_table_or_figure`: table or figure identifier, or `null`.
@@ -139,6 +141,9 @@ Additional required v0.2 fields:
 - `value_type`: stable value class.
 - `evidence_anchor`: source pointer for the row.
 - `evidence_confidence`: numeric confidence in `[0.0, 1.0]`.
+
+For v0.2, `conditions_keywords` may be empty when the row is already identified
+by task, metric, value, dataset, and source metadata.
 
 Current `reported_as` values in `paperintel_60_v2_2.jsonl`:
 
