@@ -201,6 +201,24 @@ def test_ingestion_uses_injected_metadata_fallback_when_arxiv_metadata_fails(mon
     assert result["ingestion_provenance"]["metadata_source"] == "injected_fallback"
 
 
+def test_url_ingestion_returns_empty_errors_list_on_clean_success():
+    ingestion = _load_ingestion_with_stubs()
+
+    result = ingestion.ingestion_agent(
+        {
+            "input_type": "url",
+            "input_value": "https://arxiv.org/abs/2501.12948",
+            "batch_urls": None,
+            "current_paper_index": 0,
+            "total_papers": 1,
+        }
+    )
+
+    assert result["processing_stage"] == "extraction"
+    assert result["errors"] == []
+    assert result["ingestion_provenance"]["metadata_source"] == "arxiv"
+
+
 def test_pdf_ingestion_can_skip_arxiv_metadata_with_injected_fallback(monkeypatch):
     ingestion = _load_ingestion_with_stubs()
 

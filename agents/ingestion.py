@@ -307,7 +307,7 @@ def _route_url(state: PaperIntelState, url: str) -> dict:
             raw_text=raw_text,
             pdf_path=pdf_path,
             text_by_page=_sanitize_text_by_page(parsed["text_by_page"]),
-            errors=errors or None,
+            errors=errors,
             ingestion_provenance=_make_provenance(
                 text_source="pdf",
                 metadata_source=metadata_source,
