@@ -1,6 +1,6 @@
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializeAsAny
 
 
 class PaperMetadata(BaseModel):
@@ -29,6 +29,25 @@ class BenchmarkResult(BaseModel):
     unit: Optional[str] = None
     baseline_comparison: Optional[str] = None
     conditions: Optional[str] = None
+
+
+class BenchmarkEvidenceAnchor(BaseModel):
+    page: Optional[int] = None
+    section: Optional[str] = None
+    table_or_figure: Optional[str] = None
+
+
+class BenchmarkResultV02(BenchmarkResult):
+    dataset: Optional[str] = None
+    conditions_keywords: List[str] = Field(default_factory=list)
+    source_section: Optional[str] = None
+    source_table_or_figure: Optional[str] = None
+    reported_as: Optional[str] = None
+    value_type: Optional[str] = None
+    evidence_anchor: Optional[BenchmarkEvidenceAnchor] = None
+    evidence_confidence: Optional[float] = None
+    higher_is_better: Optional[bool] = None
+    difficulty_tags: List[str] = Field(default_factory=list)
 
 
 class ProductionReadiness(BaseModel):
@@ -65,7 +84,7 @@ class PaperSlot(BaseModel):
 
     metadata: Optional[PaperMetadata] = None
     method_extraction: Optional[MethodExtraction] = None
-    benchmarks: List[BenchmarkResult] = Field(default_factory=list)
+    benchmarks: List[SerializeAsAny[BenchmarkResult]] = Field(default_factory=list)
     production_readiness: Optional[ProductionReadiness] = None
     engineer_report: Optional[EngineerReport] = None
     markdown_report: Optional[str] = None

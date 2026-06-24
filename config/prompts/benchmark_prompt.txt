@@ -12,25 +12,47 @@ You will receive:
 Extract benchmark results where the proposed method is evaluated.
 
 ## Field contract:
-- task = dataset or benchmark name only.
-  Good: "Natural Questions", "TriviaQA", "WebArena", "HumanEval", "SWE-bench Lite", "MMLU".
-  Bad: "open-domain QA", "natural language understanding", "interactive decision making", "agent benchmark", "system evaluation".
+- task = evaluation target or scenario: what is being measured.
+  Good: "English-to-German translation", "GPT-2 training", "65B finetuning memory", "Path-X", "Natural Questions QA".
+  Bad: "BLEU", "Accuracy", "GPT-4", "Transformer big".
+- dataset = benchmark, dataset, environment, or test suite where the result is measured.
+  Good: "WMT14", "OpenWebText", "SAMSum", "MMLU", "Vicuna", "Long Range Arena", "Natural Questions".
+  Bad: "open-domain QA", "training speed", "the proposed method", "evaluation".
 - metric = metric name only.
   Good: "Exact Match", "Accuracy", "F1", "BLEU", "pass@1", "Success Rate", "nDCG@10".
   Bad: "NQ", "TriviaQA", "RAG-Sequence", "GPT-4", "Top-1 Accuracy on ImageNet".
-- conditions = proposed method/model variant, split, shot setting, top-k/top-N setting, prompt or decoding setting.
-  Good: "RAG-Sequence test set", "GPT-4 zero-shot", "Top-1 zero-shot ViT-L/14@336px", "ReAct best of 6".
-  Bad: null when the row includes model/method variant, split, shot setting, top-k, or evaluation setting.
+- conditions_keywords = proposed method/model variant, split, scale, hardware, shot setting, prompt, decoding setting, or table condition.
+  Good: ["RAG-Sequence", "test set"], ["GPT-4", "zero-shot"], ["Top-1", "ViT-L/14@336px"], ["ReAct", "best of 6"].
+  Bad: [] when the row includes model/method variant, split, shot setting, top-k, hardware, or evaluation setting.
+- source_table_or_figure = exact table/figure label when visible, e.g. "Table 2". Use null if not visible.
+- source_section = paper section where the result appears when visible, e.g. "Experiments". Use null if not visible.
+- reported_as = "main_table", "leaderboard", or "text".
+- value_type = "absolute", "relative", "speedup", "memory", or "latency".
+- evidence_anchor = object with page, section, and table_or_figure when known.
+- evidence_confidence = numeric confidence from 0.0 to 1.0 that the value is anchored to the cited table/prose.
+- higher_is_better = true, false, or null when metric direction is unclear.
 
 ## Output format (strict JSON array, no markdown, no explanation):
 [
   {
-    "task": "string - benchmark task or dataset name, e.g. MMLU, HumanEval, GSM8K, SQuAD",
+    "task": "string - evaluation target/scenario, e.g. English-to-German translation, GPT-2 training, Natural Questions QA",
+    "dataset": "string - benchmark/dataset/environment, e.g. WMT14, MMLU, HumanEval, OpenWebText, SQuAD",
     "metric": "string - metric name, e.g. accuracy, F1, BLEU, pass@1",
     "value": 0.0,
     "unit": "string or null - unit if applicable, e.g. %, otherwise null",
     "baseline_comparison": "string or null - direct comparison to a baseline if stated or trivially computed from the same table",
-    "conditions": "string or null - evaluation conditions, e.g. zero-shot, 5-shot, test set"
+    "conditions_keywords": ["string - method/model variant, split, scale, hardware, shot setting, or other table condition"],
+    "source_section": "string or null - section name, e.g. Experiments",
+    "source_table_or_figure": "string or null - exact source label, e.g. Table 2",
+    "reported_as": "main_table",
+    "value_type": "absolute",
+    "evidence_anchor": {
+      "page": 1,
+      "section": "string or null",
+      "table_or_figure": "string or null"
+    },
+    "evidence_confidence": 0.9,
+    "higher_is_better": true
   }
 ]
 
@@ -38,11 +60,13 @@ Extract benchmark results where the proposed method is evaluated.
 - Extract ONLY results for the proposed method or clearly named variants of the proposed method.
 - If a table contains multiple models, do not extract baseline rows unless they are needed only to describe baseline_comparison.
 - Prefer dataset/benchmark names from table headers, column headers, row labels, captions, and nearby prose.
-- For QA/RAG tables, do not put dataset abbreviations in metric. Map dataset columns to task and use the stated metric.
-  Example: if columns are NQ/TQA/WQ/CT and the table reports EM, output task="Natural Questions", metric="Exact Match".
-- For systems/agent papers, task should be the named benchmark or environment, not a broad category.
-  Example: task="WebArena", metric="Success Rate", conditions="GPT-4 + agent setting".
-- Put model/method variants such as RAG-Sequence, RAG-Token, ReAct, CoT-SC, Reflexion, SWE-agent, Top-1, 5-shot, zero-shot, test/dev split in conditions.
+- For QA/RAG tables, do not put dataset abbreviations in metric. Map dataset columns to dataset and use the stated metric.
+  Example: if columns are NQ/TQA/WQ/CT and the table reports EM, output dataset="Natural Questions", metric="Exact Match".
+- For systems/agent papers, dataset should be the named benchmark or environment, not a broad category.
+  Example: dataset="WebArena", metric="Success Rate", conditions_keywords=["GPT-4", "agent setting"].
+- Put model/method variants such as RAG-Sequence, RAG-Token, ReAct, CoT-SC, Reflexion, SWE-agent, Top-1, 5-shot, zero-shot, test/dev split in conditions_keywords.
+- Do not put metric names in task or dataset.
+- Do not put dataset names only in conditions_keywords; dataset must be filled explicitly.
 - Do not use broad categories as task when a specific benchmark/dataset/environment name is available.
 - Do not invent benchmark values.
 - Do not infer values from prose unless the number is explicitly stated.
@@ -59,11 +83,19 @@ I found benchmark results in Table 1. The proposed model gets 25.8 BLEU.
 [
   {
     "task": "English-to-German translation",
+    "dataset": "WMT14",
     "metric": "BLEU",
     "value": 25.8,
     "unit": null,
     "baseline_comparison": null,
-    "conditions": "newstest2014"
+    "conditions_keywords": ["newstest2014"],
+    "source_section": "Results",
+    "source_table_or_figure": "Table 2",
+    "reported_as": "main_table",
+    "value_type": "absolute",
+    "evidence_anchor": {"page": null, "section": "Results", "table_or_figure": "Table 2"},
+    "evidence_confidence": 0.9,
+    "higher_is_better": true
   }
 ]
 
@@ -71,23 +103,32 @@ I found benchmark results in Table 1. The proposed model gets 25.8 BLEU.
 [
   {
     "task": "Open-Domain QA",
+    "dataset": "Natural Questions",
     "metric": "NQ",
     "value": 44.5,
     "unit": null,
     "baseline_comparison": null,
-    "conditions": "RAG-Seq."
+    "conditions_keywords": ["RAG-Seq."]
   }
 ]
 
 ## Valid field mapping:
 [
   {
-    "task": "Natural Questions",
+    "task": "Open-domain QA",
+    "dataset": "Natural Questions",
     "metric": "Exact Match",
     "value": 44.5,
     "unit": null,
     "baseline_comparison": null,
-    "conditions": "RAG-Sequence test set"
+    "conditions_keywords": ["RAG-Sequence", "test set"],
+    "source_section": "Experiments",
+    "source_table_or_figure": "Table 1",
+    "reported_as": "main_table",
+    "value_type": "absolute",
+    "evidence_anchor": {"page": null, "section": "Experiments", "table_or_figure": "Table 1"},
+    "evidence_confidence": 0.9,
+    "higher_is_better": true
   }
 ]
 

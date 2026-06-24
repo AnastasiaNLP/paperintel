@@ -222,6 +222,35 @@ def test_benchmark_eval_empty_v02_conditions_keywords_can_match():
     assert result.diagnostics[0].component_scores["conditions"] == 1.0
 
 
+def test_benchmark_eval_matches_actual_v02_conditions_keywords_without_conditions():
+    records = load_golden_records("golden_dataset/paperintel_60_v2_2.jsonl")
+    record = next(
+        record
+        for record in records
+        if any(row.conditions_keywords for row in record.expected_benchmarks)
+    )
+    expected = next(row for row in record.expected_benchmarks if row.conditions_keywords)
+
+    result = evaluate_benchmarks(
+        record.model_copy(update={"expected_benchmarks": [expected]}),
+        {
+            "benchmarks_json": [
+                {
+                    "task": expected.task,
+                    "metric": expected.metric,
+                    "value": expected.value,
+                    "unit": expected.unit,
+                    "dataset": expected.dataset,
+                    "conditions_keywords": expected.conditions_keywords,
+                }
+            ]
+        },
+    )
+
+    assert result.passed
+    assert result.diagnostics[0].status == MATCHED
+
+
 def test_benchmark_eval_v02_wrong_dataset_does_not_match_empty_conditions_keywords():
     records = load_golden_records("golden_dataset/paperintel_60_v2_2.jsonl")
     record = next(

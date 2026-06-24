@@ -4,12 +4,14 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from pydantic import ValidationError
+
 from agents.error_utils import paper_error
 from agents.llm_provider import call_text_llm
 from config.settings import settings
 from models.agent_policies import resolve_agent_policy
 from models.errors import ErrorCodes, make_error
-from models.schemas import BenchmarkResult
+from models.schemas import BenchmarkEvidenceAnchor, BenchmarkResult, BenchmarkResultV02
 from models.state import PaperIntelState
 from tools.pdf_parser import extract_tables
 
@@ -82,6 +84,20 @@ def _as_optional_string(value: object) -> Optional[str]:
     return text or None
 
 
+def _as_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [
+            text
+            for item in value
+            if (text := str(item).strip())
+        ]
+    if text := str(value).strip():
+        return [text]
+    return []
+
+
 def _parse_float(value: object) -> Optional[float]:
     if value is None:
         return None
@@ -93,6 +109,98 @@ def _parse_float(value: object) -> Optional[float]:
         return float(cleaned)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _parse_int(value: object) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_bool(value: object) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "yes", "1"}:
+            return True
+        if normalized in {"false", "no", "0"}:
+            return False
+    return None
+
+
+def _normalize_benchmark_text(value: object) -> str:
+    text = str(value).strip()
+    aliases = {
+        "MNLI-matched": "MNLI-m",
+        "mnli-matched": "MNLI-m",
+        "MNLI-m": "MNLI-m",
+        "WSJ 23": "WSJ Section 23",
+        "wsj 23": "WSJ Section 23",
+    }
+    return aliases.get(text, text)
+
+
+def _normalize_metric(value: object) -> str:
+    text = str(value).strip()
+    aliases = {
+        "Rouge-1": "ROUGE-1",
+        "Rouge-2": "ROUGE-2",
+        "Rouge-L": "ROUGE-L",
+        "BLEU score": "BLEU",
+        "bleu score": "BLEU",
+        "Acc": "Accuracy",
+        "acc": "Accuracy",
+    }
+    return aliases.get(text, text)
+
+
+def _normalize_unit(value: object) -> Optional[str]:
+    text = _as_optional_string(value)
+    if text is None:
+        return None
+    aliases = {
+        "%": "percent",
+        "percentage": "percent",
+        "Percent": "percent",
+        "GB": "GB",
+        "gb": "GB",
+        "x": "x",
+    }
+    return aliases.get(text, text)
+
+
+def _evidence_anchor(value: object) -> BenchmarkEvidenceAnchor | None:
+    if not isinstance(value, dict):
+        return None
+    return BenchmarkEvidenceAnchor(
+        page=_parse_int(value.get("page")),
+        section=_as_optional_string(value.get("section")),
+        table_or_figure=_as_optional_string(value.get("table_or_figure")),
+    )
+
+
+def _is_v02_benchmark_item(item: dict) -> bool:
+    return any(
+        key in item
+        for key in (
+            "dataset",
+            "conditions_keywords",
+            "source_section",
+            "source_table_or_figure",
+            "reported_as",
+            "value_type",
+            "evidence_anchor",
+            "evidence_confidence",
+            "higher_is_better",
+            "difficulty_tags",
+        )
+    )
 
 
 def _proposed_method_name(state: PaperIntelState) -> str:
@@ -346,23 +454,67 @@ def _parse_benchmarks(raw_json: str) -> tuple[list[BenchmarkResult], Optional[st
             logger.warning("Skipping benchmark with non-numeric value: %r", item)
             continue
 
-        task = str(item.get("task") or "").strip()
-        metric = str(item.get("metric") or "").strip()
+        task = _normalize_benchmark_text(item.get("task") or "")
+        metric = _normalize_metric(item.get("metric") or "")
 
         if not task or not metric:
             logger.warning("Skipping benchmark with missing task/metric: %r", item)
             continue
 
-        results.append(
-            BenchmarkResult(
-                task=task,
-                metric=metric,
-                value=value,
-                unit=_as_optional_string(item.get("unit")),
-                baseline_comparison=_as_optional_string(item.get("baseline_comparison")),
-                conditions=_as_optional_string(item.get("conditions")),
+        if _is_v02_benchmark_item(item):
+            dataset = _as_optional_string(item.get("dataset"))
+            if dataset is not None:
+                dataset = _normalize_benchmark_text(dataset)
+            conditions_keywords = _as_string_list(item.get("conditions_keywords"))
+            conditions = _as_optional_string(item.get("conditions"))
+            if conditions is None and conditions_keywords:
+                conditions = " ".join(conditions_keywords)
+            try:
+                results.append(
+                    BenchmarkResultV02(
+                        task=task,
+                        dataset=dataset,
+                        metric=metric,
+                        value=value,
+                        unit=_normalize_unit(item.get("unit")),
+                        baseline_comparison=_as_optional_string(
+                            item.get("baseline_comparison")
+                        ),
+                        conditions=conditions,
+                        conditions_keywords=conditions_keywords,
+                        source_section=_as_optional_string(item.get("source_section")),
+                        source_table_or_figure=_as_optional_string(
+                            item.get("source_table_or_figure")
+                        ),
+                        reported_as=_as_optional_string(item.get("reported_as")),
+                        value_type=_as_optional_string(item.get("value_type")),
+                        evidence_anchor=_evidence_anchor(item.get("evidence_anchor")),
+                        evidence_confidence=_parse_float(
+                            item.get("evidence_confidence")
+                        ),
+                        higher_is_better=_parse_bool(item.get("higher_is_better")),
+                        difficulty_tags=_as_string_list(item.get("difficulty_tags")),
+                    )
+                )
+            except ValidationError as exc:
+                logger.warning("Skipping invalid v0.2 benchmark row: %s | %r", exc, item)
+            continue
+
+        try:
+            results.append(
+                BenchmarkResult(
+                    task=task,
+                    metric=metric,
+                    value=value,
+                    unit=_normalize_unit(item.get("unit")),
+                    baseline_comparison=_as_optional_string(
+                        item.get("baseline_comparison")
+                    ),
+                    conditions=_as_optional_string(item.get("conditions")),
+                )
             )
-        )
+        except ValidationError as exc:
+            logger.warning("Skipping invalid benchmark row: %s | %r", exc, item)
 
     return results, None
 

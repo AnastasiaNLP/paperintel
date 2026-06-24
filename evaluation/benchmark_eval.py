@@ -338,10 +338,7 @@ def _condition_score(
 ) -> float:
     if not expected.conditions_keywords:
         return 1.0
-    search_text = " ".join(
-        _normalize_text(actual.get(field))
-        for field in ("task", "metric", "dataset", "conditions")
-    )
+    search_text = _actual_benchmark_search_text(actual)
     matches = [
         keyword
         for keyword in expected.conditions_keywords
@@ -360,11 +357,23 @@ def _dataset_score(
     actual_dataset = actual.get("dataset")
     if _benchmark_text_equal(actual_dataset, expected_dataset):
         return 1.0
-    search_text = " ".join(
-        _normalize_text(actual.get(field))
-        for field in ("task", "metric", "dataset", "conditions")
-    )
+    search_text = _actual_benchmark_search_text(actual)
     return 1.0 if _benchmark_keyword_matches(expected_dataset, search_text) else 0.0
+
+
+def _actual_benchmark_search_text(actual: dict[str, Any]) -> str:
+    values = [
+        actual.get("task"),
+        actual.get("metric"),
+        actual.get("dataset"),
+        actual.get("conditions"),
+    ]
+    conditions_keywords = actual.get("conditions_keywords")
+    if isinstance(conditions_keywords, list):
+        values.extend(conditions_keywords)
+    elif conditions_keywords:
+        values.append(conditions_keywords)
+    return " ".join(_normalize_text(value) for value in values)
 
 
 def _values_equal(actual: Any, expected: float, tolerance: float = 1e-6) -> bool:

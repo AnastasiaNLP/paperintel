@@ -8,6 +8,7 @@ from models.errors import ErrorCodes, StructuredError
 from models.qa import AnswerDraft
 from models.schemas import (
     BenchmarkResult,
+    BenchmarkResultV02,
     EngineerReport,
     MethodExtraction,
     PaperMetadata,
@@ -421,6 +422,63 @@ def test_handler_persists_single_analysis_workspace():
     assert workspace.readiness_json["maturity_level"] == "experimental"
     assert workspace.finalized_report_json["recommended_action"] == "prototype"
     assert workspace.full_markdown_report == "# Report"
+
+
+def test_handler_preserves_benchmark_v02_fields_in_workspace():
+    artifact_repository = FakeArtifactRepository()
+    slot = _paper_slot(arxiv_id="2401.00001")
+    slot.benchmarks = [
+        BenchmarkResultV02(
+            task="Deep memory retrieval",
+            dataset=None,
+            metric="ROUGE-L",
+            value=0.827,
+            conditions_keywords=["MemGPT", "GPT-4 Turbo backbone"],
+            source_section="Experiments",
+            source_table_or_figure="Table 1",
+            reported_as="main_table",
+            value_type="absolute",
+            evidence_confidence=0.9,
+            higher_is_better=True,
+        )
+    ]
+    analysis_runner = FakeRunner(
+        result={
+            "papers": [slot],
+            "processing_stage": "chunk_and_index",
+            "next_phase": "qa",
+        }
+    )
+    handler, _, _, _ = _handler(
+        analysis_runner=analysis_runner,
+        artifact_repository=artifact_repository,
+    )
+    session = handler.create_session()
+
+    result = handler.handle_message(session.id, "https://arxiv.org/abs/2401.00001")
+
+    assert result.phase == "qa"
+    workspace = artifact_repository.workspaces[0]
+    assert workspace.benchmarks_json == [
+        {
+            "task": "Deep memory retrieval",
+            "metric": "ROUGE-L",
+            "value": 0.827,
+            "unit": None,
+            "baseline_comparison": None,
+            "conditions": None,
+            "dataset": None,
+            "conditions_keywords": ["MemGPT", "GPT-4 Turbo backbone"],
+            "source_section": "Experiments",
+            "source_table_or_figure": "Table 1",
+            "reported_as": "main_table",
+            "value_type": "absolute",
+            "evidence_anchor": None,
+            "evidence_confidence": 0.9,
+            "higher_is_better": True,
+            "difficulty_tags": [],
+        }
+    ]
 
 
 def test_handler_persists_requested_pipeline_version_for_pdf_analysis():
