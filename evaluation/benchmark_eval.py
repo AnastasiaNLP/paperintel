@@ -104,6 +104,32 @@ class BenchmarkEvalResult:
         }
 
 
+@dataclass(frozen=True)
+class BenchmarkCandidateScore:
+    actual: dict[str, Any]
+    component_scores: dict[str, float]
+    score: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "actual": self.actual,
+            "component_scores": self.component_scores,
+            "score": self.score,
+        }
+
+
+def score_benchmark_candidate(
+    expected: GoldenBenchmarkV01,
+    actual: dict[str, Any],
+) -> BenchmarkCandidateScore:
+    scores = _component_scores(expected, actual)
+    return BenchmarkCandidateScore(
+        actual=actual,
+        component_scores=scores,
+        score=sum(scores.values()) / len(scores),
+    )
+
+
 def evaluate_benchmarks(
     record: GoldenDatasetRecord,
     workspace: PaperWorkspace | dict[str, Any],
@@ -135,7 +161,7 @@ def _evaluate_expected_row(
 ) -> BenchmarkMatchDiagnostic:
     expected_row = _expected_row(record, expected)
     scored = [
-        (_component_scores(expected, actual), actual)
+        (score_benchmark_candidate(expected, actual).component_scores, actual)
         for actual in actual_rows
     ]
     full_matches = [
