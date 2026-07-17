@@ -117,6 +117,14 @@ def test_sonnet_fallback_triggers_for_low_row_count_with_context(monkeypatch):
 
     assert [call["model"] for call in calls] == ["haiku", "sonnet"]
     assert len(result["benchmarks"]) == 2
+    assert len(result["benchmark_candidates"]) == 2
+    assert result["benchmark_extractor_version"] == "legacy_mirror_v1"
+    assert result["benchmark_candidates"][0].selection_status == "accepted"
+    assert (
+        result["benchmark_candidates"][0].selection_reason
+        == "legacy_final_benchmark_mirror"
+    )
+    assert result["benchmark_candidates"][0].conditions_keywords == ["RAG-Sequence"]
 
 
 def test_parse_benchmarks_preserves_v01_contract_for_v01_json():

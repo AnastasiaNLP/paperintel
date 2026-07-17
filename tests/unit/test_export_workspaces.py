@@ -29,6 +29,10 @@ def _workspace(paper_id: str) -> PaperWorkspace:
         pipeline_stage="chunk_and_index",
         method_extraction_json={"method_name": "Method"},
         benchmarks_json=[{"task": "task", "metric": "metric", "value": 1.0}],
+        benchmark_candidates_json=[
+            {"task": "task", "metric": "metric", "selection_status": "accepted"}
+        ],
+        benchmark_extractor_version="legacy_mirror_v1",
         readiness_json={"maturity_level": "experimental"},
         full_markdown_report="# Report",
     )
@@ -61,6 +65,11 @@ def test_export_workspaces_for_session_writes_all_workspaces(tmp_path):
         "1706.03762",
         "2005.11401",
     ]
+    first = json.loads(output.read_text().splitlines()[0])
+    assert first["benchmark_candidates_json"] == [
+        {"task": "task", "metric": "metric", "selection_status": "accepted"}
+    ]
+    assert first["benchmark_extractor_version"] == "legacy_mirror_v1"
 
 
 def test_export_workspaces_for_session_filters_and_orders_requested_papers(tmp_path):
@@ -102,4 +111,3 @@ def test_export_workspaces_for_session_rejects_empty_export(tmp_path):
             session_id="session-1",
             output_path=tmp_path / "workspaces.jsonl",
         )
-

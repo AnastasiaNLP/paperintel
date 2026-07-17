@@ -1972,6 +1972,8 @@ class PostgresPaperWorkspaceRepository:
             existing.finalized_report_json = workspace.finalized_report_json
             existing.method_extraction_json = workspace.method_extraction_json
             existing.benchmarks_json = workspace.benchmarks_json
+            existing.benchmark_candidates_json = workspace.benchmark_candidates_json
+            existing.benchmark_extractor_version = workspace.benchmark_extractor_version
             existing.readiness_json = workspace.readiness_json
             existing.full_markdown_report = workspace.full_markdown_report
             db.commit()
@@ -2103,6 +2105,10 @@ class PostgresPaperWorkspaceRepository:
                 finalized_report_json=deepcopy(source.finalized_report_json),
                 method_extraction_json=deepcopy(source.method_extraction_json),
                 benchmarks_json=deepcopy(source.benchmarks_json or []),
+                benchmark_candidates_json=deepcopy(
+                    source.benchmark_candidates_json or []
+                ),
+                benchmark_extractor_version=source.benchmark_extractor_version,
                 readiness_json=deepcopy(source.readiness_json),
                 full_markdown_report=source.full_markdown_report,
                 created_at=now,
@@ -2147,12 +2153,18 @@ def _cacheable_workspace_predicate():
 
 
 def _workspace_orm_ready_for_cache(workspace: PaperWorkspaceORM) -> bool:
+    has_benchmarks = bool(workspace.benchmarks_json or [])
+    has_candidate_pool = bool(workspace.benchmark_candidates_json or [])
+    has_candidate_contract = bool(workspace.benchmark_extractor_version) and (
+        has_candidate_pool or not has_benchmarks
+    )
     return (
         workspace.pipeline_stage not in FAILED_WORKSPACE_STAGES
         and workspace.full_markdown_report is not None
         and workspace.finalized_report_json is not None
         and workspace.method_extraction_json is not None
         and workspace.readiness_json is not None
+        and has_candidate_contract
     )
 
 
@@ -2168,6 +2180,10 @@ def _workspace_orm_cache_compatible(
         and candidate.finalized_report_json == source.finalized_report_json
         and candidate.method_extraction_json == source.method_extraction_json
         and (candidate.benchmarks_json or []) == (source.benchmarks_json or [])
+        and (candidate.benchmark_candidates_json or []) == (
+            source.benchmark_candidates_json or []
+        )
+        and candidate.benchmark_extractor_version == source.benchmark_extractor_version
         and candidate.readiness_json == source.readiness_json
         and candidate.full_markdown_report == source.full_markdown_report
         and _workspace_orm_ready_for_cache(candidate)

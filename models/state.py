@@ -7,6 +7,7 @@ from models.schemas import (
     PaperMetadata,
     MethodExtraction,
     BenchmarkResult,
+    BenchmarkCandidate,
     ProductionReadiness,
     EngineerReport,
     ComparisonReport,
@@ -65,6 +66,8 @@ class PaperIntelState(TypedDict):
     text_by_page: Optional[dict[int, str]]
     method_extraction: Optional[MethodExtraction]
     benchmarks: List[BenchmarkResult]
+    benchmark_candidates: List[BenchmarkCandidate]
+    benchmark_extractor_version: Optional[str]
     production_readiness: Optional[ProductionReadiness]
     ingestion_provenance: Optional[IngestionProvenance]
 

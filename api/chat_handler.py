@@ -716,6 +716,22 @@ def _workspaces_from_analysis_raw(
         if not paper_id:
             continue
         metadata = slot.metadata
+        benchmarks_json = [
+            dumped
+            for benchmark in slot.benchmarks
+            if (dumped := _model_dump(benchmark)) is not None
+        ]
+        benchmark_candidates_json = [
+            dumped
+            for candidate in slot.benchmark_candidates
+            if (dumped := _model_dump(candidate)) is not None
+        ] or [
+            _legacy_benchmark_candidate(benchmark)
+            for benchmark in benchmarks_json
+        ]
+        benchmark_extractor_version = (
+            slot.benchmark_extractor_version or "legacy_mirror_v1"
+        )
         workspaces.append(
             PaperWorkspace(
                 session_id=session_id,
@@ -726,11 +742,9 @@ def _workspaces_from_analysis_raw(
                 pipeline_version=pipeline_version,
                 finalized_report_json=_model_dump(slot.engineer_report),
                 method_extraction_json=_model_dump(slot.method_extraction),
-                benchmarks_json=[
-                    dumped
-                    for benchmark in slot.benchmarks
-                    if (dumped := _model_dump(benchmark)) is not None
-                ],
+                benchmarks_json=benchmarks_json,
+                benchmark_candidates_json=benchmark_candidates_json,
+                benchmark_extractor_version=benchmark_extractor_version,
                 readiness_json=_model_dump(slot.production_readiness),
                 full_markdown_report=slot.markdown_report,
             )
@@ -785,6 +799,30 @@ def _model_dump(value: Any) -> dict | None:
     if isinstance(value, dict):
         return value
     return None
+
+
+def _legacy_benchmark_candidate(benchmark: dict[str, Any]) -> dict[str, Any]:
+    conditions = benchmark.get("conditions")
+    return {
+        "task": benchmark.get("task"),
+        "dataset": benchmark.get("dataset"),
+        "metric": benchmark.get("metric"),
+        "value": benchmark.get("value"),
+        "unit": benchmark.get("unit"),
+        "method_or_model": conditions,
+        "variant_role": "unknown",
+        "benchmark_kind": "unknown",
+        "source_section": benchmark.get("source_section"),
+        "source_table_or_figure": benchmark.get("source_table_or_figure"),
+        "caption_context": None,
+        "row_context": None,
+        "conditions_keywords": benchmark.get("conditions_keywords")
+        or ([conditions] if conditions else []),
+        "evidence_anchor": benchmark.get("evidence_anchor"),
+        "evidence_confidence": benchmark.get("evidence_confidence"),
+        "selection_status": "accepted",
+        "selection_reason": "legacy_final_benchmark_mirror",
+    }
 
 
 def _normalize_discovery_result(raw: dict[str, Any]) -> GraphInvocationResult:
@@ -892,6 +930,8 @@ def _initial_analysis_state_for_urls(
         "text_by_page": None,
         "method_extraction": None,
         "benchmarks": [],
+        "benchmark_candidates": [],
+        "benchmark_extractor_version": None,
         "production_readiness": None,
         "ingestion_provenance": None,
         "comparison_markdown": None,

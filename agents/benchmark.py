@@ -11,7 +11,12 @@ from agents.llm_provider import call_text_llm
 from config.settings import settings
 from models.agent_policies import resolve_agent_policy
 from models.errors import ErrorCodes, make_error
-from models.schemas import BenchmarkEvidenceAnchor, BenchmarkResult, BenchmarkResultV02
+from models.schemas import (
+    BenchmarkCandidate,
+    BenchmarkEvidenceAnchor,
+    BenchmarkResult,
+    BenchmarkResultV02,
+)
 from models.state import PaperIntelState
 from tools.pdf_parser import extract_tables
 
@@ -29,6 +34,7 @@ MAX_FALLBACK_TEXT_CHARS = 12_000
 MAX_BENCHMARK_CONTEXT_CHARS = 18_000
 BENCHMARK_CONTEXT_WINDOW_CHARS = 1_200
 MAX_BENCHMARK_CONTEXT_WINDOWS = 24
+BENCHMARK_EXTRACTOR_VERSION = "legacy_mirror_v1"
 BENCHMARK_CONTEXT_KEYWORDS = [
     "MATH-500",
     "MATH",
@@ -201,6 +207,49 @@ def _is_v02_benchmark_item(item: dict) -> bool:
             "difficulty_tags",
         )
     )
+
+
+def _candidate_from_benchmark(benchmark: BenchmarkResult) -> BenchmarkCandidate:
+    payload = benchmark.model_dump(mode="json")
+    conditions_keywords = payload.get("conditions_keywords") or []
+    if not conditions_keywords and payload.get("conditions"):
+        conditions_keywords = [str(payload["conditions"])]
+    return BenchmarkCandidate(
+        task=payload.get("task"),
+        dataset=payload.get("dataset"),
+        metric=payload.get("metric"),
+        value=payload.get("value"),
+        unit=payload.get("unit"),
+        method_or_model=payload.get("conditions"),
+        variant_role="unknown",
+        benchmark_kind=_benchmark_kind(payload),
+        source_section=payload.get("source_section"),
+        source_table_or_figure=payload.get("source_table_or_figure"),
+        conditions_keywords=list(conditions_keywords),
+        evidence_anchor=benchmark.evidence_anchor
+        if isinstance(benchmark, BenchmarkResultV02)
+        else None,
+        evidence_confidence=payload.get("evidence_confidence"),
+        selection_status="accepted",
+        selection_reason="legacy_final_benchmark_mirror",
+    )
+
+
+def _benchmark_kind(payload: dict) -> str:
+    value_type = str(payload.get("value_type") or "").casefold()
+    metric = str(payload.get("metric") or "").casefold()
+    unit = str(payload.get("unit") or "").casefold()
+    if value_type in {"memory"} or "memory" in metric or unit in {"gb"}:
+        return "memory"
+    if value_type in {"latency"} or "latency" in metric or unit in {"ms", "seconds"}:
+        return "latency"
+    if value_type in {"speedup", "relative"} or "speedup" in metric:
+        return "resource_efficiency"
+    if "cost" in metric:
+        return "cost"
+    if value_type == "absolute":
+        return "downstream_quality"
+    return "unknown"
 
 
 def _proposed_method_name(state: PaperIntelState) -> str:
@@ -674,6 +723,8 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
                 new_errors + [f"Benchmark parse failed after repair: {parse_error}"]
             ),
             "benchmarks": [],
+            "benchmark_candidates": [],
+            "benchmark_extractor_version": BENCHMARK_EXTRACTOR_VERSION,
             "processing_stage": "readiness",
         }
 
@@ -681,6 +732,11 @@ def benchmark_analyst_agent(state: PaperIntelState) -> dict:
 
     result = {
         "benchmarks": benchmarks,
+        "benchmark_candidates": [
+            _candidate_from_benchmark(benchmark)
+            for benchmark in benchmarks
+        ],
+        "benchmark_extractor_version": BENCHMARK_EXTRACTOR_VERSION,
         "processing_stage": "readiness",
     }
     if not benchmarks:

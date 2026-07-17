@@ -50,6 +50,46 @@ class BenchmarkResultV02(BenchmarkResult):
     difficulty_tags: List[str] = Field(default_factory=list)
 
 
+class BenchmarkCandidate(BaseModel):
+    task: Optional[str] = None
+    dataset: Optional[str] = None
+    metric: Optional[str] = None
+    value: Optional[float] = None
+    unit: Optional[str] = None
+    method_or_model: Optional[str] = None
+    variant_role: Optional[
+        Literal[
+            "proposed_method",
+            "baseline",
+            "ablation",
+            "critic",
+            "retrieval",
+            "unknown",
+        ]
+    ] = "unknown"
+    benchmark_kind: Optional[
+        Literal[
+            "downstream_quality",
+            "resource_efficiency",
+            "cost",
+            "latency",
+            "memory",
+            "unknown",
+        ]
+    ] = "unknown"
+    source_section: Optional[str] = None
+    source_table_or_figure: Optional[str] = None
+    caption_context: Optional[str] = None
+    row_context: Optional[str] = None
+    conditions_keywords: List[str] = Field(default_factory=list)
+    evidence_anchor: Optional[BenchmarkEvidenceAnchor] = None
+    evidence_confidence: Optional[float] = None
+    selection_status: Literal["accepted", "rejected", "candidate", "unknown"] = (
+        "unknown"
+    )
+    selection_reason: Optional[str] = None
+
+
 class ProductionReadiness(BaseModel):
     has_open_code: bool
     code_url: Optional[str] = None
@@ -85,6 +125,8 @@ class PaperSlot(BaseModel):
     metadata: Optional[PaperMetadata] = None
     method_extraction: Optional[MethodExtraction] = None
     benchmarks: List[SerializeAsAny[BenchmarkResult]] = Field(default_factory=list)
+    benchmark_candidates: List[BenchmarkCandidate] = Field(default_factory=list)
+    benchmark_extractor_version: Optional[str] = None
     production_readiness: Optional[ProductionReadiness] = None
     engineer_report: Optional[EngineerReport] = None
     markdown_report: Optional[str] = None

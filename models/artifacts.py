@@ -25,6 +25,8 @@ class PaperWorkspace(BaseModel):
     finalized_report_json: dict | None = None
     method_extraction_json: dict | None = None
     benchmarks_json: list[dict] = Field(default_factory=list)
+    benchmark_candidates_json: list[dict] = Field(default_factory=list)
+    benchmark_extractor_version: str | None = None
     readiness_json: dict | None = None
     full_markdown_report: str | None = None
     created_at: datetime = Field(default_factory=utc_now)

@@ -1,5 +1,6 @@
 from agents.report_finalize import _current_url, report_finalize_node
 from models.schemas import (
+    BenchmarkCandidate,
     BenchmarkResult,
     EngineerReport,
     MethodExtraction,
@@ -43,6 +44,16 @@ def _base_state() -> dict:
                 conditions="reasoning evaluation",
             )
         ],
+        "benchmark_candidates": [
+            BenchmarkCandidate(
+                task="MATH-500",
+                metric="pass@1",
+                value=97.3,
+                selection_status="accepted",
+                selection_reason="legacy_final_benchmark_mirror",
+            )
+        ],
+        "benchmark_extractor_version": "legacy_mirror_v1",
         "production_readiness": ProductionReadiness(
             has_open_code=True,
             code_url="https://github.com/deepseek-ai/DeepSeek-R1",
@@ -118,6 +129,8 @@ def test_report_finalize_packs_success_slot_and_preserves_retrieval_inputs():
     papers = result["papers"]
     assert isinstance(papers, list)
     assert len(papers) == 1
+    assert papers[0].benchmark_candidates[0].selection_status == "accepted"
+    assert papers[0].benchmark_extractor_version == "legacy_mirror_v1"
     slot = papers[0]
     assert isinstance(slot, PaperSlot)
     assert slot.paper_index == 0

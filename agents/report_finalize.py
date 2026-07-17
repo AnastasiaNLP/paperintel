@@ -13,6 +13,8 @@ _SCRATCH_RESET = {
     "text_by_page": None,
     "method_extraction": None,
     "benchmarks": [],
+    "benchmark_candidates": [],
+    "benchmark_extractor_version": None,
     "production_readiness": None,
     "engineer_report": None,
     "full_markdown_report": None,
@@ -66,6 +68,13 @@ def report_finalize_node(state: PaperIntelState | dict) -> dict:
             f"report_finalize expected benchmarks list, got {type(benchmarks).__name__}",
             "report_finalize",
         )
+    benchmark_candidates = state.get("benchmark_candidates") or []
+    if not isinstance(benchmark_candidates, list):
+        return fatal_error(
+            "report_finalize expected benchmark_candidates list, "
+            f"got {type(benchmark_candidates).__name__}",
+            "report_finalize",
+        )
 
     current_errors = error_messages(list(state.get("errors", []) or []))
 
@@ -75,6 +84,8 @@ def report_finalize_node(state: PaperIntelState | dict) -> dict:
         metadata=state.get("metadata"),
         method_extraction=state.get("method_extraction"),
         benchmarks=deepcopy(benchmarks),
+        benchmark_candidates=deepcopy(benchmark_candidates),
+        benchmark_extractor_version=state.get("benchmark_extractor_version"),
         production_readiness=state.get("production_readiness"),
         engineer_report=engineer_report,
         markdown_report=state.get("full_markdown_report"),

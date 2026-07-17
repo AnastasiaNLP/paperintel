@@ -183,6 +183,14 @@ def test_paper_workspace_mapper_round_trip():
         finalized_report_json={"recommended_action": "prototype"},
         method_extraction_json={"method_name": "Transformer"},
         benchmarks_json=[{"task": "translation", "metric": "BLEU"}],
+        benchmark_candidates_json=[
+            {
+                "task": "translation",
+                "metric": "BLEU",
+                "selection_status": "accepted",
+            }
+        ],
+        benchmark_extractor_version="legacy_mirror_v1",
         readiness_json={"maturity_level": "experimental"},
         full_markdown_report="# Report",
     )

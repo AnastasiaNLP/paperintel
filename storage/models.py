@@ -709,6 +709,15 @@ class PaperWorkspaceORM(TimestampMixin, Base):
         default=list,
         server_default="[]",
     )
+    benchmark_candidates_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        jsonb_type(),
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    benchmark_extractor_version: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
     readiness_json: Mapped[dict[str, Any] | None] = mapped_column(
         jsonb_type(),
         nullable=True,

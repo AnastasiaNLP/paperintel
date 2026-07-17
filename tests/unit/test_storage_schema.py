@@ -174,6 +174,8 @@ def test_paper_workspace_table_matches_artifact_contract_columns():
         "finalized_report_json",
         "method_extraction_json",
         "benchmarks_json",
+        "benchmark_candidates_json",
+        "benchmark_extractor_version",
         "readiness_json",
         "full_markdown_report",
         "created_at",
@@ -188,6 +190,7 @@ def test_paper_workspace_table_matches_artifact_contract_columns():
     assert isinstance(_postgres_type(columns.finalized_report_json), postgresql.JSONB)
     assert isinstance(_postgres_type(columns.method_extraction_json), postgresql.JSONB)
     assert isinstance(_postgres_type(columns.benchmarks_json), postgresql.JSONB)
+    assert isinstance(_postgres_type(columns.benchmark_candidates_json), postgresql.JSONB)
     assert isinstance(_postgres_type(columns.readiness_json), postgresql.JSONB)
 
 

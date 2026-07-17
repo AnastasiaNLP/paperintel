@@ -419,6 +419,28 @@ def test_handler_persists_single_analysis_workspace():
             "conditions": None,
         }
     ]
+    assert workspace.benchmark_candidates_json == [
+        {
+            "task": "translation",
+            "dataset": None,
+            "metric": "BLEU",
+            "value": 42.0,
+            "unit": None,
+            "method_or_model": None,
+            "variant_role": "unknown",
+            "benchmark_kind": "unknown",
+            "source_section": None,
+            "source_table_or_figure": None,
+            "caption_context": None,
+            "row_context": None,
+            "conditions_keywords": [],
+            "evidence_anchor": None,
+            "evidence_confidence": None,
+            "selection_status": "accepted",
+            "selection_reason": "legacy_final_benchmark_mirror",
+        }
+    ]
+    assert workspace.benchmark_extractor_version == "legacy_mirror_v1"
     assert workspace.readiness_json["maturity_level"] == "experimental"
     assert workspace.finalized_report_json["recommended_action"] == "prototype"
     assert workspace.full_markdown_report == "# Report"
@@ -479,6 +501,28 @@ def test_handler_preserves_benchmark_v02_fields_in_workspace():
             "difficulty_tags": [],
         }
     ]
+    assert workspace.benchmark_candidates_json == [
+        {
+            "task": "Deep memory retrieval",
+            "dataset": None,
+            "metric": "ROUGE-L",
+            "value": 0.827,
+            "unit": None,
+            "method_or_model": None,
+            "variant_role": "unknown",
+            "benchmark_kind": "unknown",
+            "source_section": "Experiments",
+            "source_table_or_figure": "Table 1",
+            "caption_context": None,
+            "row_context": None,
+            "conditions_keywords": ["MemGPT", "GPT-4 Turbo backbone"],
+            "evidence_anchor": None,
+            "evidence_confidence": 0.9,
+            "selection_status": "accepted",
+            "selection_reason": "legacy_final_benchmark_mirror",
+        }
+    ]
+    assert workspace.benchmark_extractor_version == "legacy_mirror_v1"
 
 
 def test_handler_persists_requested_pipeline_version_for_pdf_analysis():

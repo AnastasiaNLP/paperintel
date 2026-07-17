@@ -537,6 +537,14 @@ def test_postgres_paper_workspace_repository_upserts_and_gets_workspace(
         finalized_report_json={"recommended_action": "prototype"},
         method_extraction_json={"method_name": "Transformer"},
         benchmarks_json=[{"task": "translation", "metric": "BLEU"}],
+        benchmark_candidates_json=[
+            {
+                "task": "translation",
+                "metric": "BLEU",
+                "selection_status": "accepted",
+            }
+        ],
+        benchmark_extractor_version="legacy_mirror_v1",
         readiness_json={"maturity_level": "experimental"},
         full_markdown_report="# Report",
     )
@@ -550,6 +558,14 @@ def test_postgres_paper_workspace_repository_upserts_and_gets_workspace(
                 "pipeline_version": "pipeline-v2",
                 "finalized_report_json": {"recommended_action": "implement_now"},
                 "benchmarks_json": [{"task": "translation", "metric": "accuracy"}],
+                "benchmark_candidates_json": [
+                    {
+                        "task": "translation",
+                        "metric": "accuracy",
+                        "selection_status": "accepted",
+                    }
+                ],
+                "benchmark_extractor_version": "legacy_mirror_v2",
             }
         )
     )
@@ -566,6 +582,14 @@ def test_postgres_paper_workspace_repository_upserts_and_gets_workspace(
     assert loaded.pipeline_version == "pipeline-v2"
     assert loaded.finalized_report_json == {"recommended_action": "implement_now"}
     assert loaded.benchmarks_json == [{"task": "translation", "metric": "accuracy"}]
+    assert loaded.benchmark_candidates_json == [
+        {
+            "task": "translation",
+            "metric": "accuracy",
+            "selection_status": "accepted",
+        }
+    ]
+    assert loaded.benchmark_extractor_version == "legacy_mirror_v2"
     assert [item.paper_id for item in listed] == ["1706.03762"]
 
 
@@ -656,6 +680,8 @@ def _ready_workspace(**overrides) -> PaperWorkspace:
         "pipeline_version": "pipeline-v1",
         "finalized_report_json": {"recommended_action": "prototype"},
         "method_extraction_json": {"method_name": "Method"},
+        "benchmark_candidates_json": [],
+        "benchmark_extractor_version": "legacy_mirror_v1",
         "readiness_json": {"maturity_level": "prototype"},
         "full_markdown_report": "# Report",
     }
@@ -785,6 +811,14 @@ def test_postgres_paper_workspace_repository_clones_workspace_snapshot(session_f
             finalized_report_json={"recommended_action": "prototype"},
             method_extraction_json={"method_name": "Voyager"},
             benchmarks_json=[{"task": "Minecraft", "metric": "tech tree"}],
+            benchmark_candidates_json=[
+                {
+                    "task": "Minecraft",
+                    "metric": "tech tree",
+                    "selection_status": "accepted",
+                }
+            ],
+            benchmark_extractor_version="legacy_mirror_v1",
             readiness_json={"maturity_level": "prototype"},
             full_markdown_report="# Voyager",
         )
@@ -821,6 +855,8 @@ def test_postgres_paper_workspace_repository_clones_workspace_snapshot(session_f
     assert cloned.session_id == target_session.id
     assert cloned.paper_id == source.paper_id
     assert cloned.pipeline_version == source.pipeline_version
+    assert cloned.benchmark_candidates_json == source.benchmark_candidates_json
+    assert cloned.benchmark_extractor_version == source.benchmark_extractor_version
     assert cloned.full_markdown_report == source.full_markdown_report
     assert source_after is not None
     assert source_after.session_id == source_session.id
