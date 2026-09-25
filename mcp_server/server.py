@@ -107,6 +107,45 @@ def create_mcp_server(*, service: PaperIntelService | None = None) -> FastMCP:
         return await enqueue_analyze_selected_tool(service, session_id=session_id)
 
     @mcp.tool()
+    async def enqueue_discover(session_id: str, topic: str) -> str:
+        """Queue paper discovery and return a workflow job id."""
+        from mcp_server.tools import enqueue_discover_tool
+
+        return await enqueue_discover_tool(service, session_id=session_id, topic=topic)
+
+    @mcp.tool()
+    async def enqueue_compare_papers(
+        session_id: str,
+        paper_ids: list[str] | None = None,
+        prompt: str | None = None,
+    ) -> str:
+        """Queue comparison of durable workspaces and return a job id."""
+        from mcp_server.tools import enqueue_compare_papers_tool
+
+        return await enqueue_compare_papers_tool(
+            service,
+            session_id=session_id,
+            paper_ids=paper_ids,
+            prompt=prompt,
+        )
+
+    @mcp.tool()
+    async def enqueue_synthesize_papers(
+        session_id: str,
+        paper_ids: list[str] | None = None,
+        prompt: str | None = None,
+    ) -> str:
+        """Queue synthesis of durable workspaces and return a job id."""
+        from mcp_server.tools import enqueue_synthesize_papers_tool
+
+        return await enqueue_synthesize_papers_tool(
+            service,
+            session_id=session_id,
+            paper_ids=paper_ids,
+            prompt=prompt,
+        )
+
+    @mcp.tool()
     async def enqueue_analyze_pdf(
         session_id: str,
         pdf_path: str,

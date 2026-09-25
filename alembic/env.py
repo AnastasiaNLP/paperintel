@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+import os
 
 from sqlalchemy import engine_from_config, pool
 
@@ -6,6 +7,10 @@ from alembic import context
 from storage.models import Base
 
 config = context.config
+database_url = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
+if database_url:
+    # Alembic's ConfigParser treats percent signs as interpolation markers.
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

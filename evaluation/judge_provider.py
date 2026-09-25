@@ -21,6 +21,7 @@ class JudgePayload(BaseModel):
     benchmarks_json: list[dict[str, Any]] = Field(default_factory=list)
     readiness_json: dict[str, Any] | None = None
     golden_report_coverage: dict[str, Any] | None = None
+    additional_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class JudgeProvider(Protocol):

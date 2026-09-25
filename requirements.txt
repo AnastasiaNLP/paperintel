@@ -18,3 +18,4 @@ httpx==0.28.1
 tenacity==9.1.4
 qdrant-client==1.17.1
 mcp==1.27.1
+openai==2.36.0

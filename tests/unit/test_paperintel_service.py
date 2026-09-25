@@ -1077,6 +1077,51 @@ def test_service_enqueue_analyze_selected_creates_queued_job():
     assert job.input_json == {}
 
 
+def test_service_enqueues_discovery_comparison_and_synthesis_jobs():
+    repository = FakeWorkflowJobRepository()
+    service = PaperIntelService(
+        handler=FakeHandler(),
+        workflow_job_repository=repository,
+    )
+    session = service.create_session()
+
+    discovery = service.enqueue_discover(session.id, " agent memory ")
+    comparison = service.enqueue_compare(
+        session.id,
+        paper_ids=["paper-1", "paper-2", "paper-1"],
+        prompt="Trade-offs",
+    )
+    synthesis = service.enqueue_synthesize(session.id, prompt="Next steps")
+
+    assert (discovery.kind, discovery.input_json) == (
+        "discover",
+        {"topic": "agent memory"},
+    )
+    assert (comparison.kind, comparison.input_json) == (
+        "compare",
+        {"paper_ids": ["paper-1", "paper-2"], "prompt": "Trade-offs"},
+    )
+    assert (synthesis.kind, synthesis.input_json) == (
+        "synthesize",
+        {"paper_ids": None, "prompt": "Next steps"},
+    )
+
+
+@pytest.mark.parametrize(
+    "paper_ids",
+    [["paper-1", " "], ["paper-1", 2], ["paper-1", []]],
+)
+def test_service_rejects_invalid_async_comparison_ids(paper_ids):
+    service = PaperIntelService(
+        handler=FakeHandler(),
+        workflow_job_repository=FakeWorkflowJobRepository(),
+    )
+    session = service.create_session()
+
+    with pytest.raises(InvalidWorkflowJobInputError):
+        service.enqueue_compare(session.id, paper_ids=paper_ids)
+
+
 def test_service_enqueue_analyze_pdf_blob_creates_idempotent_job():
     service, _, _, _, upload_repository = _upload_service()
     repository = FakeWorkflowJobRepository()

@@ -39,6 +39,9 @@ SUPPORTED_JOB_KINDS: set[JobKind] = {
     "analyze_paper",
     "analyze_selected",
     "analyze_pdf_blob",
+    "discover",
+    "compare",
+    "synthesize",
 }
 
 
@@ -106,6 +109,59 @@ class WorkflowJobExecutor:
             return self._execute_analyze_pdf_blob(
                 job, cancellation_callback=cancellation_callback
             )
+        if job.kind == "discover":
+            topic = job.input_json.get("topic")
+            if not isinstance(topic, str) or not topic.strip():
+                raise WorkflowJobExecutionError(
+                    "discover job requires non-empty input_json.topic"
+                )
+            return serialize_handler_result(
+                self.service.discover_papers(job.session_id, topic.strip())
+            )
+        if job.kind == "compare":
+            paper_ids = job.input_json.get("paper_ids")
+            prompt = job.input_json.get("prompt")
+            if paper_ids is not None and (
+                not isinstance(paper_ids, list)
+                or any(not isinstance(paper_id, str) for paper_id in paper_ids)
+            ):
+                raise WorkflowJobExecutionError(
+                    "compare job input_json.paper_ids must be a list of strings or null"
+                )
+            if prompt is not None and not isinstance(prompt, str):
+                raise WorkflowJobExecutionError(
+                    "compare job input_json.prompt must be a string or null"
+                )
+            artifact = self.service.compare_papers(
+                job.session_id,
+                paper_ids=paper_ids,
+                prompt=prompt,
+            )
+            return {"comparison_artifact": artifact.model_dump(mode="json")}
+        if job.kind == "synthesize":
+            prompt = job.input_json.get("prompt")
+            paper_ids = job.input_json.get("paper_ids")
+            if prompt is not None and not isinstance(prompt, str):
+                raise WorkflowJobExecutionError(
+                    "synthesize job input_json.prompt must be a string or null"
+                )
+            if paper_ids is not None and (
+                not isinstance(paper_ids, list)
+                or any(not isinstance(paper_id, str) for paper_id in paper_ids)
+            ):
+                raise WorkflowJobExecutionError(
+                    "synthesize job input_json.paper_ids must be a list of strings or null"
+                )
+            result = self.service.synthesize_papers(
+                job.session_id,
+                prompt=prompt,
+                paper_ids=paper_ids,
+            )
+            return {
+                "synthesis_report": result.report.model_dump(mode="json"),
+                "response_text": result.response_text,
+                "agent_run": result.agent_run.model_dump(mode="json"),
+            }
         raise UnsupportedWorkflowJobKindError(job.kind)
 
     def _execute_analyze_paper(self, job: WorkflowJob) -> dict:

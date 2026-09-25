@@ -129,6 +129,21 @@ Current production-shaped agents:
 
 - `report`: LLM-heavy publishable report producer
 - `evidence_critic`: deterministic critic that can pass through, downgrade, or skip
+- `intent_router`: classifies conversation intent and resolves references
+- `retrieval_planner`: plans evidence retrieval for grounded QA
+- `answer_agent`: drafts retrieval-grounded answers
+- `citation_critic`: reviews QA answers and can request bounded repair
+- `research_strategist`: turns a discovery topic into focused search queries
+- `selection_advisor`: ranks discovery candidates and explains the shortlist
+- `comparison_analyst`: compares ready workspaces and persists a comparison artifact
+- `synthesis_agent`: produces persona-aware synthesis from ready workspaces
+
+Current processor policies:
+
+- `extraction`
+- `benchmark`
+- `readiness`
+- `comparator`
 
 Current runtime invariant:
 
@@ -137,3 +152,9 @@ Current runtime invariant:
   limit is exceeded.
 - `evidence_critic` records `skip_review_on_no_report` as documented skipped
   behavior, not as fallback noise.
+- Conversation QA uses a bounded `citation_critic` -> `answer_agent` repair loop.
+  The graph exits when no `repair_context` remains.
+- Discovery keeps deterministic search/ranking and selection parsing outside
+  `AgentRun`; only strategy and advisory reasoning are production-shaped agents.
+- Comparison has two paths: the legacy batch `comparator` processor and the
+  request-driven `comparison_analyst` agent.

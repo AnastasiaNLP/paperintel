@@ -8,6 +8,7 @@ from models.artifacts import ComparisonArtifact, PaperWorkspace
 from models.discovery import SelectionAdvice
 from models.errors import ErrorCodes, StructuredError, make_error
 from models.qa import AnswerDraft
+from models.retrieval import EvidenceBundle
 from models.schemas import PaperSlot
 from models.session import GraphInvocationResult, HandlerResult, Persona, Session
 from services.retrieval_layer import RetrievalLayer
@@ -145,6 +146,7 @@ class ChatHandler:
             intent=graph_result.intent,
             referenced_paper_ids=graph_result.referenced_paper_ids,
             artifact_refs=graph_result.artifact_refs,
+            metadata=_qa_evaluation_metadata(graph_result.raw),
         )
 
         return HandlerResult(
@@ -659,6 +661,37 @@ def _normalize_conversation_result(raw: dict[str, Any]) -> GraphInvocationResult
         next_phase=raw.get("next_phase"),
         raw=raw,
     )
+
+
+def _qa_evaluation_metadata(raw: dict[str, Any]) -> dict[str, Any]:
+    answer = raw.get("answer_draft")
+    evidence = raw.get("evidence_bundle")
+    if not isinstance(answer, AnswerDraft) or not isinstance(evidence, EvidenceBundle):
+        return {}
+    return {
+        "qa_evaluation_sample": {
+            "question": answer.question,
+            "answer_text": answer.answer_text,
+            "citations": [citation.model_dump(mode="json") for citation in answer.citations],
+            "evidence_chunks": [
+                {
+                    "paper_id": result.chunk.paper_id,
+                    "chunk_id": result.chunk.id,
+                    "text": result.chunk.text,
+                    "chunk_type": result.chunk.chunk_type,
+                    "page_start": result.chunk.location.page_start,
+                    "page_end": result.chunk.location.page_end,
+                    "section_title": result.chunk.location.section_title,
+                    "score": result.score,
+                }
+                for result in evidence.results
+            ],
+            "intent": raw.get("intent"),
+            "persona": answer.persona,
+            "repair_iteration": answer.repair_iteration,
+            "evidence_query": evidence.query,
+        }
+    }
 
 
 def _normalize_analysis_result(raw: dict[str, Any]) -> GraphInvocationResult:

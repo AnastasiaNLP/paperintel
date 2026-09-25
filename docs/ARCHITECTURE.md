@@ -238,8 +238,8 @@ The workflow job layer is intentionally narrow and Postgres-backed:
 - Workers claim jobs through repository lifecycle methods and run supported job
   kinds outside the request/response path.
 - REST and MCP expose enqueue, status, list, and cancel surfaces.
-- The current worker supports URL analysis jobs, selected-paper analysis jobs,
-  and PDF blob analysis jobs.
+- The worker supports discovery, URL analysis, selected-paper analysis,
+  comparison, synthesis, and PDF blob analysis jobs.
 
 The blob storage layer persists PDF assets in S3-compatible storage and tracks
 usage through `blob_artifacts` and `blob_references`.
@@ -253,10 +253,10 @@ result with `metadata.analysis_reused=true`. PDF-derived reuse also preserves
 the blob reference from the target session to the cloned workspace.
 
 The system does not yet include a separate `paper_cache` table, automated
-cleanup for cloned cache artifacts, retry/backoff scheduling, process
-supervision, job budgets, async comparison or synthesis jobs, scheduled cleanup
-jobs, or page-image asset generation. Those are separate later hardening
-layers. See
+cleanup for cloned cache artifacts, process supervision, job budgets, scheduled
+cleanup jobs, or page-image asset generation. Discovery, analysis, comparison,
+and synthesis now share the Postgres-backed workflow queue; running-job cancel
+remains cooperative. Those other limitations are separate hardening layers. See
 [PAPER_CACHE.md](PAPER_CACHE.md) for the current reuse contract and limits.
 
 ## External Dependency Resilience

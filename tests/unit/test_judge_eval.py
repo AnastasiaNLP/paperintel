@@ -14,6 +14,7 @@ from evaluation.ca_judge_payloads import (
     build_comparison_judge_payload,
     build_synthesis_judge_payload,
 )
+from evaluation.export_qa_samples import export_qa_samples
 from evaluation.golden_dataset import load_golden_records
 from evaluation.judge_rubrics import EXPECTED_RUBRIC_IDS, load_judge_rubrics
 from evaluation.judge_models import JudgeResult, JudgeTask
@@ -28,6 +29,7 @@ from models.synthesis import (
     SynthesisRecommendation,
     SynthesisReport,
 )
+from models.session import Turn
 
 
 WORKSPACES_PATH = "tests/fixtures/evaluation/workspaces_seed_sample.jsonl"
@@ -123,6 +125,152 @@ def test_live_mode_runner_uses_provider_without_gate_semantics():
     assert {result.task.pipeline_version for result in report.results} == {
         "pipeline-test"
     }
+
+
+def test_judge_runner_builds_qa_comparison_and_synthesis_tasks():
+    record = load_golden_records("golden_dataset/seed_5.jsonl")[0]
+    rubrics = load_judge_rubrics()
+    synthesis = _synthesis_result()
+    comparison = ComparisonArtifact(
+        id="cmp-eval",
+        session_id="session-1",
+        paper_ids=["paper-0", "paper-1"],
+        comparison_report_json={"winner": "no_clear_winner"},
+        comparison_markdown="# Comparison",
+    )
+    captured = []
+
+    class CapturingProvider:
+        def score(self, *, task, rubric, payload):
+            captured.append((task, payload))
+            return JudgeResult(task=task, status="scored", score=0.8)
+
+    report = build_judge_report(
+        records=[record],
+        workspaces=[],
+        rubrics=rubrics,
+        provider=CapturingProvider(),
+        mode="live",
+        qa_samples=[
+            {
+                "paper_id": record.paper_id,
+                "qa_case_id": record.qa_cases[0].id,
+                "answer_text": "The paper proposes a method.",
+                "citations": [{"paper_id": record.paper_id, "chunk_id": "c1"}],
+                "evidence_chunks": [{"paper_id": record.paper_id, "text": "Evidence."}],
+            }
+        ],
+        comparisons=[
+            {
+                "artifact": comparison.model_dump(mode="json"),
+                "workspaces": [_workspace("paper-0").model_dump(mode="json"), _workspace("paper-1").model_dump(mode="json")],
+            }
+        ],
+        syntheses=[
+            {
+                "report": synthesis.report.model_dump(mode="json"),
+                "response_text": synthesis.response_text,
+                "agent_run": synthesis.agent_run.model_dump(mode="json"),
+                "workspaces": [_workspace("paper-0").model_dump(mode="json"), _workspace("paper-1").model_dump(mode="json")],
+            }
+        ],
+    )
+
+    assert report.total_tasks == 9
+    assert report.scored_tasks == 7
+    assert report.status_counts == {"scored": 7, "skipped": 2}
+    assert {task.task_family for task, _ in captured} == {
+        "qa",
+        "comparison",
+        "synthesis",
+    }
+    qa_task, qa_payload = next(
+        (task, payload) for task, payload in captured if task.task_family == "qa"
+    )
+    assert qa_task.rubric_id == "qa_faithfulness"
+    assert qa_payload.additional_context["evidence_chunks"]
+    assert any(task.task_family == "comparison" for task, _ in captured)
+    assert any(task.task_family == "synthesis" for task, _ in captured)
+
+
+def test_judge_cli_adds_qa_tasks_when_sample_file_is_provided(tmp_path):
+    records = load_golden_records("golden_dataset/seed_5.jsonl")
+    record = records[0]
+    sample_file = tmp_path / "qa_samples.jsonl"
+    sample_file.write_text(
+        json.dumps(
+            {
+                "paper_id": record.paper_id,
+                "qa_case_id": record.qa_cases[0].id,
+                "answer_text": "Grounded answer.",
+                "citations": [],
+                "evidence_chunks": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "evaluation.run_judge_eval",
+            "--golden",
+            "golden_dataset/seed_5.jsonl",
+            "--workspaces",
+            WORKSPACES_PATH,
+            "--qa-samples",
+            str(sample_file),
+            "--dry-run",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    qa_results = [item for item in payload["results"] if item["task"]["task_family"] == "qa"]
+    assert result.returncode == 0
+    assert len(qa_results) == sum(len(item.qa_cases) for item in records)
+    assert sum(item["status"] == "not_scored" for item in qa_results) == 1
+    assert sum(item["status"] == "skipped" for item in qa_results) == len(qa_results) - 1
+
+
+def test_export_qa_samples_matches_golden_question_and_preserves_evidence(tmp_path):
+    record = load_golden_records("golden_dataset/seed_5.jsonl")[0]
+    turn = Turn(
+        session_id="session-1",
+        role="assistant",
+        content="Grounded answer.",
+        referenced_paper_ids=[record.paper_id],
+        metadata={
+            "qa_evaluation_sample": {
+                "question": record.qa_cases[0].question,
+                "answer_text": "Grounded answer.",
+                "citations": [{"paper_id": record.paper_id, "chunk_id": "c1"}],
+                "evidence_chunks": [{"paper_id": record.paper_id, "text": "Evidence."}],
+            }
+        },
+    )
+
+    class FakeTurnStore:
+        def list_recent_turns(self, session_id, limit):
+            assert session_id == "session-1"
+            assert limit >= 100_000
+            return [turn]
+
+    output = tmp_path / "qa.jsonl"
+    count = export_qa_samples(
+        store=FakeTurnStore(),
+        session_id="session-1",
+        golden_path="golden_dataset/seed_5.jsonl",
+        output_path=output,
+    )
+
+    row = json.loads(output.read_text(encoding="utf-8"))
+    assert count == 1
+    assert row["qa_case_id"] == record.qa_cases[0].id
+    assert row["evidence_chunks"][0]["text"] == "Evidence."
 
 
 def test_judge_report_continues_when_provider_raises():

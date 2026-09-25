@@ -6,11 +6,14 @@ import httpx
 import pytest
 
 from models.jobs import WorkflowJob
+from models.artifacts import ComparisonArtifact
+from models.agent_runs import AgentRun
 from models.registered_pdf_errors import (
     RegisteredPdfBlobNotAuthorizedError,
     RegisteredPdfBlobNotFoundError,
 )
 from models.session import HandlerResult
+from models.synthesis import SynthesisReport
 from services.blob_store import BlobStoreUnavailableError
 from storage.repositories import WorkflowJobLeaseLostError
 from workers.workflow_worker import (
@@ -35,6 +38,54 @@ class FakeService:
         self.fail_analyze = False
         self.analyze_error = None
         self.analyze_delay_seconds = 0
+        self.discover_calls = []
+        self.compare_calls = []
+        self.synthesize_calls = []
+
+    def discover_papers(self, session_id, topic):
+        self.discover_calls.append((session_id, topic))
+        return HandlerResult(
+            session_id=session_id,
+            response_text="discovery complete",
+            phase="selection",
+            intent="discover",
+            user_turn_id="user-turn",
+            assistant_turn_id="assistant-turn",
+        )
+
+    def compare_papers(self, session_id, *, paper_ids=None, prompt=None):
+        self.compare_calls.append((session_id, paper_ids, prompt))
+        return ComparisonArtifact(
+            id="comparison-1",
+            session_id=session_id,
+            paper_ids=paper_ids or ["paper-1", "paper-2"],
+            comparison_markdown="# Comparison",
+        )
+
+    def synthesize_papers(self, session_id, *, prompt=None, paper_ids=None):
+        self.synthesize_calls.append((session_id, prompt, paper_ids))
+        run = AgentRun(
+            id="run-1",
+            session_id=session_id,
+            agent_name="synthesis_agent",
+            input_refs=["paper_workspace:paper-1", "paper_workspace:paper-2"],
+        )
+        return type(
+            "SynthesisResult",
+            (),
+            {
+                "report": SynthesisReport(
+                    persona="engineer",
+                    summary="Synthesis.",
+                    key_takeaways=[],
+                    trade_offs=[],
+                    recommended_next_steps=[],
+                    citations=[],
+                ),
+                "response_text": "Synthesis complete",
+                "agent_run": run,
+            },
+        )()
 
     def analyze_paper(self, session_id, paper_url):
         self.analyze_calls.append((session_id, paper_url))
@@ -364,11 +415,48 @@ def test_executor_analyze_pdf_blob_rejects_pipeline_version_mismatch():
         )
 
 
+def test_executor_supports_discovery_comparison_and_synthesis_jobs():
+    service = FakeService()
+    executor = WorkflowJobExecutor(service)
+
+    discovery = executor.execute(
+        WorkflowJob(
+            session_id="session-1",
+            kind="discover",
+            input_json={"topic": "agent memory"},
+        )
+    )
+    comparison = executor.execute(
+        WorkflowJob(
+            session_id="session-1",
+            kind="compare",
+            input_json={"paper_ids": ["paper-1", "paper-2"], "prompt": "Compare"},
+        )
+    )
+    synthesis = executor.execute(
+        WorkflowJob(
+            session_id="session-1",
+            kind="synthesize",
+            input_json={"paper_ids": ["paper-1", "paper-2"], "prompt": "Synthesize"},
+        )
+    )
+
+    assert discovery["intent"] == "discover"
+    assert comparison["comparison_artifact"]["id"] == "comparison-1"
+    assert synthesis["synthesis_report"]["summary"] == "Synthesis."
+    assert synthesis["agent_run"]["agent_name"] == "synthesis_agent"
+    assert service.discover_calls == [("session-1", "agent memory")]
+    assert service.compare_calls == [("session-1", ["paper-1", "paper-2"], "Compare")]
+    assert service.synthesize_calls == [
+        ("session-1", "Synthesize", ["paper-1", "paper-2"])
+    ]
+
+
 def test_executor_rejects_unsupported_kind():
     executor = WorkflowJobExecutor(FakeService())
 
     with pytest.raises(UnsupportedWorkflowJobKindError):
-        executor.execute(_job(kind="compare", input_json={}))
+        executor.execute(_job(kind="judge_eval", input_json={}))
 
 
 def test_worker_run_once_returns_none_when_idle():
@@ -460,7 +548,7 @@ def test_worker_run_once_marks_failure_on_executor_error():
 
 
 def test_worker_run_once_marks_failure_for_unsupported_kind():
-    repository = FakeRepository(jobs=[_job(kind="compare", input_json={})])
+    repository = FakeRepository(jobs=[_job(kind="judge_eval", input_json={})])
     worker = WorkflowWorker(
         repository=repository,
         executor=WorkflowJobExecutor(FakeService()),
@@ -474,7 +562,7 @@ def test_worker_run_once_marks_failure_for_unsupported_kind():
     error = repository.failed[0][1]
     assert error["error"] == "unsupported_job_kind"
     assert error["exception_type"] == "UnsupportedWorkflowJobKindError"
-    assert error["job_kind"] == "compare"
+    assert error["job_kind"] == "judge_eval"
 
 
 def test_worker_run_once_marks_failure_for_invalid_input():

@@ -68,6 +68,8 @@ def test_current_pipeline_agent_policies_are_registered():
         "citation_critic",
         "intent_router",
         "retrieval_planner",
+        "research_strategist",
+        "selection_advisor",
         "extraction",
         "benchmark",
         "readiness",

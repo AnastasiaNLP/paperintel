@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from evaluation.golden_dataset import GoldenDatasetError, load_golden_records
 from evaluation.judge_automation import (
@@ -31,6 +32,21 @@ def main() -> int:
         "--workspaces",
         required=True,
         help="Path to PaperWorkspace JSONL export.",
+    )
+    parser.add_argument(
+        "--qa-samples",
+        default=None,
+        help="Optional JSONL QA outputs with answer, citations, and cited evidence.",
+    )
+    parser.add_argument(
+        "--comparisons",
+        default=None,
+        help="Optional JSONL comparison records with artifact and workspaces fields.",
+    )
+    parser.add_argument(
+        "--syntheses",
+        default=None,
+        help="Optional JSONL synthesis records with report, agent_run, and workspaces.",
     )
     parser.add_argument(
         "--rubrics",
@@ -104,6 +120,9 @@ def main() -> int:
         records = load_golden_records(args.golden)
         workspaces = load_workspace_records(args.workspaces)
         rubrics = load_judge_rubrics(args.rubrics)
+        qa_samples = _load_jsonl(args.qa_samples) if args.qa_samples else None
+        comparisons = _load_jsonl(args.comparisons) if args.comparisons else None
+        syntheses = _load_jsonl(args.syntheses) if args.syntheses else None
         if args.live:
             judge_model = args.model or "configured"
             provider = ConfiguredLLMJudgeProvider(
@@ -124,6 +143,9 @@ def main() -> int:
             judge_model=judge_model,
             dataset_version=args.dataset_version,
             pipeline_version=args.pipeline_version,
+            qa_samples=qa_samples,
+            comparisons=comparisons,
+            syntheses=syntheses,
         )
         if args.output:
             write_judge_results_jsonl(report.results, args.output)
@@ -158,6 +180,30 @@ def main() -> int:
 
     print(json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True))
     return 0
+
+
+def _load_jsonl(path: str) -> list[dict]:
+    input_path = Path(path)
+    try:
+        lines = input_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ValueError(f"Could not read judge input JSONL: {input_path}") from exc
+    records: list[dict] = []
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid JSON in {input_path} line {line_number}: {exc.msg}"
+            ) from exc
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Expected an object in {input_path} line {line_number}"
+            )
+        records.append(item)
+    return records
 
 
 if __name__ == "__main__":

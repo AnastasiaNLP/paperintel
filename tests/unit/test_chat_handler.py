@@ -6,6 +6,7 @@ from api.in_memory_session_store import InMemorySessionStore, SessionNotFoundErr
 from models.discovery import SearchCandidate
 from models.errors import ErrorCodes, StructuredError
 from models.qa import AnswerDraft
+from models.retrieval import ChunkSearchResult, ChunkSource, EvidenceBundle, PaperChunk
 from models.schemas import (
     BenchmarkResult,
     BenchmarkResultV02,
@@ -211,6 +212,44 @@ def test_handle_message_writes_user_turn_before_graph_and_assistant_after():
     assert result.assistant_turn_id == turns[1].id
     assert runner.calls[0]["input"]["user_message"] == "What is in this paper?"
     assert "message" not in runner.calls[0]["input"]
+
+
+def test_handle_message_persists_qa_evidence_for_judge_export():
+    chunk = PaperChunk(
+        id="chunk-1",
+        paper_id="paper-1",
+        chunk_index=0,
+        text="The paper introduces a transformer architecture.",
+        source=ChunkSource(paper_id="paper-1"),
+    )
+    answer = AnswerDraft(
+        question="What does this paper introduce?",
+        answer_text="It introduces a transformer architecture.",
+        citations=[],
+        persona="engineer",
+    )
+    runner = FakeRunner(
+        result={
+            "intent": "qa_factual",
+            "referenced_paper_ids": ["paper-1"],
+            "answer_draft": answer,
+            "evidence_bundle": EvidenceBundle(
+                query=answer.question,
+                results=[ChunkSearchResult(chunk=chunk, score=0.9, rank=1)],
+            ),
+            "next_phase": "qa",
+        }
+    )
+    handler, store, _, _ = _handler(runner=runner)
+    session = handler.create_session()
+
+    handler.handle_message(session.id, answer.question)
+
+    assistant_turn = store.list_recent_turns(session.id)[-1]
+    sample = assistant_turn.metadata["qa_evaluation_sample"]
+    assert sample["answer_text"] == answer.answer_text
+    assert sample["evidence_chunks"][0]["chunk_id"] == "chunk-1"
+    assert sample["evidence_chunks"][0]["text"] == chunk.text
 
 
 def test_handle_message_updates_phase_from_graph_result():

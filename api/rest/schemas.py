@@ -53,7 +53,7 @@ class SynthesizeRequest(BaseModel):
 
 
 class CompareRequest(BaseModel):
-    paper_ids: list[str] | None = None
+    paper_ids: list[str] | None = Field(default=None, max_length=10)
     prompt: str | None = Field(default=None, max_length=2000)
 
 

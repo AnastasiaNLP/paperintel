@@ -11,9 +11,12 @@ or deployment supervisor.
 
 The worker currently supports:
 
+- `discover`: search for papers on a topic and persist the shortlist.
 - `analyze_paper`: analyze one paper URL.
 - `analyze_selected`: analyze papers selected from the current discovery
   shortlist.
+- `compare`: compare ready workspaces and persist a comparison artifact.
+- `synthesize`: create a synthesis response from ready workspaces.
 - `analyze_pdf_blob`: analyze one PDF that has already been persisted to blob
   storage through multipart upload or the presigned upload lifecycle.
 
@@ -118,6 +121,20 @@ Queue analysis for selected discovery candidates:
 curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/analyze-selected"
 ```
 
+Queue discovery, comparison, and synthesis:
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/discover" \
+  -H 'content-type: application/json' \
+  -d '{"topic":"long context memory for agents"}'
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/compare" \
+  -H 'content-type: application/json' \
+  -d '{"paper_ids":["paper-1","paper-2"],"prompt":"Compare implementation trade-offs"}'
+curl -s -X POST "http://127.0.0.1:8000/sessions/$SESSION_ID/jobs/synthesize" \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"Recommend a small experiment"}'
+```
+
 Queue local PDF analysis through multipart upload:
 
 ```bash
@@ -175,6 +192,9 @@ The MCP server exposes these job tools:
 
 - `enqueue_analyze_paper(session_id, paper_url)`
 - `enqueue_analyze_selected(session_id)`
+- `enqueue_discover(session_id, topic)`
+- `enqueue_compare_papers(session_id, paper_ids=None, prompt=None)`
+- `enqueue_synthesize_papers(session_id, paper_ids=None, prompt=None)`
 - `enqueue_analyze_pdf(session_id, pdf_path, paper_id=None, skip_arxiv_metadata_fetch=False)`
 - `get_workflow_job(job_id)`
 - `list_workflow_jobs(session_id, limit)`
@@ -230,7 +250,8 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 - Canceling a queued job completes it immediately. Canceling a running job
   requests cooperative cancellation; it does not interrupt an already running
   LLM, embedding, HTTP, or vector-store call.
-- No async comparison or synthesis jobs yet.
+- Analysis, discovery, comparison, and synthesis jobs use the same queue. Job
+  results are JSON snapshots; synthesis itself is not persisted as an artifact.
 - PDF analysis can run synchronously or through PDF workflow jobs backed by
   durable blob storage.
 - Job results are stored in Postgres as JSON transport snapshots, not as a

@@ -1,11 +1,13 @@
 from pathlib import Path
+import secrets
 from tempfile import NamedTemporaryFile
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from api.in_memory_session_store import SessionNotFoundError
+from api.rest.ui import PREVIEW_UI_HTML
 from api.rest.schemas import (
     AnalyzeRequest,
     AskRequest,
@@ -65,6 +67,7 @@ from services.selected_candidate_resolver import (
 )
 
 MAX_UPLOAD_PDF_BYTES = 50 * 1024 * 1024
+AUTH_EXEMPT_PATHS = {"/", "/health", "/docs", "/redoc", "/openapi.json"}
 
 
 def _pdf_upload_error(status_code: int, error: str, detail: str) -> JSONResponse:
@@ -72,15 +75,37 @@ def _pdf_upload_error(status_code: int, error: str, detail: str) -> JSONResponse
     return JSONResponse(status_code=status_code, content=payload.model_dump(mode="json"))
 
 
-def create_rest_app(*, service: PaperIntelService) -> FastAPI:
+def create_rest_app(
+    *,
+    service: PaperIntelService,
+    auth_token: str | None = None,
+    cors_allow_origins: list[str] | None = None,
+) -> FastAPI:
     app = FastAPI(title="PaperIntel API")
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_allow_origins or ["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def require_bearer_token(request: Request, call_next):  # noqa: ANN001
+        if not auth_token:
+            return await call_next(request)
+        if request.method == "OPTIONS" or request.url.path in AUTH_EXEMPT_PATHS:
+            return await call_next(request)
+
+        expected = f"Bearer {auth_token}"
+        actual = request.headers.get("authorization", "")
+        if not secrets.compare_digest(actual, expected):
+            error = ErrorResponse(
+                error="unauthorized",
+                detail="A valid bearer token is required.",
+            )
+            return JSONResponse(status_code=401, content=error.model_dump(mode="json"))
+        return await call_next(request)
 
     @app.exception_handler(SessionNotFoundError)
     async def session_not_found_handler(request, exc):  # noqa: ANN001
@@ -199,6 +224,10 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
             status_code=200 if status.healthy else 503,
             content=response.model_dump(mode="json"),
         )
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    async def preview_ui():
+        return HTMLResponse(PREVIEW_UI_HTML)
 
     @app.get("/metrics", include_in_schema=False)
     async def metrics():
@@ -429,6 +458,15 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
         result = service.discover_papers(session_id, payload.topic)
         return MessageResponse.from_handler_result(result)
 
+    @app.post(
+        "/sessions/{session_id}/jobs/discover",
+        response_model=WorkflowJobResponse,
+        status_code=202,
+    )
+    async def enqueue_discovery_job(session_id: str, payload: DiscoverRequest):
+        job = service.enqueue_discover(session_id, payload.topic)
+        return WorkflowJobResponse.from_job(job)
+
     @app.post("/sessions/{session_id}/select", response_model=MessageResponse)
     async def select_papers(session_id: str, payload: SelectPapersRequest):
         result = service.select_papers(session_id, payload.selection)
@@ -458,6 +496,37 @@ def create_rest_app(*, service: PaperIntelService) -> FastAPI:
     )
     async def enqueue_analyze_selected_job(session_id: str):
         job = service.enqueue_analyze_selected(session_id)
+        return WorkflowJobResponse.from_job(job)
+
+    @app.post(
+        "/sessions/{session_id}/jobs/compare",
+        response_model=WorkflowJobResponse,
+        status_code=202,
+    )
+    async def enqueue_comparison_job(
+        session_id: str,
+        payload: CompareRequest | None = None,
+    ):
+        job = service.enqueue_compare(
+            session_id,
+            paper_ids=payload.paper_ids if payload is not None else None,
+            prompt=payload.prompt if payload is not None else None,
+        )
+        return WorkflowJobResponse.from_job(job)
+
+    @app.post(
+        "/sessions/{session_id}/jobs/synthesize",
+        response_model=WorkflowJobResponse,
+        status_code=202,
+    )
+    async def enqueue_synthesis_job(
+        session_id: str,
+        payload: SynthesizeRequest | None = None,
+    ):
+        job = service.enqueue_synthesize(
+            session_id,
+            prompt=payload.prompt if payload is not None else None,
+        )
         return WorkflowJobResponse.from_job(job)
 
     @app.get(

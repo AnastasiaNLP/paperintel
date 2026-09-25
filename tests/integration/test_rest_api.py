@@ -80,6 +80,9 @@ class FakeService:
         self.compare_calls = []
         self.enqueue_analyze_paper_calls = []
         self.enqueue_analyze_selected_calls = []
+        self.enqueue_discover_calls = []
+        self.enqueue_compare_calls = []
+        self.enqueue_synthesize_calls = []
         self.initiate_pdf_upload_calls = []
         self.finalize_pdf_upload_calls = []
         self.store_pdf_upload_calls = []
@@ -229,6 +232,36 @@ class FakeService:
             kind="analyze_selected",
             status="queued",
             input_json={},
+        )
+
+    def enqueue_discover(self, session_id, topic):
+        self.get_session(session_id)
+        self.enqueue_discover_calls.append((session_id, topic))
+        return WorkflowJob(
+            id="job-queued-discover",
+            session_id=session_id,
+            kind="discover",
+            input_json={"topic": topic},
+        )
+
+    def enqueue_compare(self, session_id, *, paper_ids=None, prompt=None):
+        self.get_session(session_id)
+        self.enqueue_compare_calls.append((session_id, paper_ids, prompt))
+        return WorkflowJob(
+            id="job-queued-compare",
+            session_id=session_id,
+            kind="compare",
+            input_json={"paper_ids": paper_ids, "prompt": prompt},
+        )
+
+    def enqueue_synthesize(self, session_id, *, paper_ids=None, prompt=None):
+        self.get_session(session_id)
+        self.enqueue_synthesize_calls.append((session_id, paper_ids, prompt))
+        return WorkflowJob(
+            id="job-queued-synthesize",
+            session_id=session_id,
+            kind="synthesize",
+            input_json={"paper_ids": paper_ids, "prompt": prompt},
         )
 
     def initiate_pdf_upload(
@@ -581,6 +614,25 @@ def _request(service, method: str, path: str, **kwargs):
     return asyncio.run(run())
 
 
+def _request_with_auth_app(service, method: str, path: str, **kwargs):
+    async def run():
+        transport = httpx.ASGITransport(
+            app=create_rest_app(
+                service=service or FakeService(),
+                auth_token="test-token",
+                cors_allow_origins=["https://paperintel.example"],
+            ),
+            raise_app_exceptions=False,
+        )
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    return asyncio.run(run())
+
+
 def test_create_session_returns_session():
     service = FakeService()
 
@@ -597,6 +649,52 @@ def test_create_session_returns_session():
     assert service.created_payloads == [
         {"persona": "researcher", "original_query": "memory agents"}
     ]
+
+
+def test_auth_token_protects_api_endpoints():
+    response = _request_with_auth_app(None, "POST", "/sessions", json={})
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "unauthorized"
+
+
+def test_auth_token_allows_authorized_api_request():
+    response = _request_with_auth_app(
+        None,
+        "POST",
+        "/sessions",
+        headers={"authorization": "Bearer test-token"},
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "created-session"
+
+
+def test_auth_token_exempts_health_endpoint():
+    response = _request_with_auth_app(None, "GET", "/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "healthy"
+
+
+def test_preview_ui_returns_html():
+    response = _request(None, "GET", "/")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "PaperIntel" in response.text
+    assert "/jobs/discover" in response.text
+    assert "/jobs/compare" in response.text
+    assert "/jobs/synthesize" in response.text
+    assert "runJobStatus" in response.text
+
+
+def test_auth_token_exempts_preview_ui():
+    response = _request_with_auth_app(None, "GET", "/")
+
+    assert response.status_code == 200
+    assert "PaperIntel" in response.text
 
 
 def test_create_session_validates_persona():
@@ -753,6 +851,48 @@ def test_enqueue_analyze_selected_job_endpoint_returns_202():
     assert payload["status"] == "queued"
     assert payload["input_json"] == {}
     assert service.enqueue_analyze_selected_calls == ["session-1"]
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "expected_kind", "expected_id"),
+    [
+        (
+            "/sessions/session-1/jobs/discover",
+            {"topic": "agent memory"},
+            "discover",
+            "job-queued-discover",
+        ),
+        (
+            "/sessions/session-1/jobs/compare",
+            {"paper_ids": ["p1", "p2"], "prompt": "Compare trade-offs"},
+            "compare",
+            "job-queued-compare",
+        ),
+        (
+            "/sessions/session-1/jobs/synthesize",
+            {"prompt": "Recommend an experiment"},
+            "synthesize",
+            "job-queued-synthesize",
+        ),
+    ],
+)
+def test_async_research_jobs_can_be_enqueued(path, body, expected_kind, expected_id):
+    response = _request(FakeService(), "POST", path, json=body)
+
+    assert response.status_code == 202
+    assert response.json()["id"] == expected_id
+    assert response.json()["kind"] == expected_kind
+
+
+def test_async_comparison_rejects_more_than_ten_papers():
+    response = _request(
+        FakeService(),
+        "POST",
+        "/sessions/session-1/jobs/compare",
+        json={"paper_ids": [f"paper-{index}" for index in range(11)]},
+    )
+
+    assert response.status_code == 422
 
 
 def test_workflow_job_status_endpoints_get_list_and_cancel():

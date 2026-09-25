@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     openai_embedding_model: str = DEFAULT_EMBEDDING_MODEL
     openai_embedding_dimensions: int = DEFAULT_EMBEDDING_DIMENSIONS
     openai_embedding_timeout: float = 30.0
+    paperintel_api_auth_token: Optional[str] = None
+    paperintel_cors_allow_origins: str = "*"
+
+    @property
+    def cors_allow_origins_list(self) -> list[str]:
+        origins = [
+            origin.strip()
+            for origin in self.paperintel_cors_allow_origins.split(",")
+            if origin.strip()
+        ]
+        return origins or ["*"]
 
     @field_validator("openai_embedding_dimensions")
     @classmethod

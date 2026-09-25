@@ -412,6 +412,91 @@ class PaperIntelService:
             )
         )
 
+    def enqueue_discover(self, session_id: str, topic: str) -> WorkflowJob:
+        self.handler.store.require_session(session_id)
+        topic = topic.strip() if isinstance(topic, str) else ""
+        if not topic:
+            raise InvalidWorkflowJobInputError("topic must not be empty")
+        if len(topic) > 500:
+            raise InvalidWorkflowJobInputError("topic must be at most 500 characters")
+        return self._workflow_jobs().create(
+            WorkflowJob(
+                session_id=session_id,
+                kind="discover",
+                input_json={"topic": topic},
+            )
+        )
+
+    def enqueue_compare(
+        self,
+        session_id: str,
+        *,
+        paper_ids: list[str] | None = None,
+        prompt: str | None = None,
+    ) -> WorkflowJob:
+        self.handler.store.require_session(session_id)
+        if paper_ids is not None and (
+            not isinstance(paper_ids, list)
+            or any(not isinstance(paper_id, str) for paper_id in paper_ids)
+        ):
+            raise InvalidWorkflowJobInputError("paper_ids must be a list of strings or null")
+        normalized_ids = list(dict.fromkeys(paper_ids or []))
+        if len(normalized_ids) > 10 or any(len(paper_id) > 500 for paper_id in normalized_ids):
+            raise InvalidWorkflowJobInputError("paper_ids must contain at most 10 ids of 500 characters each")
+        if any(
+            not isinstance(paper_id, str) or not paper_id.strip()
+            for paper_id in normalized_ids
+        ):
+            raise InvalidWorkflowJobInputError("paper_ids must not contain empty values")
+        if prompt is not None and not isinstance(prompt, str):
+            raise InvalidWorkflowJobInputError("prompt must be a string or null")
+        if prompt is not None and len(prompt) > 2000:
+            raise InvalidWorkflowJobInputError("prompt must be at most 2000 characters")
+        if prompt is not None and not prompt.strip():
+            prompt = None
+        return self._workflow_jobs().create(
+            WorkflowJob(
+                session_id=session_id,
+                kind="compare",
+                input_json={"paper_ids": normalized_ids or None, "prompt": prompt},
+            )
+        )
+
+    def enqueue_synthesize(
+        self,
+        session_id: str,
+        *,
+        prompt: str | None = None,
+        paper_ids: list[str] | None = None,
+    ) -> WorkflowJob:
+        self.handler.store.require_session(session_id)
+        if paper_ids is not None and (
+            not isinstance(paper_ids, list)
+            or any(not isinstance(paper_id, str) for paper_id in paper_ids)
+        ):
+            raise InvalidWorkflowJobInputError("paper_ids must be a list of strings or null")
+        normalized_ids = list(dict.fromkeys(paper_ids or []))
+        if len(normalized_ids) > 10 or any(len(paper_id) > 500 for paper_id in normalized_ids):
+            raise InvalidWorkflowJobInputError("paper_ids must contain at most 10 ids of 500 characters each")
+        if any(
+            not isinstance(paper_id, str) or not paper_id.strip()
+            for paper_id in normalized_ids
+        ):
+            raise InvalidWorkflowJobInputError("paper_ids must not contain empty values")
+        if prompt is not None and not isinstance(prompt, str):
+            raise InvalidWorkflowJobInputError("prompt must be a string or null")
+        if prompt is not None and len(prompt) > 2000:
+            raise InvalidWorkflowJobInputError("prompt must be at most 2000 characters")
+        if prompt is not None and not prompt.strip():
+            prompt = None
+        return self._workflow_jobs().create(
+            WorkflowJob(
+                session_id=session_id,
+                kind="synthesize",
+                input_json={"paper_ids": normalized_ids or None, "prompt": prompt},
+            )
+        )
+
     def enqueue_analyze_pdf_blob(
         self,
         session_id: str,

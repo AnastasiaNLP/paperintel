@@ -155,6 +155,71 @@ async def enqueue_analyze_selected_tool(
     return format_workflow_job(job, heading="Queued selected-paper analysis job")
 
 
+async def enqueue_discover_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    topic: str,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    topic = _validate_bounded_text("topic", topic, 500)
+    try:
+        job = await _run_sync(service.enqueue_discover, session_id, topic)
+    except Exception:
+        return _safe_error("enqueue paper discovery")
+    return format_workflow_job(job, heading="Queued paper discovery job")
+
+
+async def enqueue_compare_papers_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    paper_ids: list[str] | None = None,
+    prompt: str | None = None,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    paper_ids = _validate_optional_paper_ids(paper_ids)
+    if prompt is not None:
+        prompt = prompt.strip() or None
+    if prompt is not None:
+        prompt = _validate_question(prompt)
+    try:
+        job = await _run_sync(
+            service.enqueue_compare,
+            session_id,
+            paper_ids=paper_ids,
+            prompt=prompt,
+        )
+    except Exception:
+        return _safe_error("enqueue paper comparison")
+    return format_workflow_job(job, heading="Queued comparison job")
+
+
+async def enqueue_synthesize_papers_tool(
+    service: PaperIntelService,
+    *,
+    session_id: str,
+    paper_ids: list[str] | None = None,
+    prompt: str | None = None,
+) -> str:
+    session_id = _validate_non_empty("session_id", session_id)
+    paper_ids = _validate_optional_paper_ids(paper_ids)
+    if prompt is not None:
+        prompt = prompt.strip() or None
+    if prompt is not None:
+        prompt = _validate_question(prompt)
+    try:
+        job = await _run_sync(
+            service.enqueue_synthesize,
+            session_id,
+            paper_ids=paper_ids,
+            prompt=prompt,
+        )
+    except Exception:
+        return _safe_error("enqueue paper synthesis")
+    return format_workflow_job(job, heading="Queued synthesis job")
+
+
 async def enqueue_analyze_pdf_tool(
     service: PaperIntelService,
     *,
@@ -655,9 +720,11 @@ def _validate_optional_paper_ids(paper_ids: list[str] | None) -> list[str] | Non
     if not isinstance(paper_ids, list):
         raise ValueError("paper_ids must be a list of strings")
     validated = [
-        _validate_non_empty("paper_id", paper_id)
+        _validate_bounded_text("paper_id", paper_id, MAX_PAPER_ID_LENGTH)
         for paper_id in paper_ids
     ]
+    if len(validated) > 10:
+        raise ValueError("paper_ids must contain at most 10 ids")
     deduped = list(dict.fromkeys(validated))
     if len(deduped) < 2:
         raise ValueError("paper_ids must contain at least two distinct paper ids")

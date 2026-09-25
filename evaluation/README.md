@@ -96,9 +96,10 @@ Implemented foundation:
 - Judge rubrics are versioned repository artifacts, and judge scoring is
   available as an explicit manual gauge.
 
-Still deferred:
+Current follow-up status:
 
-- QA faithfulness judge task generation is not wired yet.
+- QA faithfulness, comparison, and synthesis judge task generation is wired in
+  `evaluation.run_judge_eval` when the matching JSONL inputs are supplied.
 - Judge scores are not CI gates.
 - Benchmark extraction quality remains a measured weakness, especially on
   complex PDF tables and systems/alignment papers.
@@ -121,14 +122,37 @@ Evaluation uses two JSONL files:
   60-paper dataset for the next evaluation framework workstream.
 - `workspaces.jsonl`: exported `PaperWorkspace` rows from Postgres.
 
-The current `evaluation.validate_golden_dataset` command validates the v0.1
-schema. The v0.2 dataset adds evidence anchors, QA question types, difficulty
-tags, review flags, and enrichment metadata, so the schema/loader must be
-updated before using the v0.2 file as an automated gate.
+The current `evaluation.validate_golden_dataset` command accepts and validates
+both the v0.1 and v0.2 files. Passing schema validation does not make the v0.2
+file a fully trusted quality gate: half of its labels are still marked
+`draft_machine`, so filter to manually verified records for quality scoring or
+finish reviewing those labels first.
 
 The local seed keeps CI and development independent from network access. The
 30-paper dataset is small enough to keep versioned in the repository and is also
 published to Hugging Face as the external portfolio dataset.
+
+For QA judge scoring, ask golden questions in a PaperIntel session, then export
+matching assistant turns with their evidence:
+
+```bash
+.venv/bin/python -m evaluation.export_qa_samples \
+  --database-url "$DATABASE_URL" \
+  --session-id "$SESSION_ID" \
+  --golden golden_dataset/seed_5.jsonl \
+  --output qa_samples.jsonl
+.venv/bin/python -m evaluation.run_judge_eval \
+  --golden golden_dataset/seed_5.jsonl \
+  --workspaces workspaces.jsonl \
+  --qa-samples qa_samples.jsonl \
+  --dry-run
+```
+
+Comparison and synthesis inputs use one JSON object per line. A comparison row
+contains `artifact` (a `ComparisonArtifact`) and `workspaces` (the selected
+`PaperWorkspace` objects). A synthesis row contains `report`, `response_text`,
+`agent_run`, `workspaces`, and optional `comparison`. These inputs are currently
+provided as artifact JSONL; judge payload construction checks paper coverage.
 
 ## Validate Golden Labels
 
@@ -453,13 +477,9 @@ process when regressions are present; use the output as a review signal.
 - Method and report keyword checks are coverage proxies, not semantic
   correctness checks.
 - Judge scores are non-deterministic and should not be used as normal CI gates.
-- Automated live judge scoring currently covers report rubrics:
-  `recommended_action`, `implementation_difficulty`, and `action_reasoning`.
-- Comparison and synthesis G-Eval rubrics are versioned and payload builders
-  exist, but the automated CLI does not yet load comparison/synthesis artifact
-  JSONL inputs.
-- The `qa_faithfulness` rubric exists, but QA judge task generation is not wired
-  yet.
+- Automated judge scoring covers report, QA, comparison, and synthesis rubrics
+  when the corresponding QA sample or artifact JSONL input is supplied.
+- QA tasks without a matching saved answer are recorded as skipped.
 - The deterministic runner evaluates exported `PaperWorkspace` JSONL files. It
   does not run paper analysis itself.
 
@@ -469,9 +489,7 @@ process when regressions are present; use the output as a review signal.
    papers.
 2. Reduce partial/corrupt benchmark rows by strengthening unit, condition, and
    headline-row handling.
-3. Add QA judge task generation for `qa_faithfulness`.
-4. Add citation-grounding metrics.
-5. Add comparison/synthesis evaluation once the comparison analyst and synthesis
-   agent land.
-6. Revisit benchmark extraction after expanding beyond the 30-paper seed
+3. Add automated comparison/synthesis artifact export from Postgres.
+4. Add deterministic citation-grounding metrics.
+5. Revisit benchmark extraction after expanding beyond the 30-paper seed
    dataset, to avoid overfitting prompt changes to the current corpus.
