@@ -1,32 +1,46 @@
+x-preview-logging: &preview-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16
+    logging: *preview-logging
     environment:
       POSTGRES_DB: paperintel
       POSTGRES_USER: paperintel
-      POSTGRES_PASSWORD: dev_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperintel -d paperintel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   qdrant:
     image: qdrant/qdrant:v1.17.1
+    logging: *preview-logging
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    logging: *preview-logging
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: paperintel
-      MINIO_ROOT_PASSWORD: paperintel_dev_password
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-paperintel}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-paperintel_dev_password}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -35,7 +49,107 @@ services:
       timeout: 5s
       retries: 5
 
+  migrate:
+    build: .
+    logging: *preview-logging
+    profiles: ["app"]
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment: &paperintel_environment
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-disabled}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
+      POSTGRES_URL: postgresql://paperintel:${POSTGRES_PASSWORD:-dev_password}@postgres:5432/paperintel
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-paper_chunks}
+      BLOB_STORAGE_ENABLED: "true"
+      BLOB_S3_ENDPOINT_URL: http://minio:9000
+      BLOB_S3_REGION: ${BLOB_S3_REGION:-us-east-1}
+      BLOB_S3_BUCKET: ${BLOB_S3_BUCKET:-paperintel}
+      BLOB_S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-paperintel}
+      BLOB_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-paperintel_dev_password}
+      PAPERINTEL_API_AUTH_TOKEN: ${PAPERINTEL_API_AUTH_TOKEN:?Set PAPERINTEL_API_AUTH_TOKEN}
+      PAPERINTEL_CORS_ALLOW_ORIGINS: ${PAPERINTEL_CORS_ALLOW_ORIGINS:-*}
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    logging: *preview-logging
+    profiles: ["app"]
+    command: ["uvicorn", "api.rest.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *paperintel_environment
+    ports:
+      - "127.0.0.1:${PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  preview-proxy:
+    image: caddy:2.10.2-alpine
+    logging: *preview-logging
+    profiles: ["app"]
+    environment:
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:?Set PREVIEW_DOMAIN to the public preview hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/preview/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    logging: *preview-logging
+    profiles: ["app"]
+    command: ["python", "-m", "workers"]
+    environment: *paperintel_environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  blob-cleanup:
+    build: .
+    logging: *preview-logging
+    profiles: ["app"]
+    command: ["python", "-m", "workers.blob_cleanup_worker", "--interval-seconds", "3600"]
+    environment: *paperintel_environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   qdrant_data:
   minio_data:
+  caddy_data:
+  caddy_config:

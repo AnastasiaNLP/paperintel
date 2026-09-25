@@ -1,0 +1,5 @@
+server_name       = "paperintel-preview"
+server_type       = "cx33"
+location          = "nbg1"
+ssh_public_key    = "ssh-ed25519 AAAA... replace-with-your-public-key"
+ssh_allowed_cidrs = ["203.0.113.10/32"]

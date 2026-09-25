@@ -1,0 +1,20 @@
+#cloud-config
+ssh_pwauth: false
+disable_root: true
+users:
+  - default
+  - name: paperintel
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${jsonencode(ssh_public_key)}
+packages:
+  - ca-certificates
+  - curl
+  - openssl
+  - docker.io
+  - docker-compose-v2
+runcmd:
+  - [systemctl, enable, --now, docker]
